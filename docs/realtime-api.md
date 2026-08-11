@@ -3,7 +3,8 @@
 > 对应源码：`src/speech_to_speech/api/openai_realtime/`（server.py / websocket_router.py /
 > service.py / pipeline_unit.py / transports.py / webrtc_session.py / llm_proxy.py /
 > audio_client.py / runtime_config.py / handlers/）。
-> 配套概念：[架构与链路](architecture.md) §4/§6、[pipeline 基础设施](pipeline-infra.md)（取消作用域、推测性回合）。
+> 配套概念：[架构与链路](architecture.md) §4/§6、[pipeline 基础设施](pipeline-infra.md)（取消作用域、推测性回合）、
+> [通信协议](protocol.md)（对外事件格式）。
 
 ---
 

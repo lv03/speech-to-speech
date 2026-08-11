@@ -66,6 +66,7 @@ Any OpenAI Realtime-compatible client can connect. See [Realtime API](#realtime-
 
 * [Architecture deep-dive](docs/architecture.md)
 * [Realtime API deep-dive](docs/realtime-api.md)
+* [Communication protocol](docs/protocol.md)
 * [Pipeline infrastructure](docs/pipeline-infra.md)
 * [Backend registry](docs/backend-registry.md)
 * [VAD module deep-dive](docs/vad.md)
