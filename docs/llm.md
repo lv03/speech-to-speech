@@ -17,7 +17,7 @@
 | `chat_completions_language_model.py` | 351 | Chat Completions 后端实现 |
 | `responses_api_language_model.py` | 192 | Responses API 后端实现 |
 | `chat.py` | 838 | **对话历史** `Chat` 类（有界缓存/压缩/回滚/工具配对） |
-| `lm_output_processor.py` | 148 | 输出分流：文本/工具 → 客户端事件；纯文本 → TTS |
+| `lm_output_processor.py` | 148 | 输出分流：有序事件（文本/工具）与 TTS 输入同队列保序输出（#453 重构） |
 | `compaction_prompt.py` | 181 | 历史摘要压缩 prompt 构建 |
 | `tool_call/` | 574 | 工具调用：代码块提取、函数签名、prompt 构建 |
 | `voice_prompt.py` / `text_prompt.py` | 92 | 语音/文本两种 system prompt 模板 |
@@ -32,7 +32,7 @@ text_prompt_queue ──► LLM handler ──► lm_response_queue
                        │                ├─ LLMResponseChunk(句子块, 可带 tools)
                        │                ├─ TokenUsage(计费)
                        │                └─ EndOfResponse(回合终结哨兵)
-                       └──► LMOutputProcessor ──► 客户端文本事件 + TTS
+                       └──► LMOutputProcessor ──► 有序事件 + TTS 输入（同一队列）
 ```
 
 ---
@@ -95,7 +95,12 @@ LanguageModel VisionLM          ResponsesApi  ChatCompletions
 ```
 
 **事务语义**：`_generate` 里 `rollback_transaction`——如果历史提交失败或回合过期，
-回滚整个回合的写入（`original_chat.rollback_generation(item_ids, call_ids)`）。
+回滚整个回合的写入。
+
+> ⚠️ #453 重构后：LLM 输出不再是"文本块 + 可选工具"，而是**有序 parts 列表**
+> （`AssistantTextPart`/`AssistantToolCallPart` 交错）。历史写入变为**事务性**：
+> Chat 用 `add_provisional_generation_items` 原子写入并按 `response_key` 跟踪，
+> `finalize_provisional_generation` 提交 / `rollback_provisional_generation` 回滚。
 
 ---
 
@@ -142,22 +147,26 @@ LLM 输出代码块 → extract_function_calls_from_text → to_realtime_functio
   → 提交时写 RealtimeConversationItemFunctionCall 入历史
 ```
 
-**API 基类**（原生支持）：
+**API 基类**（原生支持，有序）：
 
 ```
 ToolCall 事件 → _record_tool_call:
   1. 先 flush 已累积的 assistant 文本入历史 (保证顺序 = 客户端看到的顺序)
-  2. 立即把 function_call 写入 Chat (_pending_tool_calls) ← 关键!
-  3. 再 yield chunk 给客户端
+  2. 立即把 function_call 写入 Chat ← 关键!
+     └─ #453 后: chat.add_ordered_function_call (有序写入, 带 response_key 跟踪)
+  3. 再 yield chunk 给客户端 (parts 列表保序)
   原因: 客户端可能极快返回 function_call_output, 若 call 还没入库会被拒
        ("No function_call with call_id ... found"), 模型会重复发起同一调用
 ```
 
-**Chat 的工具配对**（`chat.py`）：
+**Chat 的工具配对**（`chat.py`，#453 事务化）：
 
 - `append_tool_output(call_id, output)`：找到配对的 function_call → 标记 completed → 追加 output。
 - **被驱逐的 call 兜底**：`_pending_tool_calls` 保留已因历史裁剪被驱逐的 function_call，
   输出回来时**重新注入**再配对——防"调用被裁了但客户端还了结果"。
+- **事务化**：`add_ordered_function_call` / `add_provisional_generation_items`（原子写入 +
+  按 `response_key` 跟踪 item_ids/call_ids）；`finalize_provisional_generation` 正常提交，
+  `rollback_provisional_generation` 打断/失败时按 key 回滚。
 
 ---
 
@@ -170,7 +179,7 @@ ToolCall 事件 → _record_tool_call:
 | 软上限 `size` | 用户回合数超限 → `trim_if_needed` 驱逐最老完整回合 |
 | 硬上限 `2*size` | 客户端失控兜底：内联驱逐（有损） |
 | 压缩（compactor） | `size` 超限时后台线程调用 LLM 摘要旧回合为 user/assistant 对；单飞（进行中不再触发） |
-| 回滚 `rollback_generation` | 打断/失败时撤销未完成回合的写入（按 item_ids/call_ids） |
+| 回滚 `rollback_provisional_generation` | 打断/失败时按 `response_key` 撤销未完成回合的写入（#453 事务化） |
 | 系统消息 | 独立存 `init_chat_message`，不进 buffer |
 | 导出 | `to_responses_api_chat` / `to_transformers_chat` 两种格式 |
 | 音频历史 | `compact_audio_history(max_audio_turns)` 压缩音频条目（API 语音输入用） |
@@ -213,16 +222,26 @@ request.audio (np.ndarray) → _audio_to_wav_base64 (内存 WAV 编码, 不落�
 
 ---
 
-## 9. LMOutputProcessor — LLM 与 TTS/客户端之间的分流器
+## 9. LMOutputProcessor — 有序输出分流器（#453 重构）
 
-| 输入 | 输出 |
+> ⚠️ **重要**：重构后不再使用 `text_output_queue`。所有输出（事件 + TTS 输入）
+> 走**同一个队列**（`lm_processed_queue` → TTS handler 透传 → `send_audio_chunks_queue`），
+> 文本/工具/音频在模型输出顺序上严格一致。`setup` 不再接收 `text_output_queue`。
+
+内部维护 `_response_key`（uuid），同一响应的所有输出打同一 key：
+
+| 输入 | 输出（同一队列，保序） |
 |---|---|
-| `LLMResponseChunk` | ① `AssistantTextEvent`（含 tools）→ text_output_queue → 客户端 `response.text.delta` / `function_call.arguments.done`；② 有文本且 `wants_audio` → `TTSInput` → TTS |
-| `TokenUsage` | `TokenUsageEvent` → 计费侧信道 |
-| `EndOfResponse`（无 error） | 直接透传 → TTS 链收尾 → `AUDIO_RESPONSE_DONE` |
-| `EndOfResponse`（有 error） | `ResponseFailedEvent` → 客户端 `response.done(status="failed")` + 仍透传 EndOfResponse（保音频路径解锁） |
+| `LLMResponseChunk`（`parts` 有序列表） | 每个 part 一个 `AssistantOutputEvent`（`response_key`）；文本 part 且 `wants_audio` → 紧跟 `TTSInput`（同 key） |
+| `TokenUsage` | `TokenUsageEvent`（不再走侧信道，与音频同队列；带 `cancel_generation`/`response_key`） |
+| `EndOfResponse`（正常） | `AssistantResponseDoneEvent`（有序输出结束标记）+ 透传 `EndOfResponse` |
+| `EndOfResponse`（error） | `ResponseFailedEvent` + 透传 `EndOfResponse` |
+| `EndOfResponse`（stale 回合） | 只发 `cleanup_only` 的 `EndOfResponse`（生命周期收尾，绕过下游 speculative 门控） |
 
-所有路径先过 `_turn_output_allowed`（speculative grace 过滤）。
+所有文本输出先过 `_turn_output_allowed`（speculative grace 过滤）。
+
+send loop 侧：`response_key` 用于丢弃已关闭响应的迟到输出
+（`_response_key_is_obsolete` / `close_response_key`，见 [realtime-api.md](realtime-api.md) §5.2）。
 
 ---
 
@@ -263,7 +282,8 @@ API 后端特殊处理：`_build_extra_body` 按提供商禁用推理（vLLM/Qwe
 3. **语音/文本双路径**：语音要切句+净化（TTS 友好），文本要原样流式（保 markdown）——
    一个 `wants_audio` 分支贯穿所有消费逻辑。
 4. **工具调用提前入史**：防客户端竞态；被驱逐的 call 有重新注入兜底。
-5. **历史事务化**：copy-then-commit + rollback，打断/失败不污染主对话。
+5. **历史事务化**：copy-then-commit + 按 `response_key` 的 provisional 跟踪/回滚，打断/失败不污染主对话（#453 增强）。
+6. **有序输出**：文本与工具调用以 `parts` 列表保序贯穿 LLM → 事件 → 音频链路，消除文本/工具乱序（#453 核心目标，对应 #309）。
 
 ---
 

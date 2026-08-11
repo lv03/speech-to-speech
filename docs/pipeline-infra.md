@@ -15,7 +15,7 @@
 
 ```
 messages.py     类型化负载 (PipelineMessage)        → 走 8 条队列
-events.py       侧信道事件 (PipelineEvent)          → 走 text_output_queue
+events.py       侧信道事件 (PipelineEvent)          → VAD/转写事件走 text_output_queue; 响应事件与音频共享 TTS 队列
 control.py      控制消息 (SESSION_END)              → 混入任意队列
 cancel_scope.py 代数取消信号                         → 全局共享 (每 unit 一个)
 speculative_turns.py 回合修订跟踪                    → 全局共享
@@ -42,8 +42,8 @@ log_context     日志上下文 (pipeline_index)          → 多会话日志区
 | `VADAudio` | `vad_audio` | VAD → STT | `audio`(ndarray)、`mode`(progressive/final)、`turn_id`、`turn_revision`、`processing_delay_s`、`created_at_s` |
 | `PartialTranscription` | `partial_transcription` | STT → Notifier | `text`、turn 元数据 |
 | `Transcription` | `transcription` | STT → Notifier | `text`、`language_code`、`speech_stopped_at_s` |
-| `LLMResponseChunk` | `llm_response_chunk` | LLM → LMOutputProcessor | `text`、`tools`(list)、`runtime_config`、`response`、`cancel_generation` |
-| `TokenUsage` | `token_usage` | LLM → LMOutputProcessor | `input_tokens`、`output_tokens` |
+| `LLMResponseChunk` | `llm_response_chunk` | LLM → LMOutputProcessor | **`parts`**(有序文本/工具交错列表)、`text`/`tools`(兼容视图)、`runtime_config`、`response`、`cancel_generation`、`response_key` |
+| `TokenUsage` | `token_usage` | LLM → LMOutputProcessor | `input_tokens`、`output_tokens`、`cancel_generation`、`response_key` |
 | `EndOfResponse` | `end_of_response` | LLM → ... → TTS | `error`(失败原因，无 error 时正常结束) |
 | `TTSInput` | `tts_input` | LMOutputProcessor → TTS | `text`、`language_code`、`response` |
 | `AudioOutput` | `audio_output` | TTS → send loop | `audio`(bytes/ndarray)、`cancel_generation` |
@@ -64,9 +64,15 @@ log_context     日志上下文 (pipeline_index)          → 多会话日志区
 
 ## 3. 事件侧信道（events.py）
 
-`PipelineEvent`（`type` 字段判别器）走 `text_output_queue`，由 send loop 消费并转成
-Realtime 协议事件。**与消息的区别**：消息是链内逐级传递的"工作负载"，事件是
-**跨级直达客户端的"通知"**（不经过中间 handler）。
+`PipelineEvent`（`type` 字段判别器）由 send loop 消费并转成 Realtime 协议事件。
+**流向分两路**（#453 有序输出重构后）：
+
+- **VAD/转写事件**走 `text_output_queue`（跨级直达，不经过中间 handler）；
+- **响应相关事件**（`AssistantOutputEvent`/`AssistantResponseDoneEvent`/`TokenUsageEvent`）
+  与它们的音频**共享 TTS 输出队列**（`lm_processed_queue` → TTS handler 透传 →
+  `send_audio_chunks_queue`），保证文本/工具/音频在模型输出顺序上严格一致。
+
+**与消息的区别**：消息是链内逐级传递的"工作负载"，事件是跨级直达客户端的"通知"。
 
 | 事件 | 产生者 | 消费方 |
 |---|---|---|
@@ -75,9 +81,10 @@ Realtime 协议事件。**与消息的区别**：消息是链内逐级传递的"
 | `PartialTranscriptionEvent` | TranscriptionNotifier | → `transcription.delta` |
 | `TranscriptionCompletedEvent` | TranscriptionNotifier | → `transcription.completed` + 触发 LLM |
 | `AudioInputCompletedEvent` | AudioInputNotifier | stt=none 音频输入完成 → 触发 LLM |
-| `AssistantTextEvent` | LMOutputProcessor | → `response.text.delta` / `function_call.arguments.done`（带 `cancel_generation`） |
-| `TokenUsageEvent` | LMOutputProcessor | 计费累积 |
-| `ResponseFailedEvent` | LMOutputProcessor | → `response.done(status="failed")` |
+| `AssistantOutputEvent` | LMOutputProcessor | → `response.text.delta` / `function_call.arguments.done`（有序 parts；带 `cancel_generation`/`response_key`；旧名 `AssistantTextEvent` 保留为别名） |
+| `AssistantResponseDoneEvent` | LMOutputProcessor | 有序输出结束标记（`response_key`），正常完成时产出 |
+| `TokenUsageEvent` | LMOutputProcessor | 计费累积（带 `cancel_generation`/`response_key`） |
+| `ResponseFailedEvent` | LMOutputProcessor | → `response.done(status="failed")`（带 `cancel_generation`/`response_key`） |
 
 ---
 
@@ -247,6 +254,7 @@ Apple Silicon 上 MLX 推理共享**单一 Metal 命令队列**，并发调用�
 ## 9. 设计要点总结
 
 1. **消息 vs 事件分离**：工作负载走链内队列，通知走侧信道直达客户端——解耦流水线与协议层。
+   响应相关事件与音频共享队列（有序输出），用户转写/语音事件仍走 text_output_queue。
 2. **三类队列控制信号**（哨兵/控制消息）语义严格区分，flush 保留规则是正确性关键。
 3. **代数取消取代布尔信号**：输出打 `cancel_generation` 标签，下游各阶段幂等可弃。
 4. **推测性回合统一了打断竞态**：revision 递增让旧输出自动作废，阻塞/非阻塞两族接口

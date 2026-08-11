@@ -90,12 +90,12 @@ text_prompt_queue (GenerateResponseRequest: 携带 runtime_config + 会话 Chat)
 ③ LLM handler ─────────────── Transformers / mlx-lm / Responses-API / Chat-Completions
    │  流式输出 LLMResponseChunk(每句) / TokenUsage / EndOfResponse
    ▼
-④ LMOutputProcessor ──────── 关键分流节点
-   │  · 工具调用 → text_output_queue → 客户端 function_call 事件
-   │  · 纯文本 → TTSInput（丢弃被取消/过期回合的输出）
-   │  · TokenUsage → 侧信道计费事件
+④ LMOutputProcessor ──────── 有序输出分流节点 (#453 重构)
+   │  · parts 逐个 → AssistantOutputEvent（与音频同队列保序）
+   │  · 文本 part → TTSInput（丢弃被取消/过期回合的输出）
+   │  · TokenUsage → TokenUsageEvent（同队列，不再走侧信道）
    ▼
-lm_processed_queue
+lm_processed_queue (事件 + TTS 输入混合, 保序)
    │
    ▼
 ⑤ TTS handler ────────────── Qwen3-TTS / Kokoro / PocketTTS / ChatTTS / MMS
@@ -117,10 +117,10 @@ send loop (WebSocket router) → WebSocket/WebRTC transport → 客户端扬声�
 | `spoken_prompt_queue` | `VADAudio` | VAD → STT |
 | `stt_output_queue` | `PartialTranscription` / `Transcription` | STT → TranscriptionNotifier |
 | `text_prompt_queue` | `GenerateResponseRequest` | Notifier/Service → LLM |
-| `lm_response_queue` | `LLMResponseChunk` / `TokenUsage` / `EndOfResponse` | LLM → LMOutputProcessor |
-| `lm_processed_queue` | `TTSInput` / `EndOfResponse` | LMOutputProcessor → TTS |
-| `send_audio_chunks_queue` | `bytes` / `ndarray` / `AudioOutput` / 哨兵 | TTS → send loop |
-| `text_output_queue` | `PipelineEvent`（侧信道） | 各阶段 → Service → 客户端 |
+| `lm_response_queue` | `LLMResponseChunk`(有序 parts) / `TokenUsage` / `EndOfResponse` | LLM → LMOutputProcessor |
+| `lm_processed_queue` | `AssistantOutputEvent` / `TTSInput` / `EndOfResponse`（#453：事件与 TTS 输入同队列保序） | LMOutputProcessor → TTS |
+| `send_audio_chunks_queue` | 事件 + 音频块 + 哨兵（TTS 透传响应事件，#453） | TTS → send loop |
+| `text_output_queue` | `PipelineEvent`（VAD/转写事件侧信道） | VAD/STT → Service → 客户端 |
 
 所有队列负载统一基于 `PipelineMessage`（Pydantic 模型，`pipeline/messages.py`），
 以 `tag` 字段作判别器；控制消息 `PipelineControlMessage` 与二进制哨兵（`PIPELINE_END`、
@@ -276,8 +276,9 @@ accept ──► 领取 unit ──► 创建 SessionState
 - `AUDIO_RESPONSE_DONE` 哨兵触发 `response.done` 并清空 discard 窗口。
 - barge-in 时 `_flush_queue(unit.output_queue, preserve=_keep_audio_sentinel)`：
   清空待播音频但**保留**响应完成哨兵与控制消息（否则释放路径会永远等待 drain）。
-- 文本侧信道（`text_output_queue`）：AssistantTextEvent 在 `response.done` 前会
-  被 drain 到客户端；TokenUsageEvent 是纯计费事件，始终整队 drain。
+- **#453**：响应事件（AssistantOutputEvent/AssistantResponseDoneEvent/TokenUsageEvent）
+  与音频同队列；send loop 按 `response_key` 丢弃已关闭响应的迟到输出
+  （`_response_key_is_obsolete`）。text_output_queue 只余 VAD/转写事件。
 
 ---
 
@@ -306,17 +307,18 @@ accept ──► 领取 unit ──► 创建 SessionState
 
 - 滑动窗口 + 最旧回合驱逐（`_evict_oldest_turn`）。
 - 超长时压缩：`compaction`（摘要）worker，可替换为 LLM 压缩。
-- `rollback_generation`：打断时回滚未完成回合的对话项。
+- **#453 事务化**：`add_provisional_generation_items` 原子写入 + 按 `response_key` 跟踪，
+  `finalize_provisional_generation` 提交 / `rollback_provisional_generation` 打断时回滚。
 - 可导出为 `to_responses_api_chat` / `to_transformers_chat` 两种格式。
 - 音频历史条目支持 `compact_audio_history` 压缩与图像条目剥离。
 
-### 7.4 工具调用闭环
+### 7.4 工具调用闭环（#453 有序输出）
 
 ```
-LLM 流式输出 → LMOutputProcessor 提取 function_call
-   → text_output_queue → service → 客户端 response.function_call.arguments.done
+LLM 流式输出 (有序 parts) → LMOutputProcessor 逐个产出 AssistantOutputEvent
+   → 与 TTSInput 同队列保序 → send loop → 客户端 response.function_call.arguments.done
 客户端执行工具 → conversation.item.create(tool output)
-   → service 写入 Chat（append_tool_output）
+   → service 写入 Chat（append_tool_output，provisional 事务跟踪）
    → 客户端 response.create → 新一轮生成（LLM 携带工具结果）
 ```
 

@@ -18,8 +18,9 @@
 | `chatTTS_handler.py` | 115 | ChatTTS |
 | `README.md` | — | 各后端用法与语言映射 |
 
-**定位**：管线第四站（最后一站）。输入是 `TTSInput`（LLM 句子块）和 `EndOfResponse`
-（哨兵），输出是 **512 样本一块的 int16 PCM16 音频块**（16kHz），直接进
+**定位**：管线第四站（最后一站）。输入是 `TTSInput`（LLM 句子块）与 `AssistantOutputEvent`
+（#453 后事件与音频同队列，TTS **透传**事件到 output_queue）、`EndOfResponse`（哨兵），
+输出是 **512 样本一块的 int16 PCM16 音频块**（16kHz）+ 透传的响应事件，直接进
 `output_queue` → send loop → 客户端。
 
 ```
@@ -75,10 +76,17 @@ ref_audio 与缓存引用互斥、ref_rvq 必须配 ref_spk + ref_text 等。
 → × 12Hz × 安全系数 1.35 → 对齐到 chunk_size 整数倍 → 封顶到 max_new_tokens
 ```
 
-### 2.5 文本合并优化（`_coalesce_pending_tts_input`）
+### 2.5 文本合并优化（`_coalesce_pending_tts_input`，#453 按 response_key）
 
-LLM 是 3 句一批产出 chunk 的，TTS 合成前**把输入队列里同回合的后续 TTSInput 一并取出
-合并**成一段文本一次合成——减少合成次数、提升连贯性（语言变化或回合变化则停止合并）。
+LLM 是 3 句一批产出 chunk 的，TTS 合成前**把输入队列里同 `response_key` 的后续 TTSInput
+一并取出合并**成一段文本一次合成——减少合成次数、提升连贯性。
+
+#453 重构后队列混合 `AssistantOutputEvent` 与 `TTSInput`（同 key 保序）：
+
+- `same_response(item)` 按 `response_key` 判定是否合并（替代旧版按 turn_id/revision）。
+- 合并过程中收集同 key 的 `AssistantOutputEvent`，**透传**到 `queue_out`
+  （`self.queue_out.put(cast(TTSOut, event))`），保证文本事件先于对应音频到达 send loop。
+- 语言变化、哨兵（SESSION_END/PIPELINE_END/EndOfResponse）或 key 不匹配时停止合并。
 
 ### 2.6 会话 voice 动态切换（`_apply_session_voice_override`）
 
@@ -179,7 +187,8 @@ on_session_end(): 恢复初始 voice/语言/参考
    打断检查在每块粒度。
 3. **引擎双轨**：Apple Silicon 一律 mlx-audio（全局 MLX 锁），其他平台各走各的优化引擎
    （faster-qwen3-tts / 原生 kokoro）。
-4. **文本合并**：队列内合并同回合句子块，一次合成更连贯。
+4. **文本合并**：队列内按 `response_key` 合并同响应句子块（事件透传、音频一次合成），
+   更连贯且保序（#453）。
 5. **会话级 voice 覆盖**：客户端协议参数（voice）能动态改后端音色，会话结束自动复原。
 6. **静音修剪 + preroll 保留**：去头部 ramp 但留 40ms 防切音，平衡延迟与音质。
 

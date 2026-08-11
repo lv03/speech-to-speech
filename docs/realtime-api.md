@@ -43,6 +43,8 @@ RealtimeServer (uvicorn, 1 个)
 | `session_id` / `conversation_id` | 协议级 ID |
 | `runtime_config` | 会话配置（含 `Chat` 对话历史、`RealtimeSessionCreateRequest`） |
 | `in_response` / `response_pending` | 响应状态机核心标志（卡死源头！） |
+| `current_response_key` / `pending_response_keys` / `closed_response_keys` | **#453 新增**：响应标识管理——当前 key / 排队 key 集合 / 已关闭 key 集合（用于丢弃迟到输出） |
+| `pending_text_outputs` | **#453 新增**：有序文本输出组装缓存 |
 | `current_response_id` / `current_item_id` / `content_index` | 响应/条目/内容索引（协议输出项编号） |
 | `pending_output_text_parts` / `pending_assistant_item_id` | assistant 输出项组装缓存 |
 | `pending_function_calls` | 当前响应中模型请求的函数调用（`response.done` 的 output 需要） |
@@ -83,7 +85,10 @@ RealtimeServer (uvicorn, 1 个)
 
 ### 3.3 pipeline 事件 → Realtime 事件映射（`dispatch_pipeline_event`）
 
-`text_output_queue` 上的内部事件经 `_pipeline_dispatch` 转成协议事件：
+`text_output_queue`（VAD/转写事件）与 `output_queue`（响应事件 + 音频）上的内部事件
+经 `_pipeline_dispatch` 转成协议事件：#453 重构后 `AssistantOutputEvent`/
+`AssistantResponseDoneEvent`/`TokenUsageEvent` **不再走 text_output_queue，与音频共享
+output_queue**（保序）。
 
 | PipelineEvent | → Realtime 事件 | 处理器 |
 |---|---|---|
@@ -92,7 +97,8 @@ RealtimeServer (uvicorn, 1 个)
 | `PartialTranscriptionEvent` | `input_audio_buffer.transcription.delta` | `conversation.on_partial_transcription` |
 | `TranscriptionCompletedEvent` | `transcription.completed` + 触发 LLM | `_on_transcription_completed` |
 | `AudioInputCompletedEvent` | （stt=none 音频输入完成）→ 触发 LLM | `_on_audio_input_completed` |
-| `AssistantTextEvent` | `response.text.delta` / `function_call.arguments.done` | `response.on_assistant_text` |
+| `AssistantOutputEvent` | `response.text.delta` / `function_call.arguments.done` | `response.on_assistant_output` |
+| `AssistantResponseDoneEvent` | 有序输出结束标记（#453 新增） | `response.on_assistant_response_done` |
 | `TokenUsageEvent` | 计费累积（无协议事件） | `_on_token_usage` |
 | `ResponseFailedEvent` | `response.done(status="failed")` | `_on_response_failed` |
 
@@ -167,19 +173,26 @@ WebRTC:     POST /v1/realtime/calls (SDP offer) → _claim_unit(None) → regist
 
 ```
 循环 (10ms 间隔):
-  A. 文本事件优先 (text_output_queue):
+  A. text_output_queue (VAD/转写事件优先):
      SpeechStartedEvent → 打断逻辑:
-        ├─ interrupt_response_enabled: cancel_scope.cancel() + flush 音频/文本队列
-        │    + discard_pending_audio (WebRTC) + response_playing.clear()
+        ├─ interrupt_response_enabled: cancel_scope.cancel()
+        │    + close_pending_responses(session_id)
+        │    + flush 音频/文本/提示队列 + discard_pending_audio (WebRTC)
+        │    + response_playing.clear()
         └─ 禁用: 仅记日志
-     AssistantTextEvent → generation 可丢弃检查 → dispatch_pipeline_event → 发送
      (生成中 speech_started: in_response 或 response_pending → 打断/忽略)
 
-  B. 音频 (output_queue):
+  B. output_queue (响应事件 + 音频混合, #453 后):
      pending_output_item 优先 (上轮暂存) → 否则 get_nowait
-     PIPELINE_END → drain 文本事件 + finish_response + break (关停)
-     AUDIO_RESPONSE_DONE → drain + finish_response + response_pending=False
+     TokenUsageEvent → dispatch → 发送 (计费)
+     AssistantOutputEvent / AssistantResponseDoneEvent →
+        generation 可丢弃检查 → response_key 过期检查
+        (_response_key_is_obsolete → close_response_key + 丢弃)
+        → dispatch_pipeline_event → 发送
+     PIPELINE_END → finish_response + break (关停)
+     AUDIO_RESPONSE_DONE → finish_response + response_pending=False
                           + response_playing.clear() + response_done(gen) + should_listen.set()
+        └─ cleanup_only 的 done → 只清理响应状态 (stale 收尾)
         └─ stale generation 的 done → 只解锁 should_listen
      SESSION_END → session.drained.set() (链已复位, 释放可继续)
      音频 → 批处理: 攒满 MAX_AUDIO_BATCH_BYTES(6400B) 再发 (减少 WebSocket 帧数)
@@ -190,9 +203,12 @@ WebRTC:     POST /v1/realtime/calls (SDP offer) → _claim_unit(None) → regist
 
 **关键细节**：
 
+- **#453 核心变化**：assistant 文本/工具/计费事件不再单独走 text_output_queue，而是与
+  音频在同一队列按序到达；send loop 按 `response_key` 区分响应，`_output_part_context`
+  管理有序输出索引（连续文本共享一个 assistant item，工具调用开新 item）。
 - 音频批处理减少帧开销；哨兵绝不进批（暂存到 pending_output_item 供下轮处理）。
 - `response_playing` / `should_listen` 在首个音频块时置位——打断窗口以音频开始为准。
-- 文本先于音频处理：`speech_started` 必须先于可能到达的音频块被看到。
+- 文本事件（speech_started）先于音频处理：`speech_started` 必须先被看到才能正确打断。
 
 ### 5.3 监控端点
 
@@ -272,7 +288,7 @@ close()
   │                          │◄────────────────────────────────│ → GenerateResponseRequest
   │                          │                                 │   → text_prompt_queue   │
   │ ◄── speech_started ──────│◄── SpeechStartedEvent ──────────│                        │
-  │ ◄── text.delta ──────────│◄── AssistantTextEvent ──────────│  (LLM 链)              │
+  │ ◄── text.delta ──────────│◄── AssistantOutputEvent ──────│  (LLM 链, 与音频同队列)              │
   │ ◄── audio.delta ─────────│◄── output_queue 音频块 ─────────│  (TTS 链)              │
   │ ◄── response.done ───────│◄── AUDIO_RESPONSE_DONE ─────────│                        │
   │  disconnect              │                                 │                        │
@@ -286,7 +302,8 @@ close()
 
 ## 10. 设计要点总结
 
-1. **一个 unit 一个 send loop**：文本事件先于音频处理（speech_started 必须先被看到）。
+1. **一个 unit 一个 send loop**：VAD/转写事件先于音频处理（speech_started 必须先被看到）；
+   响应事件与音频同队列按序消费（#453）。
 2. **响应状态机（in_response/response_pending）**是正确性核心：任何异常都必须
    `finish_response` 收敛，否则后续 response.create 被拒（LLM 的 EndOfResponse 哨兵保证）。
 3. **打断是 send loop 的职责**：`cancel_scope.cancel()` + flush 队列 + discard 音频，
