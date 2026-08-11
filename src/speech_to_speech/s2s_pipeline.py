@@ -51,15 +51,13 @@ from speech_to_speech.STT.transcription_notifier import TranscriptionNotifier
 from speech_to_speech.utils.thread_manager import ThreadManager
 from speech_to_speech.VAD.vad_handler import VADHandler
 
-# Ensure that the necessary NLTK resources are available
+# Ensure the nltk Punkt resource used as the sent_tokenize fallback is present.
+# (Multilingual splitting prefers wtpsplit/SaT; see LLM/utils.py. The old
+# averaged_perceptron_tagger_eng download was never used and is dropped.)
 try:
     nltk.data.find("tokenizers/punkt_tab")
 except (LookupError, OSError):
     nltk.download("punkt_tab")
-try:
-    nltk.data.find("tokenizers/averaged_perceptron_tagger_eng")
-except (LookupError, OSError):
-    nltk.download("averaged_perceptron_tagger_eng")
 
 # caching allows ~50% compilation time reduction
 # see https://docs.google.com/document/d/1y5CRfMLdwEoF1nTk9q8qEu1mgMUuUtvhklPKJ2emLU8/edit#heading=h.o2asbxsrp1ma

@@ -86,6 +86,9 @@ paraformer = [
 pocket = [
     "pocket-tts>=0.1.0",
 ]
+sat = [
+    "wtpsplit",
+]
 webrtc = [
     "aiortc>=1.9.0",
 ]

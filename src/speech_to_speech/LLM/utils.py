@@ -1,10 +1,13 @@
 import base64
 import io
+import logging
 import re
-from typing import Optional
+from typing import Any, Optional
 
 import requests  # type: ignore[import-untyped]
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 SMART_PUNCT_TRANSLATION = str.maketrans(
     {
@@ -27,6 +30,67 @@ def remove_unspeechable(text: str) -> str:
     """
     text = text.translate(SMART_PUNCT_TRANSLATION)
     return SPEECHABLE_PATTERN.sub("", text)
+
+
+# ---------------------------------------------------------------------------
+# Multilingual sentence segmentation (SaT) with nltk fallback
+#
+# nltk's Punkt tokenizer has no Chinese model, so Chinese LLM output would never
+# be sentence-split (the whole utterance stayed one "sentence"), which broke
+# streaming TTS batching for Chinese dialogue. wtpsplit's SaT (Segment Any Text)
+# is a punctuation-agnostic multilingual sentence segmenter covering 85
+# languages (zh/en included); `sat-3l-sm` is the balanced speed/quality pick.
+# When wtpsplit is not installed, fall back to nltk's English Punkt so the
+# pipeline keeps working for English-only setups.
+# ---------------------------------------------------------------------------
+
+_SAT_MODEL_NAME = "sat-3l-sm"
+
+_sat: Any = None
+_sat_failed: Optional[Exception] = None
+
+
+def _get_sat() -> Any:
+    """Lazily load the SaT segmenter once; cache success or failure."""
+    global _sat, _sat_failed
+    if _sat is not None or _sat_failed is not None:
+        return _sat
+    try:
+        from wtpsplit import SaT
+
+        _sat = SaT(_SAT_MODEL_NAME)
+        logger.info("Loaded SaT sentence segmenter (%s)", _SAT_MODEL_NAME)
+    except Exception as exc:  # noqa: BLE001 - any failure degrades to nltk
+        _sat_failed = exc
+        logger.warning(
+            "SaT sentence segmenter unavailable (%s: %s); "
+            "falling back to nltk sent_tokenize (English-only splitting)",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    return _sat
+
+
+def sent_tokenize(text: str) -> list[str]:
+    """Segment *text* into sentences, multilingual.
+
+    Uses SaT when available (punctutation-agnostic, 85 languages incl. zh/en),
+    falling back to nltk's English Punkt otherwise.
+    """
+    if not text:
+        return []
+    sat = _get_sat()
+    if sat is not None:
+        try:
+            return list(sat.split(text))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SaT split failed (%s: %s); falling back to nltk", type(exc).__name__, exc,
+            )
+    from nltk import sent_tokenize as _nltk_sent_tokenize
+
+    return _nltk_sent_tokenize(text)
 
 
 # Maps an STT language code to the language name used in the "Please reply ... in {name}"

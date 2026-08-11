@@ -8,7 +8,7 @@ from threading import Lock, Thread
 from typing import Any, Literal, Optional, Protocol, runtime_checkable
 
 import torch
-from nltk import sent_tokenize
+from speech_to_speech.LLM.utils import remove_unspeechable, resolve_auto_language, sent_tokenize
 from openai.types.realtime.realtime_conversation_item_assistant_message import (
     RealtimeConversationItemAssistantMessage,
 )
