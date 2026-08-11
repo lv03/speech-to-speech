@@ -144,6 +144,45 @@ VADAudio ──► STT handler ──► stt_output_queue
 
 - FunASR `AutoModel`，默认 `paraformer-zh`（中文向）。
 - 无独立语言参数，依赖模型能力。
+- **热词支持（方案 A + B）**：
+  - **方案 A（模型级 `hotword`）**：解码时提升领域词识别概率（SEACO 原生 context biasing），
+    适合人名/地名/产品名等常见词。
+  - **方案 B（文本级 `postprocess_hotwords`）**：解码后对文本做精确替换纠错，
+    适合模型"总是识别成固定错词"的顽固情况（生僻字/英文数字等 A 救不回来的）。
+  - **两者可同时使用**（A 治本 + B 兜底），作用于不同阶段，串行叠加。
+
+```bash
+# 方案 A：空格分隔热词
+--paraformer_stt_gen_hotword "脐腐病 番茄 补钙"
+
+# 方案 B：JSON 纠错映射（错词 -> 目标词）
+--paraformer_stt_gen_postprocess_hotwords '{"皮酒病": "脐腐病", "皮部": "脐部"}'
+```
+
+  - **热词文件（推荐，便于维护大量热词）**：
+
+```bash
+# 方案 A 文件：每行一个词，支持 # 注释（/tmp/hotwords.txt）
+# 农业病害热词
+脐腐病
+番茄
+补钙
+
+# 方案 B 文件：纯词（模糊匹配）或 错词=>目标词（显式纠正），支持 # 注释（/tmp/hotwords_fix.txt）
+皮酒病=>脐腐病
+皮部=>脐部
+
+# 启动：文件路径参数（与命令行热词可共存，文件优先当命令行未设时）
+--paraformer_stt_gen_hotword_file /tmp/hotwords.txt \
+--paraformer_stt_gen_postprocess_hotword_file /tmp/hotwords_fix.txt
+```
+
+  - **空格自动处理**：SEACO 输出带字符间空格（`"皮 酒 病"`），文本级热词的精确子串
+    匹配要求两侧格式一致。handler 内部 `_space_each` 自动归一化——纯中文词拆成
+    逐字空格（`"皮酒病"→"皮 酒 病"`），含英文/数字的词原样保留（`"Q3"` 不拆），
+    调用方无需关心该细节。
+  - 实测（SNR 3dB 噪声下）：baseline "番茄**皮酒病**" → 热词后 "番茄**脐腐病**"（A+B 双重生效）；
+    极强噪声（SNR 0dB）下热词无法挽救（声学信息完全损坏）。
 
 ---
 
@@ -276,7 +315,7 @@ def process(self, vad_audio):
 | `faster-whisper` | CTranslate2 | CUDA / CPU | ⚠️ 忽略 mode（#412） | 不报告 | 最快 |
 | `whisper-mlx` | LightningWhisperMLX | Apple Silicon | ⚠️ 忽略 mode（#412） | 结果字段（12 语） | |
 | `mlx-audio-whisper` | mlx-audio | Apple Silicon | ⚠️ 忽略 mode（#412） | 结果字段（12 语） | 全局 MLX 锁 |
-| `paraformer` | FunASR | CUDA / CPU | ✅ 朴素全量式（见 6.1） | 模型相关 | 中文向 |
+| `paraformer` | FunASR | CUDA / CPU / MPS | ✅ 朴素全量式（见 6.1） | 模型相关 | 中文向；**支持热词**（命令行 `--paraformer_stt_gen_hotword` / `--paraformer_stt_gen_postprocess_hotwords` 或文件 `*_hotword_file`，见 3.6） |
 | `none` | — | — | — | — | 音频直接进多模态 LLM |
 
 ---
