@@ -143,6 +143,20 @@ VADAudio ──► STT handler ──► stt_output_queue
 ### 3.6 Paraformer（76 行）
 
 - FunASR `AutoModel`，默认 `paraformer-zh`（中文向）。
+- **具体模型（重要，别和普通 Paraformer 混淆）**：handler 不传 `hub`，走 ModelScope（默认），
+  因此 `paraformer-zh` 实际解析为 **SEACO-Paraformer-large**：
+  - ModelScope ID：`iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch`
+  - 模型类：`SeacoParaformer`（config.yaml 里 `model: SeacoParaformer`）
+  - 参数量 **220M**、8404 词典、6 万小时中文数据（和 Paraformer-large 同底座）
+  - 与普通 Paraformer-large 的区别：带语义偏置编码器（`bias_encoder_type: lstm`、`NO_BIAS: 8377`），
+    专门优化热词定制，且**输出逐字带空格的中文**（`"皮 酒 病"`）——这正是 handler 里
+    `_space_each` 归一化和 `process()` 末尾 `.replace(" ", "")` 存在的原因。
+  - 别名对照：
+    - `paraformer`（无 `-zh`）→ 普通 `Paraformer-large`（220M，不带逐字空格、无语义偏置）
+    - `paraformer-zh` → **SEACO-Paraformer-large**（本仓库默认）
+  - **hub 陷阱**：同一个 `paraformer-zh`，在 HF hub 上解析为 `funasr/paraformer-zh`
+    （普通 Paraformer，输出不带逐字空格）；只有 ModelScope 上才是 SEACO 变体。
+    若将来改 `hub="hf"` 或直接传 `funasr/paraformer-zh`，热词空格归一化逻辑会失配。
 - 无独立语言参数，依赖模型能力。
 - **热词支持（方案 A + B）**：
   - **方案 A（模型级 `hotword`）**：解码时提升领域词识别概率（SEACO 原生 context biasing），

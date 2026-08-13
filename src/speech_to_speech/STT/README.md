@@ -75,6 +75,20 @@ This document summarizes the Speech-to-Text (STT) implementations in the `STT/` 
 - Practical support:
   - Depends on selected FunASR model checkpoint
   - Default setup is Chinese-oriented (`zh`)
+- **Exact model (don't confuse with plain Paraformer-large)**
+  - The handler does not pass `hub`, so it defaults to ModelScope, where
+    `paraformer-zh` resolves to `iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch`
+    — **SEACO-Paraformer-large** (`model: SeacoParaformer`), 220M params, 8404 vocab, 60k hours.
+  - SEACO adds a semantic bias encoder for hotword customization and emits
+    **per-character-spaced Chinese** (`"皮 酒 病"`) — which is why the handler has
+    `_space_each()` hotword normalization and joins the output with `.replace(" ", "")`.
+  - Alias map:
+    - `paraformer` (no `-zh`) → plain `Paraformer-large` (220M, no char-spacing, no semantic bias)
+    - `paraformer-zh` → **SEACO-Paraformer-large** (this repo's default)
+  - **Hub pitfall**: the same `paraformer-zh` resolves to `funasr/paraformer-zh` (plain
+    Paraformer, no char-spacing) on HuggingFace. Switching to `hub="hf"` (or passing
+    `funasr/paraformer-zh` directly) would change the model and break the hotword
+    spacing normalization.
 
 ### 7) Fun-ASR-Nano (`--stt fun-asr-nano`)
 
