@@ -149,14 +149,14 @@ client.audio.speech.create(model="qwen3", input="你好", voice="Aiden").stream_
 
 ---
 
-## 6. 流式 ASR（本次新增，WebSocket）
+## 6. 流式 ASR（本次新增，WebSocket；含双路径 / 2-pass）
 
 `WS /v1/audio/transcriptions/stream`：二进制 int16 PCM（16kHz）推入 → `speech_started` / `partial` / `final` JSON 吐出。
 
 | 模式 | `model` | partial 来源 | final 来源 |
 |---|---|---|---|
 | VAD + 整段重转写 | `fun-asr-nano` / `paraformer` | 逐步全量重转写（干净） | 整段离线（干净） |
-| **真 chunk 流式 + 离线 final** | `paraformer-online` | paraformer-zh-online 增量（低延迟，边界有轻微重叠） | `final_model`（默认 `fun-asr-nano`）离线重转写（干净） |
+| **真 chunk 流式 + 离线 final（双路径 / 2-pass）** | `paraformer-online` | paraformer-zh-online 增量（低延迟，边界有轻微重叠） | `final_model`（默认 `fun-asr-nano`）离线重转写（干净） |
 
 ```bash
 speech-to-speech serve --enable_audio_api --stt fun-asr-nano --tts qwen3
