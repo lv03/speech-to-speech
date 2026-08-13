@@ -229,3 +229,5 @@ dmypy.json
 cover/
 .tox/
 uv.lock
+# macOS
+.DS_Store
