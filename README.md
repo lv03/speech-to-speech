@@ -335,6 +335,29 @@ completion = llm.chat.completions.create(
 
 Requests are stateless (send the full message list each time) and are proxied to the configured upstream with the key held by the server, which never reaches clients. The `model` field is always overwritten with the server configured `--model_name`. The proxy is off by default, requires a remote backend (`chat-completions` or `responses-api`), and answers 501 with the reason otherwise.
 
+### Audio API (Standalone ASR + TTS)
+
+With `--enable_audio_api`, the same server also exposes the local STT and TTS models as standalone OpenAI-compatible endpoints for other services to call directly, bypassing the VAD → LLM → TTS pipeline:
+
+* `POST /v1/audio/transcriptions` — multipart `file` (+ optional `model`, `language`, `hotwords`) → `{"text": ...}`. Serves `fun-asr-nano` (default) and `paraformer`.
+* `POST /v1/audio/speech` — JSON `{"model": "qwen3", "input": "...", "voice": "..."}` → `audio/wav`. Serves `qwen3`.
+
+Models load lazily on first request and are shared across requests (one instance per model, serialized by a lock). The audio API has no authentication and no throttling of its own, exactly like the LLM proxy: enable it only on a trusted network or behind a gateway. Point the OpenAI SDK (or any HTTP client) at the server:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8765/v1", api_key="unused")
+# ASR
+with open("speech.wav", "rb") as f:
+    transcript = client.audio.transcriptions.create(model="fun-asr-nano", file=f)
+# TTS
+speech = client.audio.speech.create(model="qwen3", input="你好", voice="Aiden")
+speech.stream_to_file("out.wav")
+```
+
+Uploaded audio is decoded to 16 kHz mono float32 (WAV/FLAC/OGG; MP3 needs `ffmpeg`). Output is 16 kHz WAV. It is off by default and answers 501 with the reason otherwise.
+
 ## LLM Backends
 
 The LLM is the most compute-intensive and highest-latency component in the pipeline. A single forward pass through a large model can dominate end-to-end response time, so choosing the right backend for your hardware and latency budget matters. The pipeline supports:

@@ -18,6 +18,7 @@ import torch
 from rich.console import Console
 from transformers import HfArgumentParser
 
+from speech_to_speech.api.audio_api import AudioApiConfig
 from speech_to_speech.api.openai_realtime.pipeline_unit import PipelineUnit
 from speech_to_speech.arguments_classes.local_audio_arguments import LocalAudioArguments
 from speech_to_speech.arguments_classes.module_arguments import ModuleArguments
@@ -570,6 +571,10 @@ def build_pipeline(
         port=args.realtime_server_kwargs.port,
         llm_proxy_config=(
             build_llm_proxy_config(module_kwargs, args.llm_backend) if module_kwargs.enable_llm_proxy else None
+        ),
+        audio_api_config=AudioApiConfig(
+            enabled=module_kwargs.enable_audio_api,
+            device=module_kwargs.device,
         ),
     )
 

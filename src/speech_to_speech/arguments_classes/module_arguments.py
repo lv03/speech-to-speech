@@ -75,6 +75,15 @@ class ModuleArguments:
             "default."
         },
     )
+    enable_audio_api: bool = field(
+        default=False,
+        metadata={
+            "help": "Expose standalone ASR/TTS endpoints on the realtime server: "
+            "POST /v1/audio/transcriptions (paraformer, fun-asr-nano) and POST /v1/audio/speech (qwen3). "
+            "Models load lazily on first request and are shared across requests. No authentication: "
+            "enable only on a trusted network. Off by default."
+        },
+    )
     llm_proxy_connect_timeout_s: float = field(
         default=10.0,
         metadata={
