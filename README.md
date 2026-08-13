@@ -62,8 +62,11 @@ speech-to-speech serve \
 
 Any OpenAI Realtime-compatible client can connect. See [Realtime API](#realtime-api) for the protocol and [LLM backends](#llm-backends) for provider and local-server options.
 
+> **后端太多不知道怎么启动？** 见 [启动速查](docs/startup-guide.md)：一页覆盖 STT/LLM/TTS 后端选择、独立 ASR/TTS API、流式 ASR 与常用启动命令。
+
 ## Index
 
+* [启动速查 / Startup guide](docs/startup-guide.md)
 * [Architecture deep-dive](docs/architecture.md)
 * [Realtime API deep-dive](docs/realtime-api.md)
 * [Communication protocol](docs/protocol.md)
