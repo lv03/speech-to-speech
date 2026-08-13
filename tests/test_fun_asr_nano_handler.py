@@ -4,6 +4,7 @@ import torch
 from speech_to_speech.pipeline.messages import PartialTranscription, Transcription, VADAudio
 from speech_to_speech.STT import fun_asr_nano_handler
 from speech_to_speech.STT.fun_asr_nano_handler import FunASRNanoSTTHandler
+from speech_to_speech.utils.model_registry import SharedModel
 
 
 class _FakeNanoModel:
@@ -17,9 +18,11 @@ class _FakeNanoModel:
 
 def _handler():
     handler = object.__new__(FunASRNanoSTTHandler)
-    handler.model = _FakeNanoModel()
+    fake = _FakeNanoModel()
+    handler.model = fake
     handler.device = "cpu"
     handler.gen_kwargs = {}
+    handler._shared = SharedModel(lambda: fake)
     return handler
 
 

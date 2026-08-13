@@ -13,6 +13,7 @@ import re
 import tempfile
 import unicodedata
 from collections.abc import Callable
+from contextlib import nullcontext
 from pathlib import Path
 from sys import platform
 from threading import Event
@@ -39,6 +40,7 @@ from speech_to_speech.pipeline.messages import (
 )
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
 from speech_to_speech.utils.mlx_lock import MLXLockContext
+from speech_to_speech.utils.model_registry import canonical_device, get_shared_model
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -245,14 +247,23 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
                 qwentts_ref_cache_dir=self.ref_cache_dir,
             )
 
-        self.model = FasterQwen3TTS.from_pretrained(model_name, **load_kwargs)
+        key = (
+            "tts",
+            "qwen3",
+            model_name,
+            canonical_device(self.device),
+            self.faster_backend,
+            self.ggml_quantization,
+            str(self.dtype),
+            backend,
+        )
+        self._shared = get_shared_model(key, lambda: FasterQwen3TTS.from_pretrained(model_name, **load_kwargs))
+        self.model = self._shared.load()
         logger.info("Qwen3-TTS model loaded")
 
     def _setup_mlx(self, model_name: str) -> None:
         try:
             from mlx_audio.tts.utils import load_model
-
-            self.model = load_model(model_name)
         except ImportError as e:
             message = str(e)
             if any(
@@ -273,6 +284,9 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
                 "mlx-audio is required for Qwen3 TTS on Apple Silicon. Install with: pip install mlx-audio"
             ) from e
 
+        key = ("tts", "qwen3", model_name, canonical_device("mps"), "mlx", self.mlx_quantization)
+        self._shared = get_shared_model(key, lambda: load_model(model_name))
+        self.model = self._shared.load()
         logger.info("MLX Audio Qwen3-TTS model loaded")
 
     def _normalize_faster_backend(self, backend: Any) -> str:
@@ -889,6 +903,15 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
             **self.gen_kwargs,
         }
 
+    def _inference_lock(self):
+        """Lock guarding the shared model for the (non-MLX) faster backend.
+
+        Returns the shared model's lock when one was registered during setup,
+        otherwise a no-op context (direct construction in tests).
+        """
+        shared = getattr(self, "_shared", None)
+        return shared.lock if shared is not None else nullcontext()
+
     def _stream_mlx_generation(
         self,
         generation_fn: Callable,
@@ -926,22 +949,23 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
             )
             return
 
-        yield from self._stream(
-            self.model.generate_voice_clone_streaming(
-                text=text,
-                language=self.language,
-                ref_audio=self.ref_audio,
-                ref_spk=getattr(self, "ref_spk", None),
-                ref_rvq=getattr(self, "ref_rvq", None),
-                ref_text=self.ref_text,
-                xvec_only=self.xvec_only,
-                chunk_size=self.streaming_chunk_size,
-                max_new_tokens=utterance_max_new_tokens,
-                parity_mode=self.parity_mode,
-                non_streaming_mode=self.non_streaming_mode,
-            ),
-            label="voice_clone_parity" if self.parity_mode else "voice_clone",
-        )
+        with self._inference_lock():
+            yield from self._stream(
+                self.model.generate_voice_clone_streaming(
+                    text=text,
+                    language=self.language,
+                    ref_audio=self.ref_audio,
+                    ref_spk=getattr(self, "ref_spk", None),
+                    ref_rvq=getattr(self, "ref_rvq", None),
+                    ref_text=self.ref_text,
+                    xvec_only=self.xvec_only,
+                    chunk_size=self.streaming_chunk_size,
+                    max_new_tokens=utterance_max_new_tokens,
+                    parity_mode=self.parity_mode,
+                    non_streaming_mode=self.non_streaming_mode,
+                ),
+                label="voice_clone_parity" if self.parity_mode else "voice_clone",
+            )
 
     def _process_custom_voice(self, text: str) -> Iterator[bytes | np.ndarray]:
         utterance_max_new_tokens = self._estimate_max_new_tokens(text)
@@ -964,18 +988,19 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
             )
             return
 
-        yield from self._stream(
-            self.model.generate_custom_voice_streaming(
-                text=text,
-                speaker=speaker,
-                language=self.language,
-                instruct=self.instruct,
-                chunk_size=self.streaming_chunk_size,
-                max_new_tokens=utterance_max_new_tokens,
-                non_streaming_mode=self.non_streaming_mode,
-            ),
-            label="custom_voice",
-        )
+        with self._inference_lock():
+            yield from self._stream(
+                self.model.generate_custom_voice_streaming(
+                    text=text,
+                    speaker=speaker,
+                    language=self.language,
+                    instruct=self.instruct,
+                    chunk_size=self.streaming_chunk_size,
+                    max_new_tokens=utterance_max_new_tokens,
+                    non_streaming_mode=self.non_streaming_mode,
+                ),
+                label="custom_voice",
+            )
 
     def _process_voice_design(self, text: str) -> Iterator[bytes | np.ndarray]:
         utterance_max_new_tokens = self._estimate_max_new_tokens(text)
@@ -990,17 +1015,18 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
             )
             return
 
-        yield from self._stream(
-            self.model.generate_voice_design_streaming(
-                text=text,
-                instruct=self.instruct,
-                language=self.language,
-                chunk_size=self.streaming_chunk_size,
-                max_new_tokens=utterance_max_new_tokens,
-                non_streaming_mode=self.non_streaming_mode,
-            ),
-            label="voice_design",
-        )
+        with self._inference_lock():
+            yield from self._stream(
+                self.model.generate_voice_design_streaming(
+                    text=text,
+                    instruct=self.instruct,
+                    language=self.language,
+                    chunk_size=self.streaming_chunk_size,
+                    max_new_tokens=utterance_max_new_tokens,
+                    non_streaming_mode=self.non_streaming_mode,
+                ),
+                label="voice_design",
+            )
 
     def on_session_end(self) -> None:
         self.speaker = self._initial_speaker

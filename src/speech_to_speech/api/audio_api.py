@@ -25,6 +25,7 @@ import io
 import json
 import logging
 import threading
+import time
 import wave
 from queue import Queue
 from sys import platform
@@ -32,10 +33,11 @@ from threading import Event
 from typing import Any, Callable
 
 import numpy as np
-from fastapi import FastAPI, File, Form, Response, UploadFile
+from fastapi import FastAPI, File, Form, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from speech_to_speech.pipeline.messages import TTSInput, VADAudio
+from speech_to_speech.utils.model_registry import canonical_device, get_shared_model
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +80,8 @@ def _error_response(status_code: int, message: str, error_type: str) -> Response
 
 def _resolve_device(device: str | None) -> str:
     if device:
-        return device
-    return "mps" if platform == "darwin" else "cuda"
+        return canonical_device(device)
+    return canonical_device("mps" if platform == "darwin" else "cuda")
 
 
 # ── Lazy, lock-serialized model workers ──────────────────────────────────────
@@ -246,6 +248,113 @@ def _synthesize(worker: _Worker, text: str, voice: str | None) -> bytes:
     return worker.run(fn)
 
 
+# ── Streaming ASR (WebSocket) ────────────────────────────────────────────────
+
+_STREAM_WINDOW_SAMPLES = 512
+_PARTIAL_INTERVAL_S = 0.5
+
+
+def _load_silero():
+    import torch
+
+    model, _ = torch.hub.load(
+        "snakers4/silero-vad:master",
+        "silero_vad",
+        trust_repo=True,
+        skip_validation=True,
+    )
+    return model
+
+
+def _make_vad():
+    from speech_to_speech.VAD.vad_iterator import VADIterator
+
+    model = get_shared_model(("vad", "silero", "16000"), _load_silero).load()
+    return VADIterator(
+        model,
+        threshold=0.5,
+        sampling_rate=16000,
+        min_silence_duration_ms=300,
+        speech_pad_ms=30,
+    )
+
+
+class _StreamingTranscriber:
+    """VAD + progressive STT state machine for one WebSocket session.
+
+    Feeds 512-sample windows to a Silero VAD iterator; transcribes the growing
+    speech buffer every ``partial_interval_s`` while speech is active and once
+    more (``final``) when VAD closes the utterance.
+    """
+
+    def __init__(
+        self,
+        transcribe_fn: Callable[[np.ndarray], str],
+        vad: Any,
+        *,
+        partial_interval_s: float = _PARTIAL_INTERVAL_S,
+    ) -> None:
+        self._transcribe = transcribe_fn
+        self._vad = vad
+        self._partial_interval_s = partial_interval_s
+        self._pending = np.zeros(0, dtype=np.float32)
+        self._progressive: list[np.ndarray] = []
+        self._speaking = False
+        self._last_partial_s = 0.0
+
+    def push(self, pcm_int16: np.ndarray) -> list[dict[str, Any]]:
+        """Feed raw int16 PCM samples; return the events to emit."""
+        import torch
+
+        events: list[dict[str, Any]] = []
+        audio = np.concatenate([self._pending, pcm_int16.astype(np.float32) / 32768.0])
+        windowed = (len(audio) // _STREAM_WINDOW_SAMPLES) * _STREAM_WINDOW_SAMPLES
+        if windowed:
+            for window in audio[:windowed].reshape(-1, _STREAM_WINDOW_SAMPLES):
+                window = np.ascontiguousarray(window)
+                was_triggered = self._vad.triggered
+                utterance = self._vad(torch.from_numpy(window))
+                if not was_triggered and self._vad.triggered:
+                    self._speaking = True
+                    self._progressive = []
+                    self._last_partial_s = time.monotonic()
+                    events.append({"type": "speech_started"})
+                if self._vad.triggered:
+                    self._progressive.append(window)
+                if utterance is not None:
+                    full = self._concat(utterance)
+                    if full.size:
+                        events.append({"type": "final", "text": self._transcribe(full)})
+                    self._speaking = False
+                    self._progressive = []
+        self._pending = audio[windowed:].copy()
+
+        if self._speaking and time.monotonic() - self._last_partial_s >= self._partial_interval_s:
+            full = self._concat(self._progressive)
+            if full.size:
+                events.append({"type": "partial", "text": self._transcribe(full)})
+            self._last_partial_s = time.monotonic()
+        return events
+
+    def finish(self) -> list[dict[str, Any]]:
+        """Finalize any pending speech (client sent ``stop``)."""
+        if not self._speaking:
+            return []
+        full = self._concat(self._progressive)
+        self._speaking = False
+        self._progressive = []
+        if not full.size:
+            return []
+        return [{"type": "final", "text": self._transcribe(full)}]
+
+    @staticmethod
+    def _concat(chunks: list[Any]) -> np.ndarray:
+        if not chunks:
+            return np.zeros(0, dtype=np.float32)
+        arrays = [c.numpy() if hasattr(c, "numpy") else np.asarray(c, dtype=np.float32) for c in chunks]
+        return np.concatenate(arrays).astype(np.float32)
+
+
 # ── Mounting ─────────────────────────────────────────────────────────────────
 
 
@@ -261,6 +370,13 @@ def mount_audio_api(app: FastAPI, config: AudioApiConfig | None) -> None:
         reason = "The audio API is disabled. Start the server with --enable_audio_api to enable it."
         for path in ("/v1/audio/transcriptions", "/v1/audio/speech"):
             _mount_unavailable(app, path, reason)
+
+        @app.websocket("/v1/audio/transcriptions/stream")
+        async def unavailable_stream(ws: WebSocket) -> None:
+            await ws.accept()
+            await ws.send_json({"type": "error", "message": reason})
+            await ws.close(code=1008)
+
         return
 
     device = _resolve_device(config.device)
@@ -318,6 +434,58 @@ def mount_audio_api(app: FastAPI, config: AudioApiConfig | None) -> None:
             return _error_response(500, f"Speech synthesis failed: {type(exc).__name__}: {exc}", "server_error")
 
         return Response(content=wav_bytes, status_code=200, media_type="audio/wav")
+
+    @app.websocket("/v1/audio/transcriptions/stream")
+    async def transcription_stream(ws: WebSocket) -> None:
+        """Streaming ASR: binary int16 PCM (16 kHz) in, partial/final text out.
+
+        Query params select the backend: ``model`` (default ``fun-asr-nano``),
+        ``language``, ``hotwords``. Emits ``speech_started``, ``partial``, and
+        ``final`` JSON events; a JSON ``{"type": "stop"}`` text message flushes
+        any in-progress speech as ``final``.
+        """
+        await ws.accept()
+        model = ws.query_params.get("model") or "fun-asr-nano"
+        language = ws.query_params.get("language")
+        hotwords = ws.query_params.get("hotwords")
+
+        if model not in _STT_MODEL_NAMES:
+            await ws.send_json(
+                {"type": "error", "message": f"Unsupported model {model!r}; choose one of: {', '.join(_STT_MODEL_NAMES)}."}
+            )
+            await ws.close(code=1008)
+            return
+
+        worker = stt_worker(model)
+
+        def transcribe(audio_f32: np.ndarray) -> str:
+            return _transcribe(worker, model, audio_f32, hotwords, language)
+
+        session = _StreamingTranscriber(transcribe, _make_vad())
+        try:
+            while True:
+                message = await ws.receive()
+                if message["type"] == "websocket.disconnect":
+                    break
+                data = message.get("bytes")
+                if data is not None:
+                    pcm = np.frombuffer(data, dtype=np.int16)
+                    events = await asyncio.to_thread(session.push, pcm)
+                    for event in events:
+                        await ws.send_json(event)
+                else:
+                    text = message.get("text")
+                    if not text:
+                        continue
+                    try:
+                        control = json.loads(text)
+                    except ValueError:
+                        continue
+                    if control.get("type") == "stop":
+                        for event in await asyncio.to_thread(session.finish):
+                            await ws.send_json(event)
+        except WebSocketDisconnect:
+            pass
 
 
 def _mount_unavailable(app: FastAPI, path: str, reason: str) -> None:

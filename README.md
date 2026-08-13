@@ -340,9 +340,10 @@ Requests are stateless (send the full message list each time) and are proxied to
 With `--enable_audio_api`, the same server also exposes the local STT and TTS models as standalone OpenAI-compatible endpoints for other services to call directly, bypassing the VAD → LLM → TTS pipeline:
 
 * `POST /v1/audio/transcriptions` — multipart `file` (+ optional `model`, `language`, `hotwords`) → `{"text": ...}`. Serves `fun-asr-nano` (default) and `paraformer`.
+* `WS /v1/audio/transcriptions/stream` — streaming ASR: binary int16 PCM (16 kHz) frames in, `speech_started` / `partial` / `final` JSON events out. Select the backend via query params `model`, `language`, `hotwords`; send `{"type": "stop"}` to flush in-progress speech.
 * `POST /v1/audio/speech` — JSON `{"model": "qwen3", "input": "...", "voice": "..."}` → `audio/wav`. Serves `qwen3`.
 
-Models load lazily on first request and are shared across requests (one instance per model, serialized by a lock). The audio API has no authentication and no throttling of its own, exactly like the LLM proxy: enable it only on a trusted network or behind a gateway. Point the OpenAI SDK (or any HTTP client) at the server:
+Model instances are process-wide singletons shared between the audio API and the speech pipeline (a registry keyed by backend/model/device), so running `serve --stt fun-asr-nano` and calling the same model over the API does not load two copies. Models load lazily on first request and each is serialized by a lock. The audio API has no authentication and no throttling of its own, exactly like the LLM proxy: enable it only on a trusted network or behind a gateway. Point the OpenAI SDK (or any HTTP client) at the server:
 
 ```python
 from openai import OpenAI

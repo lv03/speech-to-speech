@@ -12,6 +12,7 @@ from rich.console import Console
 from speech_to_speech.pipeline.handler_types import STTIn, STTOut
 from speech_to_speech.pipeline.messages import PartialTranscription, Transcription
 from speech_to_speech.STT.base_stt_handler import BaseSTTHandler
+from speech_to_speech.utils.model_registry import canonical_device, get_shared_model
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,11 @@ class ParaformerSTTHandler(BaseSTTHandler):
                 "Paraformer STT requires the optional 'paraformer' extra. "
                 "Install it with `pip install speech-to-speech[paraformer]`."
             ) from exc
-        self.model = AutoModel(model=model_name, device=device)
+        self._shared = get_shared_model(
+            ("stt", "paraformer", model_name, canonical_device(device)),
+            lambda: AutoModel(model=model_name, device=device),
+        )
+        self.model = self._shared.load()
         self.warmup()
 
     def _prepare_hotwords(self) -> None:
@@ -172,12 +177,12 @@ class ParaformerSTTHandler(BaseSTTHandler):
         n_steps = 1
         dummy_input = np.array([0] * 512, dtype=np.float32)
         for _ in range(n_steps):
-            _ = self.model.generate(dummy_input)[0]["text"].strip().replace(" ", "")
+            _ = self._shared.run(lambda m: m.generate(dummy_input))[0]["text"].strip().replace(" ", "")
 
     def process(self, vad_audio: STTIn) -> Iterator[STTOut]:
         logger.debug("infering paraformer...")
 
-        pred_text = self.model.generate(vad_audio.audio, **self.gen_kwargs)[0]["text"].strip().replace(" ", "")
+        pred_text = self._shared.run(lambda m: m.generate(vad_audio.audio, **self.gen_kwargs))[0]["text"].strip().replace(" ", "")
         torch.mps.empty_cache()
 
         logger.debug("finished paraformer inference")

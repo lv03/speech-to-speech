@@ -10,6 +10,7 @@ from rich.console import Console
 from speech_to_speech.pipeline.handler_types import STTIn, STTOut
 from speech_to_speech.pipeline.messages import PartialTranscription, Transcription
 from speech_to_speech.STT.base_stt_handler import BaseSTTHandler
+from speech_to_speech.utils.model_registry import canonical_device, get_shared_model
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,11 @@ class FunASRNanoSTTHandler(BaseSTTHandler):
                 "Fun-ASR-Nano STT requires the optional 'paraformer' extra. "
                 "Install it with `pip install speech-to-speech[paraformer]`."
             ) from exc
-        self.model = AutoModel(model=model_name, device=device, hub=hub)
+        self._shared = get_shared_model(
+            ("stt", "fun-asr-nano", model_name, canonical_device(device)),
+            lambda: AutoModel(model=model_name, device=device, hub=hub),
+        )
+        self.model = self._shared.load()
         self.warmup()
 
     def _prepare_hotwords(self) -> None:
@@ -92,7 +97,7 @@ class FunASRNanoSTTHandler(BaseSTTHandler):
         # the model is already loaded and inference may still work.
         dummy_input = torch.zeros(16000, dtype=torch.float32)
         try:
-            _ = self.model.generate(dummy_input, cache={}, batch_size=1)[0]["text"]
+            _ = self._shared.run(lambda m: m.generate(dummy_input, cache={}, batch_size=1))[0]["text"]
         except Exception as exc:
             logger.warning("Fun-ASR-Nano warmup failed: %s", exc)
 
@@ -106,11 +111,13 @@ class FunASRNanoSTTHandler(BaseSTTHandler):
         audio_tensor = torch.from_numpy(audio)
 
         try:
-            result = self.model.generate(
-                audio_tensor,
-                cache={},
-                batch_size=1,
-                **self.gen_kwargs,
+            result = self._shared.run(
+                lambda m: m.generate(
+                    audio_tensor,
+                    cache={},
+                    batch_size=1,
+                    **self.gen_kwargs,
+                )
             )
             pred_text = str(result[0].get("text", "")).strip()
         except Exception as exc:

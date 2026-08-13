@@ -3,6 +3,7 @@ import numpy as np
 from speech_to_speech.pipeline.messages import PartialTranscription, Transcription, VADAudio
 from speech_to_speech.STT import paraformer_handler
 from speech_to_speech.STT.paraformer_handler import ParaformerSTTHandler
+from speech_to_speech.utils.model_registry import SharedModel
 
 
 class _FakeParaformerModel:
@@ -12,7 +13,8 @@ class _FakeParaformerModel:
 
 def _handler():
     handler = object.__new__(ParaformerSTTHandler)
-    handler.model = _FakeParaformerModel()
+    handler.gen_kwargs = {}
+    handler._shared = SharedModel(lambda: _FakeParaformerModel())
     return handler
 
 
