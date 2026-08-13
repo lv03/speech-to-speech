@@ -133,3 +133,23 @@ def test_chunk_streaming_buffers_partial_stride():
     events = session.push(np.ones(4800, dtype=np.int16))
     assert any(e["type"] == "partial" and e["text"] == "开" for e in events)
     assert session.finish() == [{"type": "final", "text": "开"}]
+
+
+def test_chunk_streaming_uses_offline_finalize_when_provided():
+    model, session = _chunk_session(tokens=("开", "放"))
+    # Attach an offline finalizer that returns a clean transcript for the
+    # accumulated audio (dual-path hybrid).
+    finalized = []
+
+    def finalize(audio_f32):
+        finalized.append(audio_f32)
+        return "开放时间"
+
+    session._finalize = finalize
+
+    session.push(np.ones(9600, dtype=np.int16) * 1000)
+    session.push(np.ones(9600, dtype=np.int16) * 1000)
+
+    assert session.finish() == [{"type": "final", "text": "开放时间"}]
+    assert len(finalized) == 1
+    assert finalized[0].size == 2 * 9600  # the full accumulated audio, not chunks

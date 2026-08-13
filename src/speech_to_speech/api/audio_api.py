@@ -360,30 +360,37 @@ class _StreamingTranscriber:
 
 
 class _ChunkStreamingTranscriber:
-    """True chunk streaming via paraformer-zh-online (incremental cache decode).
+    """True chunk streaming (paraformer-zh-online) with an offline final pass.
 
-    Each ``generate`` call returns only the tokens decoded since the previous
-    chunk; these are accumulated into a growing transcript. Chunk-boundary
-    overlap is inherent to the streaming CIF predictor, so the accumulated text
-    is a live preview, not a clean final transcript.
+    Each online ``generate`` call returns only the tokens decoded since the
+    previous chunk; these are accumulated into a growing, low-latency ``partial``
+    transcript. On ``finish``, if a ``finalize_fn`` is provided, the complete
+    accumulated audio is re-transcribed offline for a clean ``final`` result
+    (the recommended dual-path approach); otherwise the accumulated incremental
+    text is returned as-is.
     """
 
     def __init__(
         self,
         generate_fn: Callable[..., Any],
+        finalize_fn: Callable[[np.ndarray], str] | None = None,
         *,
         chunk_size: tuple[int, int, int] = _ONLINE_CHUNK_SIZE,
     ) -> None:
         self._generate = generate_fn  # (audio_f32, cache, is_final) -> list[dict]
+        self._finalize = finalize_fn  # (full_audio_f32) -> clean final text
         self._chunk_size = chunk_size
         self._stride = chunk_size[1] * 960
         self._cache: dict[str, Any] = {}
         self._pending = np.zeros(0, dtype=np.float32)
+        self._full_audio: list[np.ndarray] = []
         self._accumulated = ""
 
     def push(self, pcm_int16: np.ndarray) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
-        audio = np.concatenate([self._pending, pcm_int16.astype(np.float32) / 32768.0])
+        audio_new = pcm_int16.astype(np.float32) / 32768.0
+        self._full_audio.append(audio_new)
+        audio = np.concatenate([self._pending, audio_new])
         windowed = (len(audio) // self._stride) * self._stride
         for start in range(0, windowed, self._stride):
             res = self._generate(audio[start : start + self._stride], self._cache, False)
@@ -395,14 +402,19 @@ class _ChunkStreamingTranscriber:
         return events
 
     def finish(self) -> list[dict[str, Any]]:
-        if self._pending.size:
-            res = self._generate(self._pending, self._cache, True)
-            text = (res[0].get("text") if res else "") or ""
-            if text:
-                self._accumulated += text
+        if self._finalize is not None and self._full_audio:
+            full = np.concatenate(self._full_audio).astype(np.float32)
+            result = self._finalize(full)
+        else:
+            if self._pending.size:
+                res = self._generate(self._pending, self._cache, True)
+                text = (res[0].get("text") if res else "") or ""
+                if text:
+                    self._accumulated += text
+            result = self._accumulated
         self._pending = np.zeros(0, dtype=np.float32)
         self._cache = {}
-        result = self._accumulated
+        self._full_audio = []
         self._accumulated = ""
         return [{"type": "final", "text": result}] if result else []
 
@@ -495,8 +507,9 @@ def mount_audio_api(app: FastAPI, config: AudioApiConfig | None) -> None:
         ``language``, ``hotwords``. Emits ``speech_started``, ``partial``, and
         ``final`` JSON events; a JSON ``{"type": "stop"}`` text message flushes
         any in-progress speech as ``final``. ``model=paraformer-online`` uses
-        true chunk streaming (incremental cache decoding) rather than the VAD +
-        re-transcription path used by the other backends.
+        true chunk streaming (incremental cache decoding) for low-latency
+        partials and an offline model (``final_model``, default
+        ``fun-asr-nano``) for the clean final result.
         """
         await ws.accept()
         model = ws.query_params.get("model") or "fun-asr-nano"
@@ -513,6 +526,14 @@ def mount_audio_api(app: FastAPI, config: AudioApiConfig | None) -> None:
         if model == "paraformer-online":
             from funasr import AutoModel
 
+            final_model = ws.query_params.get("final_model") or "fun-asr-nano"
+            if final_model not in _STT_MODEL_NAMES:
+                await ws.send_json(
+                    {"type": "error", "message": f"Unsupported final_model {final_model!r}; choose one of: {', '.join(_STT_MODEL_NAMES)}."}
+                )
+                await ws.close(code=1008)
+                return
+
             shared = get_shared_model(
                 ("stt", "paraformer-online", _STREAM_ONLINE_MODEL, canonical_device(device)),
                 lambda: AutoModel(model=_STREAM_ONLINE_MODEL, device=device),
@@ -523,7 +544,12 @@ def mount_audio_api(app: FastAPI, config: AudioApiConfig | None) -> None:
                     lambda m: m.generate(input=audio_f32, cache=cache, is_final=is_final, chunk_size=_ONLINE_CHUNK_SIZE)
                 )
 
-            session: _StreamingTranscriber | _ChunkStreamingTranscriber = _ChunkStreamingTranscriber(generate_chunk)
+            final_worker = stt_worker(final_model)
+
+            def finalize(audio_f32: np.ndarray) -> str:
+                return _transcribe(final_worker, final_model, audio_f32, hotwords, language)
+
+            session: _StreamingTranscriber | _ChunkStreamingTranscriber = _ChunkStreamingTranscriber(generate_chunk, finalize)
         else:
             worker = stt_worker(model)
 
