@@ -1,6 +1,6 @@
 import numpy as np
 
-from speech_to_speech.api.audio_api import _StreamingTranscriber
+from speech_to_speech.api.audio_api import _ChunkStreamingTranscriber, _StreamingTranscriber
 
 
 class _FakeVAD:
@@ -88,3 +88,48 @@ def test_streaming_buffers_sub_window_chunks():
         events.extend(session.push(np.ones(100, dtype=np.int16)))
 
     assert any(e["type"] == "final" for e in events)
+
+
+class _FakeOnlineModel:
+    """Fake paraformer-zh-online: returns one token per chunk, in order."""
+
+    def __init__(self, tokens=("开", "放", "时")):
+        self.tokens = list(tokens)
+        self.calls = []
+
+    def generate(self, input, cache=None, is_final=False, chunk_size=None):
+        self.calls.append((input, is_final))
+        if is_final:
+            return [{"text": ""}]
+        if not self.tokens:
+            return [{"text": ""}]
+        return [{"text": self.tokens.pop(0)}]
+
+
+def _chunk_session(tokens=("开", "放", "时"), stride=9600):
+    model = _FakeOnlineModel(tokens)
+    session = _ChunkStreamingTranscriber(lambda a, c, f: model.generate(input=a, cache=c, is_final=f), chunk_size=(0, 10, 5))
+    session._stride = stride
+    return model, session
+
+
+def test_chunk_streaming_accumulates_incremental_text():
+    model, session = _chunk_session(tokens=("开", "放"))
+
+    events = []
+    events.extend(session.push(np.ones(9600, dtype=np.int16) * 1000))
+    events.extend(session.push(np.ones(9600, dtype=np.int16) * 1000))
+
+    assert [e["text"] for e in events if e["type"] == "partial"] == ["开", "开放"]
+    assert session.finish() == [{"type": "final", "text": "开放"}]
+
+
+def test_chunk_streaming_buffers_partial_stride():
+    model, session = _chunk_session(tokens=("开",))
+
+    # Only half a stride: no chunk is processed yet.
+    assert session.push(np.ones(4800, dtype=np.int16)) == []
+    # Second half completes a stride and emits a partial.
+    events = session.push(np.ones(4800, dtype=np.int16))
+    assert any(e["type"] == "partial" and e["text"] == "开" for e in events)
+    assert session.finish() == [{"type": "final", "text": "开"}]

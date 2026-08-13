@@ -45,6 +45,10 @@ PIPELINE_SR = 16000
 
 # The STT backends this API serves, in a stable order for error messages.
 _STT_MODEL_NAMES = ("fun-asr-nano", "paraformer")
+# Additional backend accepted only by the streaming WebSocket endpoint.
+_STREAM_MODEL_NAMES = ("fun-asr-nano", "paraformer", "paraformer-online")
+_STREAM_ONLINE_MODEL = "iic/speech_paraformer_asr_nat-zh-cn-16k-common-vocab8404-online"
+_ONLINE_CHUNK_SIZE = (0, 10, 5)
 
 
 class AudioApiConfig(BaseModel):
@@ -355,6 +359,54 @@ class _StreamingTranscriber:
         return np.concatenate(arrays).astype(np.float32)
 
 
+class _ChunkStreamingTranscriber:
+    """True chunk streaming via paraformer-zh-online (incremental cache decode).
+
+    Each ``generate`` call returns only the tokens decoded since the previous
+    chunk; these are accumulated into a growing transcript. Chunk-boundary
+    overlap is inherent to the streaming CIF predictor, so the accumulated text
+    is a live preview, not a clean final transcript.
+    """
+
+    def __init__(
+        self,
+        generate_fn: Callable[..., Any],
+        *,
+        chunk_size: tuple[int, int, int] = _ONLINE_CHUNK_SIZE,
+    ) -> None:
+        self._generate = generate_fn  # (audio_f32, cache, is_final) -> list[dict]
+        self._chunk_size = chunk_size
+        self._stride = chunk_size[1] * 960
+        self._cache: dict[str, Any] = {}
+        self._pending = np.zeros(0, dtype=np.float32)
+        self._accumulated = ""
+
+    def push(self, pcm_int16: np.ndarray) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        audio = np.concatenate([self._pending, pcm_int16.astype(np.float32) / 32768.0])
+        windowed = (len(audio) // self._stride) * self._stride
+        for start in range(0, windowed, self._stride):
+            res = self._generate(audio[start : start + self._stride], self._cache, False)
+            text = (res[0].get("text") if res else "") or ""
+            if text:
+                self._accumulated += text
+                events.append({"type": "partial", "text": self._accumulated})
+        self._pending = audio[windowed:].copy()
+        return events
+
+    def finish(self) -> list[dict[str, Any]]:
+        if self._pending.size:
+            res = self._generate(self._pending, self._cache, True)
+            text = (res[0].get("text") if res else "") or ""
+            if text:
+                self._accumulated += text
+        self._pending = np.zeros(0, dtype=np.float32)
+        self._cache = {}
+        result = self._accumulated
+        self._accumulated = ""
+        return [{"type": "final", "text": result}] if result else []
+
+
 # ── Mounting ─────────────────────────────────────────────────────────────────
 
 
@@ -442,26 +494,44 @@ def mount_audio_api(app: FastAPI, config: AudioApiConfig | None) -> None:
         Query params select the backend: ``model`` (default ``fun-asr-nano``),
         ``language``, ``hotwords``. Emits ``speech_started``, ``partial``, and
         ``final`` JSON events; a JSON ``{"type": "stop"}`` text message flushes
-        any in-progress speech as ``final``.
+        any in-progress speech as ``final``. ``model=paraformer-online`` uses
+        true chunk streaming (incremental cache decoding) rather than the VAD +
+        re-transcription path used by the other backends.
         """
         await ws.accept()
         model = ws.query_params.get("model") or "fun-asr-nano"
         language = ws.query_params.get("language")
         hotwords = ws.query_params.get("hotwords")
 
-        if model not in _STT_MODEL_NAMES:
+        if model not in _STREAM_MODEL_NAMES:
             await ws.send_json(
-                {"type": "error", "message": f"Unsupported model {model!r}; choose one of: {', '.join(_STT_MODEL_NAMES)}."}
+                {"type": "error", "message": f"Unsupported model {model!r}; choose one of: {', '.join(_STREAM_MODEL_NAMES)}."}
             )
             await ws.close(code=1008)
             return
 
-        worker = stt_worker(model)
+        if model == "paraformer-online":
+            from funasr import AutoModel
 
-        def transcribe(audio_f32: np.ndarray) -> str:
-            return _transcribe(worker, model, audio_f32, hotwords, language)
+            shared = get_shared_model(
+                ("stt", "paraformer-online", _STREAM_ONLINE_MODEL, canonical_device(device)),
+                lambda: AutoModel(model=_STREAM_ONLINE_MODEL, device=device),
+            )
 
-        session = _StreamingTranscriber(transcribe, _make_vad())
+            def generate_chunk(audio_f32: np.ndarray, cache: dict, is_final: bool) -> list[dict]:
+                return shared.run(
+                    lambda m: m.generate(input=audio_f32, cache=cache, is_final=is_final, chunk_size=_ONLINE_CHUNK_SIZE)
+                )
+
+            session: _StreamingTranscriber | _ChunkStreamingTranscriber = _ChunkStreamingTranscriber(generate_chunk)
+        else:
+            worker = stt_worker(model)
+
+            def transcribe(audio_f32: np.ndarray) -> str:
+                return _transcribe(worker, model, audio_f32, hotwords, language)
+
+            session = _StreamingTranscriber(transcribe, _make_vad())
+
         try:
             while True:
                 message = await ws.receive()
