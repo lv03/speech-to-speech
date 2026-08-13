@@ -80,6 +80,7 @@ def _mac_preset_defaults(llm_backend: str) -> dict[str, Any]:
         "tts": "qwen3",
         "stt_device": "mps",
         "paraformer_stt_device": "mps",
+        "fun_asr_nano_stt_device": "mps",
         "facebook_mms_device": "mps",
         "qwen3_tts_device": "mps",
     }

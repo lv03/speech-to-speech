@@ -10,6 +10,7 @@ This document summarizes the Speech-to-Text (STT) implementations in the `STT/` 
 - `faster-whisper` → `STT/faster_whisper_handler.py`
 - `parakeet-tdt` → `STT/parakeet_tdt_handler.py`
 - `paraformer` → `STT/paraformer_handler.py`
+- `fun-asr-nano` → `STT/fun_asr_nano_handler.py`
 
 ## Language Support by Handler
 
@@ -74,6 +75,23 @@ This document summarizes the Speech-to-Text (STT) implementations in the `STT/` 
 - Practical support:
   - Depends on selected FunASR model checkpoint
   - Default setup is Chinese-oriented (`zh`)
+
+### 7) Fun-ASR-Nano (`--stt fun-asr-nano`)
+
+- Handler: `FunASRNanoSTTHandler`
+- Model flag: `--fun_asr_nano_stt_model_name`
+- Default model: `FunAudioLLM/Fun-ASR-Nano-2512` (HuggingFace)
+- Device flag: `--fun_asr_nano_stt_device` (`cuda`, `mps`, or `cpu`)
+- Hub flag: `--fun_asr_nano_stt_hub` (`hf` or `ms`)
+- Language flag: `--fun_asr_nano_stt_gen_language` (e.g. `中文`, `en`, `auto`)
+- Hotwords: `--fun_asr_nano_stt_gen_hotword` (space-separated) or
+  `--fun_asr_nano_stt_gen_hotword_file` (one term per line)
+- Practical support:
+  - LLM-based ASR (~0.8B): zh/en/ja plus 7 Chinese dialect groups and 26 accents
+  - 31-language coverage requires the separate `FunAudioLLM/Fun-ASR-MLT-Nano-2512` checkpoint
+  - Requires `funasr>=1.4.0` (installed via `pip install speech-to-speech[paraformer]`)
+  - GPU recommended; the PyTorch CPU path runs ~3.6x realtime
+  - No reliable character-level timestamps (upstream issue #106)
 
 ## Language Abbreviations (ISO-style codes seen in STT handlers)
 
@@ -160,4 +178,19 @@ speech-to-speech serve --stt parakeet-tdt \
 
 ```bash
 speech-to-speech serve --stt paraformer --paraformer_stt_model_name paraformer-zh
+```
+
+### Fun-ASR-Nano
+
+```bash
+speech-to-speech serve --stt fun-asr-nano \
+  --fun_asr_nano_stt_device cuda \
+  --fun_asr_nano_stt_gen_language 中文 \
+  --fun_asr_nano_stt_gen_hotword "开放时间 脐腐病"
+```
+
+On Apple Silicon the macOS preset defaults the device to MPS:
+
+```bash
+speech-to-speech serve --stt fun-asr-nano --mac-optimal-settings
 ```
