@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import logging
 from typing import Any, Iterator
 
@@ -15,6 +17,26 @@ from speech_to_speech.utils.model_registry import canonical_device, get_shared_m
 logger = logging.getLogger(__name__)
 
 console = Console()
+
+
+def _load_fun_asr_model(auto_model_cls: Any, model_name: str, device: str, hub: str) -> Any:
+    """Load the FunASR model while silencing its per-key checkpoint warnings.
+
+    Fun-ASR-Nano ships without CTC-decoder weights, so funasr prints a
+    ``Warning, miss key in ckpt: ...`` line (via ``print``, not ``logging``)
+    for each of the ~86 missing tensors during load. Capture that stdout noise
+    and drop it; the load itself still succeeds and the useful
+    ``Loading ckpt ... All keys matched`` log line still goes through logging.
+    """
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        return auto_model_cls(
+            model=model_name,
+            device=device,
+            hub=hub,
+            disable_update=True,
+            disable_pbar=True,
+        )
 
 
 class FunASRNanoSTTHandler(BaseSTTHandler):
@@ -48,7 +70,7 @@ class FunASRNanoSTTHandler(BaseSTTHandler):
             ) from exc
         self._shared = get_shared_model(
             ("stt", "fun-asr-nano", model_name, canonical_device(device)),
-            lambda: AutoModel(model=model_name, device=device, hub=hub),
+            lambda: _load_fun_asr_model(AutoModel, model_name, device, hub),
         )
         self.model = self._shared.load()
         self.warmup()
