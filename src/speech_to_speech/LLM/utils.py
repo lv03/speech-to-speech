@@ -83,7 +83,11 @@ def sent_tokenize(text: str) -> list[str]:
     sat = _get_sat()
     if sat is not None:
         try:
-            return list(sat.split(text))
+            # SaT keeps trailing whitespace on each segment (e.g. "Hello. "),
+            # while nltk's sent_tokenize strips it. Normalize to match nltk so
+            # the whitespace-preserving stream batching in the LLM handlers does
+            # not double spaces when re-joining sentences.
+            return [sentence.strip() for sentence in sat.split(text) if sentence.strip()]
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "SaT split failed (%s: %s); falling back to nltk", type(exc).__name__, exc,
