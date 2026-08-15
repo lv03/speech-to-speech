@@ -296,6 +296,12 @@ def setup_logger(log_level: str) -> None:
 
     logger = logging.getLogger(__name__)
 
+    # Silence noisy third-party loggers (httpx logs every HTTP request at INFO).
+    # In debug mode we keep them so request/response bodies stay inspectable.
+    if log_level != "debug":
+        for _noisy in ("httpx", "httpcore", "openai", "huggingface_hub"):
+            logging.getLogger(_noisy).setLevel(logging.WARNING)
+
     # torch compile logs
     if log_level == "debug":
         torch._logging.set_logs(graph_breaks=True, recompiles=True, cudagraphs=True)
