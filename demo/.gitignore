@@ -15,6 +15,10 @@ __pycache__/
 .venv/
 venv/
 
+# Node dependencies and the vendored SDK bundle they produce
+node_modules/
+vendor/
+
 # Local-only replica deploy script (never tracked)
 deploy_replica.py
 

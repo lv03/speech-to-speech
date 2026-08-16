@@ -194,6 +194,38 @@ with connect(url) as ws:
 
 ---
 
+## 7.5 安全门卫：唤醒词 + 声纹（Security Gate）
+
+不想让别人使用？给流水线加门卫：上锁时对一切输入静默，只有**已注册说话人说出唤醒词**
+才解锁对话，解锁后助手语音确认一句；会话结束或麦克风安静超过超时时间自动重锁。
+详见 [`src/speech_to_speech/security/README.md`](../src/speech_to_speech/security/README.md)。
+
+```bash
+# 1) 注册声纹（麦克风录 3 遍唤醒词）
+speech-to-speech voiceprint enroll
+
+# 2) 验证分数（确认阈值合适）
+speech-to-speech voiceprint verify
+
+# 3) 启动（远程 LLM + 门卫）
+speech-to-speech serve \
+  --stt paraformer --paraformer_stt_device cpu \
+  --llm_backend chat-completions --model_name Qwen3.6 \
+  --responses_api_base_url https://llm.example.com/v1 --responses_api_api_key none \
+  --tts qwen3 \
+  --enable_wake_word --wake_word 噜噜噜噜 \
+  --enable_voiceprint --voiceprint_threshold 0.60 \
+  --security_timeout_s 60
+```
+
+关键参数：`--enable_wake_word`（总开关）、`--enable_voiceprint`（声纹）、
+`--voiceprint_threshold`（相似度阈值，默认 0.75，真人建议 0.60 起）、
+`--security_timeout_s`（安静多少秒重锁）、`--unlock_acknowledgment`（解锁确认语，空串=静默）。
+
+三个相关模型（KWS / ERes2NetV2 声纹 / SaT 分句）都在**服务启动时预热**，对话中无冷启动。
+
+---
+
 ## 8. 常见组合示例
 
 ```bash

@@ -187,7 +187,7 @@ enable_live_transcription / live_transcription_update_interval
 5. _build_pipeline_unit × num_pipelines:
      deepcopy 配置 → 建队列/Event/CancelScope/SpeculativeTurnTracker
      → RealtimeService(每单元独立 Chat)
-     → _build_handlers: VAD → [STT(+Notifier)] → LLM → LMOutputProcessor → TTS
+     → _build_handlers: [SecurityGate(可选)] → VAD → [STT(+Notifier)] → LLM → LMOutputProcessor → TTS
      → PipelineUnit
 6. RealtimeServer(池) → (local 模式 + RealtimeAudioClient)
 7. ThreadManager(handlers + server) → 注册 SIGINT/SIGTERM

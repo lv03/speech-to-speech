@@ -30,6 +30,7 @@
 | `STT/` | 语音转写后端、渐进式流式转写、转写通知器（详见 [STT 模块详解](stt.md)） |
 | `TTS/` | 语音合成后端（详见 [TTS 模块详解](tts.md)） |
 | `VAD/` | 语音活动检测（Silero VAD v5）、智能回合终结（详见 [VAD 模块详解](vad.md)） |
+| `security/` | 安全门卫（唤醒词 + 声纹，可选，插在 VAD 之前）（详见 [security/README.md](../src/speech_to_speech/security/README.md)） |
 | `api/openai_realtime/` | OpenAI Realtime API 兼容层（服务、路由、传输、代理、客户端）（详见 [realtime-api.md](realtime-api.md)） |
 | `utils/` | 线程管理、MLX 全局锁、日志上下文 |
 
@@ -38,9 +39,9 @@
 ## 2. 总体架构：四段式级联管线
 
 ```
-  用户音频 → [VAD] → [STT] → [LLM] → [TTS] → 合成音频 → 用户
-            Silero    转写     生成      语音合成
-            VAD v5    文本     回复      并流式返回
+  用户音频 → [安全门卫(可选)] → [VAD] → [STT] → [LLM] → [TTS] → 合成音频 → 用户
+              唤醒词+声纹       Silero    转写     生成      语音合成
+              上锁时吞掉音频     VAD v5    文本     回复      并流式返回
 ```
 
 每一阶段是一个 `BaseHandler` 子类，运行在**独立线程**中：

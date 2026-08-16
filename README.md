@@ -197,6 +197,7 @@ Select implementations with `--stt`, `--llm_backend`, and `--tts`. The CLI const
 | `serve` | Runs the pipeline server over OpenAI Realtime WebSocket and WebRTC. | You are building an app or device against the API. |
 | `talk --url <full-realtime-url>` | Runs the packaged microphone/speaker client. | You want to talk to an existing Realtime server. |
 | `local` | Composes `serve` and `talk` in-process over loopback. | You want to run the server and talk to it from one command. |
+| `voiceprint enroll` / `verify` / `info` | Enrolls or checks a speaker voiceprint for the security gate. | You want the assistant to unlock only for your voice. |
 
 `serve` binds to `127.0.0.1` by default; pass `--host 0.0.0.0` explicitly for network exposure. `local` always binds to loopback and connects the same packaged client at `ws://127.0.0.1:<port>/v1/realtime`.
 
@@ -268,6 +269,28 @@ python scripts/benchmark_tts.py \
     --iterations 3 \
     --qwen3_mlx_quantizations bf16 4bit 6bit 8bit
 ```
+
+### Security Gate (Wake Word + Voiceprint)
+
+Lock the pipeline behind a wake word and a speaker voiceprint: while locked, the
+assistant stays completely silent (audio is swallowed and text/response triggers
+are dropped), and only the enrolled speaker saying the wake word unlocks it. On
+unlock the assistant audibly confirms ("我在，请说。" by default), and the gate
+re-locks after the microphone has been quiet for `--security_timeout_s` or when
+the session ends.
+
+```bash
+# 1. Enroll the speaker's voice (record the wake word three times)
+speech-to-speech voiceprint enroll
+
+# 2. Serve with the gate enabled
+speech-to-speech serve \
+    --enable_wake_word --wake_word 噜噜噜噜 \
+    --enable_voiceprint \
+    --voiceprint_threshold 0.60 --security_timeout_s 60
+```
+
+Full documentation (models, tuning, limitations): [Security gate](./src/speech_to_speech/security/README.md).
 
 ### Docker
 
@@ -613,6 +636,7 @@ See [ModuleArguments](./src/speech_to_speech/arguments_classes/module_arguments.
 - TTS implementation (`--tts`)
 - logging level
 - realtime pipeline pool size (`--num_pipelines`)
+- security gate: `--enable_wake_word`, `--wake_word`, `--enable_voiceprint`, `--voiceprint_enrollment`, `--voiceprint_threshold`, `--security_timeout_s`, `--unlock_acknowledgment` (see [Security gate](./src/speech_to_speech/security/README.md))
 
 ### VAD Parameters
 
