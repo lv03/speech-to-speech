@@ -72,6 +72,16 @@ def _get_sat() -> Any:
     return _sat
 
 
+def preload_sat() -> None:
+    """Load the SaT segmenter eagerly.
+
+    Called during pipeline construction so the first conversational turn does
+    not pay the multi-second lazy load; the cached loader makes this a no-op
+    on every later call.
+    """
+    _get_sat()
+
+
 def sent_tokenize(text: str) -> list[str]:
     """Segment *text* into sentences, multilingual.
 

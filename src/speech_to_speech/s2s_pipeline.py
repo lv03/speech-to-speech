@@ -333,6 +333,8 @@ def prepare_module_args(module_kwargs: ModuleArguments, llm_backend: BackendSele
             f"The LLM proxy requires a backend with proxy support; choose one of: {supported}. "
             f"Got {llm_backend.name!r}."
         )
+    if module_kwargs.enable_voiceprint and not module_kwargs.enable_wake_word:
+        raise ValueError("--enable_voiceprint requires --enable_wake_word (the voiceprint is verified on the wake word).")
     if platform == "darwin":
         check_mac_settings(module_kwargs)
 
@@ -375,9 +377,32 @@ def _build_handlers(
     """Build a handler chain: VAD → STT/AudioInput → LM → TTS."""
     from speech_to_speech.LLM.lm_output_processor import LMOutputProcessor
 
+    vad_queue_in: Queue[Any] = recv_audio_chunks_queue
+    gate = None
+    if module_kwargs.enable_wake_word:
+        from speech_to_speech.security.gate import SecurityGateHandler
+
+        enrollment = module_kwargs.voiceprint_enrollment
+        if module_kwargs.enable_voiceprint and enrollment is None:
+            enrollment = str(Path.home() / ".cache" / "speech_to_speech" / "voiceprint" / "default.npz")
+        gate_queue: Queue[Any] = Queue()
+        gate = SecurityGateHandler(
+            stop_event,
+            queue_in=recv_audio_chunks_queue,
+            queue_out=gate_queue,
+            setup_kwargs={
+                "wake_word": module_kwargs.wake_word,
+                "voiceprint_enrollment": enrollment if module_kwargs.enable_voiceprint else None,
+                "voiceprint_threshold": module_kwargs.voiceprint_threshold,
+                "security_timeout_s": module_kwargs.security_timeout_s,
+                "unlock_acknowledgment": module_kwargs.unlock_acknowledgment,
+            },
+        )
+        vad_queue_in = gate_queue
+
     vad = VADHandler(
         stop_event,
-        queue_in=recv_audio_chunks_queue,
+        queue_in=vad_queue_in,
         queue_out=spoken_prompt_queue,
         setup_args=(should_listen,),
         setup_kwargs={
@@ -455,7 +480,7 @@ def _build_handlers(
         tts_context,
     )
 
-    return [vad, *speech_input_handlers, lm, lm_processor, tts]
+    return [*(gate and [gate] or []), vad, *speech_input_handlers, lm, lm_processor, tts]
 
 
 def _build_pipeline_unit(
@@ -532,6 +557,12 @@ def _build_pipeline_unit(
     )
     for h in handlers:
         h.pipeline_index = index
+
+    # Warm the multilingual sentence segmenter (SaT) during startup so the
+    # first conversational turn does not pay its multi-second lazy load.
+    from speech_to_speech.LLM.utils import preload_sat
+
+    preload_sat()
 
     return PipelineUnit(
         index=index,

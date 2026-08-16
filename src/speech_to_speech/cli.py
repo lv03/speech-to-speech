@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, Literal
+
+import numpy as np
 
 from speech_to_speech.api.openai_realtime.audio_client import (
     RealtimeAudioClientConfig,
     load_realtime_tool_module,
     run_realtime_audio_client,
 )
+from speech_to_speech.security.voiceprint import SAMPLE_RATE, Voiceprint, VoiceprintProfile
+from speech_to_speech.security.wake_word import DEFAULT_WAKE_WORD, crop_last_speech_burst
 
-Command = Literal["serve", "talk", "local"]
+Command = Literal["serve", "talk", "local", "voiceprint"]
 
 _LEGACY_MODE_COMMANDS: dict[str, Command] = {
     "realtime": "serve",
@@ -28,6 +34,7 @@ def _command_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("serve", add_help=False, help="Run the Realtime pipeline server.")
     subparsers.add_parser("talk", add_help=False, help="Connect microphone and speakers to a Realtime URL.")
     subparsers.add_parser("local", add_help=False, help="Run the server and audio client together over loopback.")
+    subparsers.add_parser("voiceprint", add_help=False, help="Enroll or verify a speaker voiceprint.")
     return parser
 
 
@@ -70,7 +77,7 @@ def parse_command(argv: Sequence[str] | None = None) -> tuple[Command, list[str]
     if command_args[0] in {"-h", "--help"}:
         parser.print_help()
         raise SystemExit(0)
-    if command_args[0] not in {"serve", "talk", "local"}:
+    if command_args[0] not in {"serve", "talk", "local", "voiceprint"}:
         legacy_mode, remaining = _extract_legacy_mode(command_args, parser)
         if legacy_mode is not None:
             legacy_command = _LEGACY_MODE_COMMANDS.get(legacy_mode)
@@ -86,8 +93,8 @@ def parse_command(argv: Sequence[str] | None = None) -> tuple[Command, list[str]
             )
             return legacy_command, remaining
     command = command_args[0]
-    if command not in {"serve", "talk", "local"}:
-        parser.error(f"unknown command {command!r}; choose serve, talk, or local")
+    if command not in {"serve", "talk", "local", "voiceprint"}:
+        parser.error(f"unknown command {command!r}; choose serve, talk, local, or voiceprint")
     return command, command_args[1:]  # type: ignore[return-value]
 
 
@@ -166,10 +173,99 @@ def parse_talk_arguments(argv: Sequence[str]) -> RealtimeAudioClientConfig:
     )
 
 
+def _default_voiceprint_path(name: str | None) -> Path:
+    directory = Path.home() / ".cache" / "speech_to_speech" / "voiceprint"
+    return directory / f"{name or 'default'}.npz"
+
+
+def _record_voiceprint_take(duration_s: float = 2.5) -> np.ndarray:
+    """Record one microphone take at 16 kHz mono and return float32 samples."""
+    import sounddevice as sd
+
+    for second in (3, 2, 1):
+        print(f"  {second}...", flush=True)
+        time.sleep(1.0)
+    print("  录音中...", flush=True)
+    recording = sd.rec(int(duration_s * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype="int16")
+    sd.wait()
+    audio = recording.squeeze().astype(np.float32) / 32768.0
+    duration = len(audio) / SAMPLE_RATE
+    peak = float(np.abs(audio).max())
+    print(f"  完成（{duration:.1f}s，峰值 {peak:.2f}）", flush=True)
+    return audio
+
+
+def run_voiceprint_command(command_args: list[str]) -> None:
+    """Handle the ``speech-to-speech voiceprint`` subcommand family."""
+    parser = argparse.ArgumentParser(
+        prog="speech-to-speech voiceprint",
+        description="Enroll or verify a speaker voiceprint (3D-Speaker ERes2NetV2).",
+    )
+    subparsers = parser.add_subparsers(dest="action", metavar="ACTION", required=True)
+    enroll_parser = subparsers.add_parser("enroll", help="Record microphone takes and save a voiceprint profile.")
+    enroll_parser.add_argument("--name", default="default", help="Profile name (used in the default output path).")
+    enroll_parser.add_argument("--takes", type=int, default=3, help="Number of enrollment takes. Default is 3.")
+    enroll_parser.add_argument("--wake-word", default=DEFAULT_WAKE_WORD, help="Wake word to record. Default is 噜噜噜噜.")
+    enroll_parser.add_argument("--output", type=Path, default=None, help="Output .npz path.")
+    verify_parser = subparsers.add_parser("verify", help="Record one take and score it against a profile.")
+    verify_parser.add_argument("--profile", type=Path, default=None, help="Profile path. Defaults to the default profile.")
+    verify_parser.add_argument("--threshold", type=float, default=None, help="Acceptance threshold for the verdict.")
+    info_parser = subparsers.add_parser("info", help="Show a stored profile's metadata.")
+    info_parser.add_argument("--profile", type=Path, default=None, help="Profile path. Defaults to the default profile.")
+
+    namespace = parser.parse_args(command_args)
+
+    if namespace.action == "enroll":
+        if namespace.takes < 1:
+            parser.error("--takes must be at least 1")
+        output = namespace.output or _default_voiceprint_path(namespace.name)
+        print(f"声纹注册：将录 {namespace.takes} 遍唤醒词「{namespace.wake_word}」")
+        extractor = Voiceprint()
+        takes: list[np.ndarray] = []
+        for index in range(1, namespace.takes + 1):
+            print(f"\n第 {index}/{namespace.takes} 次：请在倒计时结束后说出「{namespace.wake_word}」")
+            # Crop each take with the same energy trim the live gate uses, so
+            # enrollment and verification embed the same kind of audio.
+            takes.append(crop_last_speech_burst(_record_voiceprint_take()))
+        profile = extractor.enroll(takes, wake_word=namespace.wake_word)
+        profile.save(output)
+        print(f"\n注册完成，已保存到 {output}")
+        return
+
+    profile_path = namespace.profile or _default_voiceprint_path(None)
+    if not Path(profile_path).is_file():
+        parser.error(f"声纹档案不存在: {profile_path}（先用 `speech-to-speech voiceprint enroll` 注册）")
+
+    if namespace.action == "info":
+        profile = VoiceprintProfile.load(profile_path)
+        print(f"档案: {profile_path}")
+        print(f"  模型: {profile.model_name}")
+        print(f"  唤醒词: {profile.wake_word}")
+        print(f"  注册遍数: {profile.takes}")
+        print(f"  创建时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(profile.created_at))}")
+        return
+
+    if namespace.action == "verify":
+        profile = VoiceprintProfile.load(profile_path)
+        threshold = namespace.threshold if namespace.threshold is not None else 0.75
+        print(f"声纹验证：请说出「{profile.wake_word}」")
+        audio = crop_last_speech_burst(_record_voiceprint_take())
+        embedding = Voiceprint(model_name=profile.model_name).embed(audio)
+        score = profile.score(embedding)
+        verdict = "通过 ✅" if score >= threshold else "拒绝 ❌"
+        print(f"\n相似度: {score:.4f}（阈值 {threshold:.2f}）→ {verdict}")
+        return
+
+    parser.error(f"unknown action {namespace.action!r}")
+
+
 def main() -> None:
     command, command_args = parse_command()
     if command == "talk":
         run_realtime_audio_client(parse_talk_arguments(command_args))
+        return
+    if command == "voiceprint":
+        run_voiceprint_command(command_args)
         return
 
     from speech_to_speech.s2s_pipeline import run_pipeline_command

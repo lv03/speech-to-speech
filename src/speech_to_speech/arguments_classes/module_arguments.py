@@ -100,3 +100,56 @@ class ModuleArguments:
             "num_pipelines; further connections are rejected. Default is 1."
         },
     )
+    enable_wake_word: bool = field(
+        default=False,
+        metadata={
+            "help": "Lock the pipeline behind a wake word: audio is swallowed (and the assistant stays "
+            "silent) until the wake word is heard. With --enable_voiceprint the speaker must also match "
+            "the enrolled voiceprint. Off by default."
+        },
+    )
+    wake_word: str = field(
+        default="噜噜噜噜",
+        metadata={
+            "help": "The wake word as displayed text. Detection uses pinyin tone variants of this word "
+            "(see speech_to_speech.security.wake_word for how variants are registered). Default is '噜噜噜噜'."
+        },
+    )
+    enable_voiceprint: bool = field(
+        default=False,
+        metadata={
+            "help": "Verify the speaker's voiceprint on the wake word before unlocking. Requires "
+            "--enable_wake_word and a profile created with `speech-to-speech voiceprint enroll`. Off by default."
+        },
+    )
+    voiceprint_enrollment: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Path to the enrolled voiceprint profile (.npz) created by `speech-to-speech voiceprint "
+            "enroll`. Defaults to ~/.cache/speech_to_speech/voiceprint/default.npz when --enable_voiceprint "
+            "is set without an explicit path."
+        },
+    )
+    voiceprint_threshold: float = field(
+        default=0.75,
+        metadata={
+            "help": "Cosine similarity threshold for voiceprint acceptance, in (0, 1]. Higher is stricter. "
+            "Enrollment and verification both use the wake word, so the enrolled speaker scores near 1.0. "
+            "Default is 0.75."
+        },
+    )
+    security_timeout_s: float = field(
+        default=60.0,
+        metadata={
+            "help": "Idle seconds after which the security gate re-locks and requires the wake word again. "
+            "Measured from the last audible activity. Default is 60.0."
+        },
+    )
+    unlock_acknowledgment: str = field(
+        default="（系统：你刚被唤醒。）请用一句简短的话确认你在听，例如：我在，请说。",
+        metadata={
+            "help": "Prompt injected after the security gate unlocks so the assistant audibly confirms "
+            "the speaker may talk. Set to an empty string to stay silent after unlocking. "
+            "Default asks for a one-line '我在，请说。' style reply."
+        },
+    )

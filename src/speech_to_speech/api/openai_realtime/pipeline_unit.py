@@ -74,3 +74,25 @@ class PipelineUnit(BaseModel):
     handlers: list[Any]
 
     session: Optional[SessionState] = None
+
+    def is_security_locked(self) -> bool:
+        """Whether a security gate is installed and currently locked.
+
+        While locked, the pipeline must not answer any client-triggered
+        request (text input included): audio is already swallowed by the gate,
+        and this check extends the same silence to protocol-level response
+        triggers such as the demo's startup greeting.
+        """
+        for handler in self.handlers:
+            is_locked = getattr(handler, "is_locked", None)
+            if is_locked is not None:
+                return bool(is_locked)
+        return False
+
+    def security_unlock_acknowledgment(self) -> str | None:
+        """The unlock-acknowledgment prompt of the installed security gate."""
+        for handler in self.handlers:
+            ack = getattr(handler, "unlock_acknowledgment", None)
+            if ack is not None:
+                return ack
+        return None

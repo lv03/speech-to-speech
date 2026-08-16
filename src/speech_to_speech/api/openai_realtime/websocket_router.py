@@ -15,10 +15,13 @@ from openai.types.realtime import (
     InputAudioBufferAppendEvent,
     InputAudioBufferCommitEvent,
     OutputAudioBufferClearEvent,
+    RealtimeConversationItemUserMessage,
     ResponseCancelEvent,
     ResponseCreateEvent,
     SessionUpdateEvent,
 )
+from openai.types.realtime.realtime_conversation_item_user_message import Content
+from openai.types.realtime.realtime_response_create_params import RealtimeResponseCreateParams
 
 from speech_to_speech.api.audio_api import AudioApiConfig, mount_audio_api
 from speech_to_speech.api.openai_realtime.llm_proxy import LLMProxyConfig, mount_llm_proxy
@@ -207,6 +210,51 @@ def _flush_queue(
             for item in reversed(preserved):
                 q.queue.appendleft(item)
             q.not_empty.notify(len(preserved))
+
+
+async def _send_unlock_acknowledgment(
+    unit: PipelineUnit,
+    session_id: str,
+    transport: SessionTransport | None,
+    acknowledgment: str,
+) -> None:
+    """Trigger a short assistant reply confirming the security gate unlocked.
+
+    Mirrors the demo's startup-greeting flow (hidden user item + response.create)
+    but is initiated server-side, on the locked→unlocked transition, so the
+    acknowledgment rides the normal LLM→TTS→client event path.
+    """
+    logger.info("Security gate: sending unlock acknowledgment")
+    item_event = ConversationItemCreateEvent(
+        type="conversation.item.create",
+        item=RealtimeConversationItemUserMessage(
+            type="message",
+            role="user",
+            content=[Content(type="input_text", text=acknowledgment)],
+        ),
+    )
+    events = unit.service.handle_conversation_item_create(session_id, item_event)
+    if transport is not None and events:
+        await transport.send_events(events)
+
+    result = unit.service.handle_response_create(
+        session_id,
+        ResponseCreateEvent(
+            type="response.create",
+            response=RealtimeResponseCreateParams(output_modalities=["audio"]),
+        ),
+    )
+    if result is None:
+        return
+    if result.type != "error":
+        unit.cancel_scope.new_response()
+        response_key = unit.service._state(session_id).current_response_key
+        if transport is not None:
+            await transport.send_events([result])
+        if result.type == "response.created":
+            unit.service.response.mark_response_created_sent(session_id, response_key)
+    else:
+        logger.warning("Security gate: unlock acknowledgment failed: %s", getattr(result, "error", result))
 
 
 def _clean_unit(
@@ -468,6 +516,15 @@ async def _dispatch_client_event(
         logger.debug("Accepted conversation.item.truncate for %s", event.item_id)
 
     elif isinstance(event, ResponseCreateEvent):
+        # While the security gate is locked, client-triggered responses (the
+        # demo's startup greeting, injected text items) must stay silent too —
+        # otherwise text input bypasses the wake-word/voiceprint gate.
+        if unit.is_security_locked():
+            logger.info(
+                "Security gate: dropping response.create while locked (session %s)",
+                session_id,
+            )
+            return
         result = service.handle_response_create(session_id, event)
         if result:
             response_key = None
@@ -813,6 +870,7 @@ def create_app(
         no stale sentinel can leak into the next claim.
         """
         pipeline_log_ctx.set(unit.index)
+        security_locked_before = unit.is_security_locked()
         while not stop_event.is_set():
             try:
                 # Snapshot the session once per iteration; if the route releases the
@@ -821,6 +879,16 @@ def create_app(
                 session = unit.session
                 transport = session.transport if session is not None else None
                 session_id = session.session_id if session is not None else None
+
+                # Security gate: on the locked→unlocked transition, ask the
+                # LLM for a short audible acknowledgment so the user knows the
+                # assistant is listening (unless disabled via configuration).
+                security_locked = unit.is_security_locked()
+                if security_locked_before and not security_locked and session_id is not None:
+                    acknowledgment = unit.security_unlock_acknowledgment()
+                    if acknowledgment:
+                        await _send_unlock_acknowledgment(unit, session_id, transport, acknowledgment)
+                security_locked_before = security_locked
 
                 # Text events first (speech_started cancels active response).
                 try:
