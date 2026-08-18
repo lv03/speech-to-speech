@@ -53,6 +53,19 @@
         <p class="hint">兼容 Awesome Codex Pet 社区画廊的宠物包（扫描 ~/.codex/pets/）。</p>
       </section>
 
+      <section>
+        <h2>行为</h2>
+        <label class="row">
+          <span>唤醒快捷键</span>
+          <input id="wake-shortcut" type="text" placeholder="CommandOrControl+Shift+O" />
+        </label>
+        <label class="row">
+          <span>自动隐藏（秒）</span>
+          <input id="auto-hide" type="number" min="0" step="1" />
+        </label>
+        <p class="hint">自动隐藏设为 0 表示禁用；快捷键留空表示禁用。</p>
+      </section>
+
       <div class="actions">
         <button id="save" type="button">保存</button>
         <span id="save-status"></span>

@@ -98,6 +98,7 @@ async function sendTask(): Promise<void> {
   const prompt = taskInput.value.trim()
   if (!prompt) return
   taskInput.value = ''
+  window.desktop.reportActivity()
   try {
     await window.desktop.createTask(prompt, 'pi')
     void refreshTasks()
@@ -108,6 +109,7 @@ async function sendTask(): Promise<void> {
 
 // 点击球体切换面板
 orb.addEventListener('click', () => {
+  window.desktop.reportActivity()
   panel.classList.toggle('hidden')
 })
 

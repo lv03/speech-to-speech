@@ -5,6 +5,8 @@ interface SettingsPayload {
   wakeWordEnabled: boolean
   wakeWord: string
   orbSkin: string
+  wakeShortcut: string
+  autoHideSeconds: number
 }
 
 const agentKind = document.getElementById('agent-kind') as HTMLSelectElement
@@ -13,6 +15,8 @@ const enableVoice = document.getElementById('enable-voice') as HTMLInputElement
 const wakeWordEnabled = document.getElementById('wake-word-enabled') as HTMLInputElement
 const wakeWord = document.getElementById('wake-word') as HTMLInputElement
 const orbSkin = document.getElementById('orb-skin') as HTMLSelectElement
+const wakeShortcut = document.getElementById('wake-shortcut') as HTMLInputElement
+const autoHide = document.getElementById('auto-hide') as HTMLInputElement
 const saveButton = document.getElementById('save') as HTMLButtonElement
 const saveStatus = document.getElementById('save-status')!
 
@@ -23,6 +27,8 @@ function render(settings: SettingsPayload): void {
   wakeWordEnabled.checked = settings.wakeWordEnabled
   wakeWord.value = settings.wakeWord
   orbSkin.value = settings.orbSkin
+  wakeShortcut.value = settings.wakeShortcut
+  autoHide.value = String(settings.autoHideSeconds ?? 0)
 }
 
 function collect(): SettingsPayload {
@@ -33,6 +39,8 @@ function collect(): SettingsPayload {
     wakeWordEnabled: wakeWordEnabled.checked,
     wakeWord: wakeWord.value.trim() || '噜噜噜噜',
     orbSkin: orbSkin.value,
+    wakeShortcut: wakeShortcut.value.trim(),
+    autoHideSeconds: Math.max(0, Number(autoHide.value) || 0),
   }
 }
 

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, net, protocol, Tray } from 'electron'
+import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, net, protocol, Tray } from 'electron'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { EmbeddedGateway } from './gateway-process'
@@ -18,6 +18,43 @@ let gateway: EmbeddedGateway | null = null
 let voice: EmbeddedVoice | null = null
 let settingsStore: SettingsStore | null = null
 let skinsCache: SkinInfo[] = []
+let hideTimer: NodeJS.Timeout | null = null
+
+// ── 快捷键与自动休眠 ───────────────────────────────────────────────────
+
+function registerWakeShortcut(accelerator: string): boolean {
+  if (!accelerator) return false
+  try {
+    return globalShortcut.register(accelerator, () => {
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
+        mainWindow.hide()
+      } else {
+        showOrb()
+      }
+    })
+  } catch {
+    return false
+  }
+}
+
+function clearHideTimer(): void {
+  if (hideTimer) {
+    clearTimeout(hideTimer)
+    hideTimer = null
+  }
+}
+
+/** 用户活动时重置自动休眠倒计时；到点则隐藏悬浮球。 */
+function recordActivity(): void {
+  clearHideTimer()
+  const seconds = settingsStore?.get().autoHideSeconds ?? 0
+  if (!seconds) return
+  hideTimer = setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
+      mainWindow.hide()
+    }
+  }, seconds * 1000)
+}
 
 function refreshSkins(): SkinInfo[] {
   const ownSkins = join(app.getPath('userData'), 'skins')
@@ -228,12 +265,23 @@ app.whenReady().then(async () => {
         mainWindow.reload()
       }
     }
+    // 快捷键变化 → 重新注册
+    if (before && saved && settings.wakeShortcut !== undefined && before.wakeShortcut !== saved.wakeShortcut) {
+      globalShortcut.unregister(before.wakeShortcut)
+      registerWakeShortcut(saved.wakeShortcut)
+    }
+    recordActivity()
     return saved ?? {}
   })
   ipcMain.on('app:quit', () => app.quit())
+  ipcMain.on('app:activity', () => recordActivity())
 
   createTray()
   createWindow()
+
+  // 全局快捷键 + 初始自动休眠倒计时
+  registerWakeShortcut(settingsStore?.get().wakeShortcut ?? '')
+  recordActivity()
 
   void startGateway()
     .then(() => startVoice())
@@ -252,6 +300,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', (event) => {
+  globalShortcut.unregisterAll()
+  clearHideTimer()
   if (!gateway && !voice) return
   event.preventDefault()
   const stops: Promise<void>[] = []

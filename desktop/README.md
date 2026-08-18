@@ -44,6 +44,7 @@ desktop/
 | `GATEWAY_PYTHON` | 自动探测 | Python 解释器（优先 `.venv/bin/python`） |
 | `GATEWAY_PORT` | `3101` | Gateway 端口 |
 | `VOICE_PORT` | `8765` | 语音引擎 Realtime 端口 |
+| `GATEWAY_URL` | `http://127.0.0.1:3101` | 语音引擎工具模块访问的 Gateway 地址 |
 
 ## 当前状态（Phase 3 进行中）
 
@@ -55,7 +56,18 @@ desktop/
 - [x] **自定义外观**：兼容 Awesome Codex Pet 宠物包（pet.json + spritesheet.webp），扫描 `~/.codex/pets/` + 自己的 skins 目录，sprite 帧动画渲染，状态映射动画轨道（idle/working/attention…）
 - [x] **内嵌启动 speech-to-speech 语音引擎**：spawn `speech-to-speech local`，挂工具模块（agent_gateway）+ 唤醒词，就绪探测（stdout 启动完成消息）
 - [x] **状态动画接通**：Gateway 有任务运行时宠物播 working 动画，空闲播 idle
-- [ ] 全局快捷键 + 自动休眠（可选）
+- [x] **全局快捷键 + 自动休眠**：可配置唤醒快捷键（切换悬浮球显示/隐藏），空闲自动隐藏
+- [x] **Electron 打包**：electron-builder（macOS zip/dmg，未签名）
+
+## 打包
+
+```bash
+cd desktop
+npm run dist:mac    # 生成 dist/speech-to-speech-*.zip 与 .app（未签名）
+```
+
+> 打包产物不含 Python 运行时：内嵌 Gateway / 语音引擎依赖 `GATEWAY_ROOT`（项目根目录）与
+> `GATEWAY_PYTHON`（.venv Python）环境变量。分发到其它机器需先具备这些运行时。
 
 ## 自定义外观（Codex Pet 包）
 

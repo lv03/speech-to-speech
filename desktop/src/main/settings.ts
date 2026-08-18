@@ -15,6 +15,10 @@ export interface DesktopSettings {
   wakeWord: string
   /** 悬浮球皮肤（空 = 默认流光球；否则为 pet 包 id） */
   orbSkin: string
+  /** 唤醒/显示悬浮球的全局快捷键（空 = 禁用） */
+  wakeShortcut: string
+  /** 空闲多少秒后自动隐藏悬浮球（0 = 禁用） */
+  autoHideSeconds: number
 }
 
 export const DEFAULT_SETTINGS: DesktopSettings = {
@@ -24,6 +28,8 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   wakeWordEnabled: false,
   wakeWord: '噜噜噜噜',
   orbSkin: '',
+  wakeShortcut: 'CommandOrControl+Shift+O',
+  autoHideSeconds: 0,
 }
 
 export class SettingsStore {
@@ -67,6 +73,12 @@ export class SettingsStore {
     }
     if (typeof raw.orbSkin === 'string') {
       out.orbSkin = raw.orbSkin.trim()
+    }
+    if (typeof raw.wakeShortcut === 'string') {
+      out.wakeShortcut = raw.wakeShortcut.trim()
+    }
+    if (typeof raw.autoHideSeconds === 'number' && raw.autoHideSeconds >= 0) {
+      out.autoHideSeconds = Math.floor(raw.autoHideSeconds)
     }
     return out
   }

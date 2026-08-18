@@ -15,6 +15,8 @@ export interface DesktopApi {
   saveSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>>
   /** 列出可用悬浮球皮肤（pet 包） */
   listSkins(): Promise<unknown[]>
+  /** 报告用户活动（重置自动休眠倒计时） */
+  reportActivity(): void
   /** 退出应用 */
   quit(): void
 }
@@ -29,6 +31,7 @@ const api: DesktopApi = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
   listSkins: () => ipcRenderer.invoke('skin:list'),
+  reportActivity: () => ipcRenderer.send('app:activity'),
   quit: () => ipcRenderer.send('app:quit'),
 }
 

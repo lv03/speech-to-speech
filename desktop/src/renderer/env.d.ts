@@ -10,6 +10,7 @@ declare global {
       getSettings(): Promise<Record<string, unknown>>
       saveSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>>
       listSkins(): Promise<unknown[]>
+      reportActivity(): void
       quit(): void
     }
   }
