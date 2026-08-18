@@ -81,15 +81,17 @@ Phase 3（桌面端 Electron floating orb）
 - ⚠️ 已知边界：任务完成需 LLM 主动轮询 get_agent_task_status；“完成自动通知语音”需 Gateway→语音引擎推送机制（后续增强）
 
 ### Phase 3: 桌面端（Electron floating orb）
-> 目标：可拖动悬浮球，内嵌启动 Gateway + 语音引擎。
+> 目标：可拖动悬浮球 + 设置窗口，内嵌启动 Gateway + 语音引擎。
 
-- [ ] 3.1 新建 `desktop/` Electron 工程（package.json + main.mjs + preload + orb 前端）
-- [ ] 3.2 浮动 orb 窗口（transparent + frameless + alwaysOnTop + 可拖动）
-- [ ] 3.3 内嵌启动 Gateway（子进程 + 就绪探测 + 崩溃重启）
-- [ ] 3.4 orb 前端连 Gateway（复用 demo 的 Realtime WebSocket 客户端核心逻辑）
-- [ ] 3.5 Tray + 全局快捷键 + 自动休眠 + 复用已有唤醒词（`--enable_wake_word`）
-- [ ] 3.6 设置窗口（后端 agent 选择：pi / codex / 模型 / 唤醒词开关）
-- **Status:** pending
+- [x] 3.1 新建 `desktop/` Electron + TypeScript 工程（electron-vite，三端 TS）
+- [x] 3.2 浮动 orb 窗口（transparent + frameless + alwaysOnTop + 可拖动）
+- [x] 3.3 内嵌启动 Gateway（子进程 + Python 探测 + 就绪轮询 + 优雅关闭）
+- [x] 3.4 orb 前端连 Gateway（WS /events 实时任务列表 + 派任务）
+- [x] 3.5 托盘 + 菜单（显示/设置/退出）
+- [x] 3.6 设置窗口（独立 BrowserWindow）：后端 Agent 类型、Gateway 端口、语音引擎开关、唤醒词开关/文本，JSON 持久化
+- [ ] 3.7 内嵌启动 speech-to-speech 语音引擎（local 模式 + --tool-module + 唤醒词）
+- [ ] 3.8 全局快捷键 + 自动休眠 + 唤醒词接入
+- **Status:** in_progress
 
 ### Phase 4: 整合、测试与打包
 - [ ] 4.1 全链路回归：语音 → spawn_agent_task → pi/codex 执行 → 结果语音回传

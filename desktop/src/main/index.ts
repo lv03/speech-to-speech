@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray } from 'electron'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EmbeddedGateway } from './gateway-process'
+import { SettingsStore, type DesktopSettings } from './settings'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -9,9 +10,10 @@ const ORB_WIDTH = 220
 const ORB_HEIGHT = 220
 
 let mainWindow: BrowserWindow | null = null
+let settingsWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let gateway: EmbeddedGateway | null = null
-let quitting = false
+let settingsStore: SettingsStore | null = null
 
 // 一个简单的圆形 SVG 图标，用作托盘图标
 function trayIcon(): Electron.NativeImage {
@@ -63,6 +65,7 @@ function createTray(): void {
   tray.setToolTip('speech-to-speech')
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '显示悬浮球', click: () => showOrb() },
+    { label: '设置…', click: () => showSettings() },
     { type: 'separator' },
     { label: '退出', click: () => app.quit() },
   ]))
@@ -76,8 +79,47 @@ function showOrb(): void {
   createWindow()
 }
 
+function createSettingsWindow(): void {
+  settingsWindow = new BrowserWindow({
+    width: 500,
+    height: 620,
+    minWidth: 460,
+    minHeight: 560,
+    title: 'speech-to-speech 设置',
+    backgroundColor: '#f4f5f6',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  })
+  settingsWindow.setMenuBarVisibility(false)
+
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    void settingsWindow.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/settings.html`)
+  } else {
+    void settingsWindow.loadFile(join(__dirname, '../renderer/settings.html'))
+  }
+
+  settingsWindow.on('closed', () => {
+    settingsWindow = null
+  })
+}
+
+function showSettings(): void {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.show()
+    settingsWindow.focus()
+    return
+  }
+  createSettingsWindow()
+}
+
 async function startGateway(): Promise<void> {
-  gateway = new EmbeddedGateway()
+  const settings = settingsStore?.get() ?? { gatewayPort: 3101 }
+  gateway = new EmbeddedGateway({ port: settings.gatewayPort })
   const url = await gateway.start()
   console.log(`[desktop] gateway ready at ${url}`)
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -110,11 +152,13 @@ app.whenReady().then(async () => {
     app.dock?.hide()
   }
 
+  settingsStore = new SettingsStore()
+
   // 先注册 IPC，再建窗口（renderer 加载后即可安全调用）
   ipcMain.handle('gateway:url', () => gatewayUrl())
   ipcMain.handle('gateway:create-task', async (_e, prompt: string, kind?: string) => {
     const body: Record<string, unknown> = { prompt }
-    if (kind) body.kind = kind
+    body.kind = kind || settingsStore?.get().agentKind || 'pi'
     return gatewayFetch('/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -122,6 +166,10 @@ app.whenReady().then(async () => {
     })
   })
   ipcMain.handle('gateway:list-tasks', () => gatewayFetch('/tasks'))
+  ipcMain.handle('settings:get', () => settingsStore?.get() ?? {})
+  ipcMain.handle('settings:save', (_e, settings: Partial<DesktopSettings>) => {
+    return settingsStore?.save(settings) ?? {}
+  })
   ipcMain.on('app:quit', () => app.quit())
 
   createTray()
@@ -135,10 +183,6 @@ app.whenReady().then(async () => {
   })
 
   app.on('activate', () => showOrb())
-})
-
-app.on('before-quit', () => {
-  quitting = true
 })
 
 app.on('window-all-closed', () => {

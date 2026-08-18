@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>speech-to-speech 设置</title>
+    <link rel="stylesheet" href="./settings.css" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>speech-to-speech 设置</h1>
+
+      <section>
+        <h2>后端 Agent</h2>
+        <label class="row">
+          <span>Agent 类型</span>
+          <select id="agent-kind">
+            <option value="pi">pi</option>
+            <option value="codex">Codex</option>
+          </select>
+        </label>
+        <label class="row">
+          <span>Gateway 端口</span>
+          <input id="gateway-port" type="number" min="1" max="65535" />
+        </label>
+      </section>
+
+      <section>
+        <h2>语音</h2>
+        <label class="row">
+          <span>启用语音引擎</span>
+          <input id="enable-voice" type="checkbox" />
+        </label>
+        <label class="row">
+          <span>唤醒词开关</span>
+          <input id="wake-word-enabled" type="checkbox" />
+        </label>
+        <label class="row">
+          <span>唤醒词文本</span>
+          <input id="wake-word" type="text" placeholder="噜噜噜噜" />
+        </label>
+        <p class="hint">语音引擎（speech-to-speech local）与唤醒词在下一阶段接入，配置会持久化。</p>
+      </section>
+
+      <div class="actions">
+        <button id="save" type="button">保存</button>
+        <span id="save-status"></span>
+      </div>
+    </div>
+
+    <script type="module" src="./settings.ts"></script>
+  </body>
+</html>

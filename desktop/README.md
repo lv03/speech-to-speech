@@ -47,9 +47,13 @@ desktop/
 ## 当前状态（Phase 3 进行中）
 
 - [x] 浮动 orb 窗口（透明无边框置顶，可拖动）
-- [x] 托盘图标 + 退出菜单
+- [x] 托盘图标 + 菜单（显示悬浮球 / 设置… / 退出）
 - [x] 内嵌启动 Gateway + 就绪探测
 - [x] orb 前端：Gateway 状态 + 任务列表 + 派任务（WS /events 实时刷新）
+- [x] 设置窗口（独立 BrowserWindow）：后端 Agent 类型、Gateway 端口、语音引擎开关、唤醒词开关/文本，JSON 持久化到 userData
 - [ ] 内嵌启动 speech-to-speech 语音引擎（local 模式 + 工具模块 + 唤醒词）
-- [ ] 全局快捷键 + 自动休眠 + 唤醒词
-- [ ] 设置窗口
+- [ ] 全局快捷键 + 自动休眠 + 唤醒词接入
+
+## 配置持久化
+
+设置存入 `app.getPath('userData')/settings.json`（Electron 应用数据目录），通过 `SettingsStore`（`src/main/settings.ts`）读写，损坏时回退默认值。

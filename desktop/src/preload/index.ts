@@ -9,6 +9,10 @@ export interface DesktopApi {
   createTask(prompt: string, kind?: string): Promise<Record<string, unknown>>
   /** 列出任务（GET /tasks） */
   listTasks(): Promise<unknown[]>
+  /** 读取桌面设置 */
+  getSettings(): Promise<Record<string, unknown>>
+  /** 保存桌面设置 */
+  saveSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>>
   /** 退出应用 */
   quit(): void
 }
@@ -20,6 +24,8 @@ const api: DesktopApi = {
   },
   createTask: (prompt, kind) => ipcRenderer.invoke('gateway:create-task', prompt, kind),
   listTasks: () => ipcRenderer.invoke('gateway:list-tasks'),
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
   quit: () => ipcRenderer.send('app:quit'),
 }
 
