@@ -12,6 +12,10 @@ declare global {
       saveSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>>
       listSkins(): Promise<unknown[]>
       reportActivity(): void
+      voiceprintStatus(): Promise<Record<string, unknown>>
+      voiceprintEnroll(): Promise<Record<string, unknown>>
+      voiceprintVerify(): Promise<Record<string, unknown>>
+      onVoiceprintProgress(cb: (text: string) => void): void
       quit(): void
     }
   }

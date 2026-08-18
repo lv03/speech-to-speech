@@ -24,6 +24,8 @@ export interface VoiceOptions {
   printJson?: boolean
   /** 收到一个 Realtime 事件时回调 */
   onEvent?: (event: Record<string, unknown>) => void
+  /** 是否启用声纹验证 */
+  voiceprintEnabled?: boolean
 }
 
 /**
@@ -42,6 +44,7 @@ export class EmbeddedVoice {
   private readonly startupTimeoutMs: number
   private readonly printJson: boolean
   private readonly onEvent: ((event: Record<string, unknown>) => void) | undefined
+  private readonly voiceprintEnabled: boolean
 
   constructor(options: VoiceOptions = {}) {
     this.root = options.root || process.env.GATEWAY_ROOT || DEFAULT_ROOT
@@ -53,6 +56,7 @@ export class EmbeddedVoice {
     this.startupTimeoutMs = options.startupTimeoutMs ?? 120_000
     this.printJson = options.printJson ?? true
     this.onEvent = options.onEvent
+    this.voiceprintEnabled = options.voiceprintEnabled ?? false
   }
 
   private findPython(): string {
@@ -77,6 +81,9 @@ export class EmbeddedVoice {
     ]
     if (this.wakeWordEnabled) {
       args.push('--enable_wake_word', '--wake_word', this.wakeWord)
+    }
+    if (this.voiceprintEnabled) {
+      args.push('--enable_voiceprint')
     }
     if (this.printJson) {
       args.push('--local_audio_print_json')

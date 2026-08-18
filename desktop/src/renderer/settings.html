@@ -39,7 +39,21 @@
           <span>唤醒词文本</span>
           <input id="wake-word" type="text" placeholder="噜噜噜噜" />
         </label>
-        <p class="hint">语音引擎（speech-to-speech local）与唤醒词在下一阶段接入，配置会持久化。</p>
+        <label class="row">
+          <span>启用声纹验证</span>
+          <input id="voiceprint-enabled" type="checkbox" />
+        </label>
+        <p class="hint">声纹验证需先注册（下方「注册声纹」）；启用后唤醒时还要验证说话人身份。</p>
+      </section>
+
+      <section>
+        <h2>声纹</h2>
+        <div class="voiceprint-status" id="voiceprint-status">检测中…</div>
+        <div class="voiceprint-actions">
+          <button id="voiceprint-enroll" type="button">注册声纹</button>
+          <button id="voiceprint-verify" type="button">验证声纹</button>
+        </div>
+        <pre id="voiceprint-log" class="voiceprint-log hidden"></pre>
       </section>
 
       <section>

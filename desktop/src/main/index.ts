@@ -1,4 +1,7 @@
 import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, net, protocol, Tray } from 'electron'
+import { existsSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { EmbeddedGateway } from './gateway-process'
@@ -202,6 +205,7 @@ async function startVoice(): Promise<void> {
     wakeWordEnabled: settings.wakeWordEnabled,
     wakeWord: settings.wakeWord,
     gatewayUrl: gatewayUrl() ?? 'http://127.0.0.1:3101',
+    voiceprintEnabled: settings.enableVoiceprint,
     onEvent: (event) => {
       const state = voiceStateFromEvent(event)
       if (state && mainWindow && !mainWindow.isDestroyed()) {
@@ -230,6 +234,36 @@ function voiceStateFromEvent(event: Record<string, unknown>): string | null {
     default:
       return null
   }
+}
+
+// ── 声纹 ──────────────────────────────────────────────────────────────
+
+function voiceprintPath(): string {
+  return join(homedir(), '.cache', 'speech_to_speech', 'voiceprint', 'default.npz')
+}
+
+function pythonForCommands(): string {
+  return process.env.GATEWAY_PYTHON || join(__dirname, '../../../.venv/bin/python')
+}
+
+/** spawn 一个 voiceprint 子命令，stdout/stderr 实时推送给设置窗口。 */
+async function runVoiceprintCommand(args: string[]): Promise<{ ok: boolean; output: string }> {
+  return new Promise((resolvePromise) => {
+    const child = spawn(pythonForCommands(), args, { cwd: resolve(__dirname, '../../..') })
+    let output = ''
+    const onChunk = (chunk: Buffer) => {
+      const text = chunk.toString()
+      output += text
+      if (settingsWindow && !settingsWindow.isDestroyed()) {
+        settingsWindow.webContents.send('voiceprint:progress', text)
+      }
+    }
+    child.stdout?.on('data', onChunk)
+    child.stderr?.on('data', onChunk)
+    child.on('close', (code) => {
+      resolvePromise({ ok: code === 0, output })
+    })
+  })
 }
 
 // ── IPC ────────────────────────────────────────────────────────────────
@@ -280,6 +314,20 @@ app.whenReady().then(async () => {
     })
   })
   ipcMain.handle('gateway:list-tasks', () => gatewayFetch('/tasks'))
+  ipcMain.handle('voiceprint:status', () => ({
+    enrolled: existsSync(voiceprintPath()),
+    path: voiceprintPath(),
+  }))
+  ipcMain.handle('voiceprint:enroll', () => {
+    const wakeWord = settingsStore?.get().wakeWord || '噜噜噜噜'
+    return runVoiceprintCommand([
+      '-m', 'speech_to_speech.cli', 'voiceprint', 'enroll',
+      '--takes', '3', '--wake-word', wakeWord,
+    ])
+  })
+  ipcMain.handle('voiceprint:verify', () => {
+    return runVoiceprintCommand(['-m', 'speech_to_speech.cli', 'voiceprint', 'verify'])
+  })
   ipcMain.handle('settings:get', () => settingsStore?.get() ?? {})
   ipcMain.handle('settings:save', (_e, settings: Partial<DesktopSettings>) => {
     const before = settingsStore?.get()

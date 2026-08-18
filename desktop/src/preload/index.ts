@@ -19,6 +19,14 @@ export interface DesktopApi {
   listSkins(): Promise<unknown[]>
   /** 报告用户活动（重置自动休眠倒计时） */
   reportActivity(): void
+  /** 查询声纹注册状态 */
+  voiceprintStatus(): Promise<Record<string, unknown>>
+  /** 注册声纹（录 3 遍唤醒词） */
+  voiceprintEnroll(): Promise<Record<string, unknown>>
+  /** 验证声纹 */
+  voiceprintVerify(): Promise<Record<string, unknown>>
+  /** 声纹命令进度事件 */
+  onVoiceprintProgress(cb: (text: string) => void): void
   /** 退出应用 */
   quit(): void
 }
@@ -37,6 +45,12 @@ const api: DesktopApi = {
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
   listSkins: () => ipcRenderer.invoke('skin:list'),
   reportActivity: () => ipcRenderer.send('app:activity'),
+  voiceprintStatus: () => ipcRenderer.invoke('voiceprint:status'),
+  voiceprintEnroll: () => ipcRenderer.invoke('voiceprint:enroll'),
+  voiceprintVerify: () => ipcRenderer.invoke('voiceprint:verify'),
+  onVoiceprintProgress: (cb) => {
+    ipcRenderer.on('voiceprint:progress', (_e, text: string) => cb(text))
+  },
   quit: () => ipcRenderer.send('app:quit'),
 }
 

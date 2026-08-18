@@ -58,6 +58,7 @@ desktop/
 - [x] **状态动画接通**：Gateway 任务状态 → working/idle；语音状态 → listening/thinking/speaking/idle（通过 local 模式 `--local_audio_print_json` 的 EVENT 事件解析）
 - [x] **全局快捷键 + 自动休眠**：可配置唤醒快捷键（切换悬浮球显示/隐藏），空闲自动隐藏
 - [x] **Electron 打包**：electron-builder（macOS zip/dmg，未签名）
+- [x] **声纹注册 UI 入口**：设置窗口可查声纹状态、注册（录 3 遍唤醒词，进度实时显示）、验证；启用后语音引擎加 `--enable_voiceprint`
 
 ## 打包
 

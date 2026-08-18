@@ -19,6 +19,8 @@ export interface DesktopSettings {
   wakeShortcut: string
   /** 空闲多少秒后自动隐藏悬浮球（0 = 禁用） */
   autoHideSeconds: number
+  /** 是否启用声纹验证（需先注册声纹） */
+  enableVoiceprint: boolean
 }
 
 export const DEFAULT_SETTINGS: DesktopSettings = {
@@ -30,6 +32,7 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   orbSkin: '',
   wakeShortcut: 'CommandOrControl+Shift+O',
   autoHideSeconds: 0,
+  enableVoiceprint: false,
 }
 
 export class SettingsStore {
@@ -80,6 +83,7 @@ export class SettingsStore {
     if (typeof raw.autoHideSeconds === 'number' && raw.autoHideSeconds >= 0) {
       out.autoHideSeconds = Math.floor(raw.autoHideSeconds)
     }
+    if (typeof raw.enableVoiceprint === 'boolean') out.enableVoiceprint = raw.enableVoiceprint
     return out
   }
 
