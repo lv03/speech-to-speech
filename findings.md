@@ -140,6 +140,7 @@ Realtime Gateway (Node.js server)       ← 核心服务
 | Gateway 暴露 HTTP + WebSocket 接口，speech-to-speech 引擎通过 `spawn_agent_task` 工具（HTTP 调用 Gateway）驱动 agent | 分层清晰：语音引擎只加一个工具；agent 编排/队列/协议全在 Gateway；两个服务独立部署 |
 | **pi 走 `pi --mode rpc`，codex 走 ACP**（Gateway 内做 `AgentAdapter` 抽象） | pi 的 ACP 是 experimental，RPC 最稳且文档有 Python 示例；codex 官方 ACP 成熟；统一上层接口 |
 | 桌面端用 Electron 壳 + 内嵌启动 Gateway（Gateway 再连语音引擎） | 与 qwen EmbeddedGateway 思路一致；桌面端是 Gateway 的客户端 |
+| **桌面端用 TypeScript 开发**（非 qwen 的 .mjs） | 用户明确要求；类型安全，便于维护（2026-08-18 确认） |
 | 复用已有唤醒词/声纹作为桌面休眠唤醒 | 已实现且测试通过，无需重写 |
 
 ## Issues Encountered

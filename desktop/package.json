@@ -1,0 +1,21 @@
+{
+  "name": "speech-to-speech-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "speech-to-speech desktop floating orb (Electron + TypeScript)",
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "electron": "^43.0.0",
+    "electron-vite": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^7.0.0"
+  }
+}

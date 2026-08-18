@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>speech-to-speech</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="orb" class="orb" title="speech-to-speech">
+      <div class="orb-glow"></div>
+      <div id="orb-status" class="orb-status"></div>
+      <div class="orb-label">s2s</div>
+    </div>
+
+    <div id="panel" class="panel hidden">
+      <div class="panel-header">
+        <span id="gateway-status" class="gateway-status">连接中…</span>
+      </div>
+      <div id="task-list" class="task-list"></div>
+      <div class="panel-input">
+        <input
+          id="task-input"
+          type="text"
+          placeholder="给 agent 派个任务…"
+          autocomplete="off"
+        />
+        <button id="task-send" type="button">发送</button>
+      </div>
+    </div>
+
+    <script type="module" src="./orb.ts"></script>
+  </body>
+</html>
