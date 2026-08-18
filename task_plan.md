@@ -88,9 +88,10 @@ Phase 3（桌面端 Electron floating orb）
 - [x] 3.3 内嵌启动 Gateway（子进程 + Python 探测 + 就绪轮询 + 优雅关闭）
 - [x] 3.4 orb 前端连 Gateway（WS /events 实时任务列表 + 派任务）
 - [x] 3.5 托盘 + 菜单（显示/设置/退出）
-- [x] 3.6 设置窗口（独立 BrowserWindow）：后端 Agent 类型、Gateway 端口、语音引擎开关、唤醒词开关/文本，JSON 持久化
-- [ ] 3.7 内嵌启动 speech-to-speech 语音引擎（local 模式 + --tool-module + 唤醒词）
-- [ ] 3.8 全局快捷键 + 自动休眠 + 唤醒词接入
+- [x] 3.6 设置窗口（独立 BrowserWindow）：后端 Agent 类型、Gateway 端口、语音引擎开关、唤醒词开关/文本、**悬浮球皮肤**，JSON 持久化
+- [x] 3.7 **自定义外观（Codex Pet 包兼容）**：扫描 ~/.codex/pets/ + 自有 skins 目录，skin:// 协议，sprite 帧动画（对齐 Codex App），状态→动画轨道映射，设置面板选择皮肤
+- [ ] 3.8 内嵌启动 speech-to-speech 语音引擎（local 模式 + --tool-module + 唤醒词）
+- [ ] 3.9 全局快捷键 + 自动休眠 + 唤醒词接入
 - **Status:** in_progress
 
 ### Phase 4: 整合、测试与打包

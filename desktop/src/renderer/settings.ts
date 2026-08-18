@@ -4,6 +4,7 @@ interface SettingsPayload {
   enableVoice: boolean
   wakeWordEnabled: boolean
   wakeWord: string
+  orbSkin: string
 }
 
 const agentKind = document.getElementById('agent-kind') as HTMLSelectElement
@@ -11,6 +12,7 @@ const gatewayPort = document.getElementById('gateway-port') as HTMLInputElement
 const enableVoice = document.getElementById('enable-voice') as HTMLInputElement
 const wakeWordEnabled = document.getElementById('wake-word-enabled') as HTMLInputElement
 const wakeWord = document.getElementById('wake-word') as HTMLInputElement
+const orbSkin = document.getElementById('orb-skin') as HTMLSelectElement
 const saveButton = document.getElementById('save') as HTMLButtonElement
 const saveStatus = document.getElementById('save-status')!
 
@@ -20,6 +22,7 @@ function render(settings: SettingsPayload): void {
   enableVoice.checked = settings.enableVoice
   wakeWordEnabled.checked = settings.wakeWordEnabled
   wakeWord.value = settings.wakeWord
+  orbSkin.value = settings.orbSkin
 }
 
 function collect(): SettingsPayload {
@@ -29,6 +32,21 @@ function collect(): SettingsPayload {
     enableVoice: enableVoice.checked,
     wakeWordEnabled: wakeWordEnabled.checked,
     wakeWord: wakeWord.value.trim() || '噜噜噜噜',
+    orbSkin: orbSkin.value,
+  }
+}
+
+async function loadSkins(): Promise<void> {
+  try {
+    const skins = (await window.desktop.listSkins()) as Array<{ id: string; displayName: string }>
+    for (const skin of skins) {
+      const option = document.createElement('option')
+      option.value = skin.id
+      option.textContent = skin.displayName || skin.id
+      orbSkin.appendChild(option)
+    }
+  } catch (error) {
+    console.error('皮肤列表加载失败：', error)
   }
 }
 
@@ -53,3 +71,4 @@ saveButton.addEventListener('click', async () => {
 })
 
 void load()
+void loadSkins()

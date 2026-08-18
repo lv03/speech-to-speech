@@ -13,6 +13,8 @@ export interface DesktopApi {
   getSettings(): Promise<Record<string, unknown>>
   /** 保存桌面设置 */
   saveSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>>
+  /** 列出可用悬浮球皮肤（pet 包） */
+  listSkins(): Promise<unknown[]>
   /** 退出应用 */
   quit(): void
 }
@@ -26,6 +28,7 @@ const api: DesktopApi = {
   listTasks: () => ipcRenderer.invoke('gateway:list-tasks'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
+  listSkins: () => ipcRenderer.invoke('skin:list'),
   quit: () => ipcRenderer.send('app:quit'),
 }
 

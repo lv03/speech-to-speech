@@ -1,8 +1,9 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, net, protocol, Tray } from 'electron'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 import { EmbeddedGateway } from './gateway-process'
 import { SettingsStore, type DesktopSettings } from './settings'
+import { listSkins, skinDirectories, type SkinInfo } from './skin-catalog'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -14,6 +15,34 @@ let settingsWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let gateway: EmbeddedGateway | null = null
 let settingsStore: SettingsStore | null = null
+let skinsCache: SkinInfo[] = []
+
+function refreshSkins(): SkinInfo[] {
+  const ownSkins = join(app.getPath('userData'), 'skins')
+  skinsCache = listSkins(skinDirectories(ownSkins))
+  return skinsCache
+}
+
+function findSkin(id: string): SkinInfo | undefined {
+  return skinsCache.find((s) => s.id === id)
+}
+
+/** 注册 skin:// 协议，让 renderer 能加载磁盘上的 pet 包贴图。 */
+function registerSkinProtocol(): void {
+  protocol.handle('skin', (request) => {
+    const url = new URL(request.url)
+    const skinId = url.hostname
+    const skin = findSkin(skinId)
+    if (!skin) return new Response('skin not found', { status: 404 })
+    const file = decodeURIComponent(url.pathname.slice(1))
+    const target = resolve(skin.directory, file)
+    // 安全：只允许读皮肤目录内的文件
+    if (!target.startsWith(skin.directory)) {
+      return new Response('forbidden', { status: 403 })
+    }
+    return net.fetch(pathToFileURL(target).toString())
+  })
+}
 
 // 一个简单的圆形 SVG 图标，用作托盘图标
 function trayIcon(): Electron.NativeImage {
@@ -153,9 +182,18 @@ app.whenReady().then(async () => {
   }
 
   settingsStore = new SettingsStore()
+  refreshSkins()
+  registerSkinProtocol()
 
   // 先注册 IPC，再建窗口（renderer 加载后即可安全调用）
   ipcMain.handle('gateway:url', () => gatewayUrl())
+  ipcMain.handle('skin:list', () => refreshSkins().map((s) => ({
+    id: s.id,
+    displayName: s.displayName,
+    spriteVersionNumber: s.spriteVersionNumber,
+    frame: s.frame,
+    spritesheetUrl: `skin://${s.id}/${s.spritesheetPath}`,
+  })))
   ipcMain.handle('gateway:create-task', async (_e, prompt: string, kind?: string) => {
     const body: Record<string, unknown> = { prompt }
     body.kind = kind || settingsStore?.get().agentKind || 'pi'
@@ -168,7 +206,15 @@ app.whenReady().then(async () => {
   ipcMain.handle('gateway:list-tasks', () => gatewayFetch('/tasks'))
   ipcMain.handle('settings:get', () => settingsStore?.get() ?? {})
   ipcMain.handle('settings:save', (_e, settings: Partial<DesktopSettings>) => {
-    return settingsStore?.save(settings) ?? {}
+    const before = settingsStore?.get()
+    const saved = settingsStore?.save(settings)
+    // 皮肤变化 → 重载 orb 让新皮肤生效
+    if (before && saved && settings.orbSkin !== undefined && before.orbSkin !== saved.orbSkin) {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.reload()
+      }
+    }
+    return saved ?? {}
   })
   ipcMain.on('app:quit', () => app.quit())
 

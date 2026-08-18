@@ -1,3 +1,6 @@
+import { SpriteRenderer } from './sprite-renderer'
+import type { SkinManifest } from './sprite-orb'
+
 interface TaskView {
   id: string
   kind: string
@@ -8,6 +11,7 @@ interface TaskView {
 }
 
 const orb = document.getElementById('orb')!
+const spriteCanvas = document.getElementById('sprite-canvas') as HTMLCanvasElement
 const panel = document.getElementById('panel')!
 const orbStatus = document.getElementById('orb-status')!
 const gatewayStatus = document.getElementById('gateway-status')!
@@ -99,6 +103,33 @@ orb.addEventListener('click', () => {
   panel.classList.toggle('hidden')
 })
 
+/** 加载设置的悬浮球皮肤（pet 包），失败回退默认 CSS 球。 */
+async function initSkin(): Promise<void> {
+  try {
+    const settings = (await window.desktop.getSettings()) as Record<string, unknown>
+    const orbSkin = String(settings.orbSkin || '').trim()
+    if (!orbSkin) return
+    const skins = (await window.desktop.listSkins()) as Array<{
+      id: string
+      spriteVersionNumber: number
+      frame: { width: number; height: number; columns: number; rows: number }
+      spritesheetUrl: string
+    }>
+    const skin = skins.find((s) => s.id === orbSkin)
+    if (!skin) return
+    const manifest: SkinManifest = {
+      spriteVersionNumber: skin.spriteVersionNumber,
+      frame: skin.frame,
+    }
+    const renderer = new SpriteRenderer(spriteCanvas, manifest, skin.spritesheetUrl)
+    await renderer.load()
+    spriteCanvas.classList.remove('hidden')
+    orb.classList.add('hidden')
+  } catch (error) {
+    console.error('皮肤加载失败，回退默认球：', error)
+  }
+}
+
 taskSend.addEventListener('click', () => void sendTask())
 taskInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') void sendTask()
@@ -113,6 +144,7 @@ window.desktop.onGatewayReady((url) => {
   }
 })
 void (async () => {
+  void initSkin()
   const url = await window.desktop.getGatewayUrl()
   if (url) {
     gatewayUrl = url

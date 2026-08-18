@@ -9,6 +9,7 @@ declare global {
       listTasks(): Promise<unknown[]>
       getSettings(): Promise<Record<string, unknown>>
       saveSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>>
+      listSkins(): Promise<unknown[]>
       quit(): void
     }
   }

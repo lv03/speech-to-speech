@@ -13,6 +13,8 @@ export interface DesktopSettings {
   wakeWordEnabled: boolean
   /** 唤醒词文本 */
   wakeWord: string
+  /** 悬浮球皮肤（空 = 默认流光球；否则为 pet 包 id） */
+  orbSkin: string
 }
 
 export const DEFAULT_SETTINGS: DesktopSettings = {
@@ -21,6 +23,7 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   enableVoice: false,
   wakeWordEnabled: false,
   wakeWord: '噜噜噜噜',
+  orbSkin: '',
 }
 
 export class SettingsStore {
@@ -61,6 +64,9 @@ export class SettingsStore {
     if (typeof raw.wakeWordEnabled === 'boolean') out.wakeWordEnabled = raw.wakeWordEnabled
     if (typeof raw.wakeWord === 'string' && raw.wakeWord.trim()) {
       out.wakeWord = raw.wakeWord.trim()
+    }
+    if (typeof raw.orbSkin === 'string') {
+      out.orbSkin = raw.orbSkin.trim()
     }
     return out
   }

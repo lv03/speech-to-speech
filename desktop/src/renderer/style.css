@@ -38,6 +38,18 @@ body {
   -webkit-app-region: drag;
 }
 
+/* 精灵皮肤画布 */
+.sprite-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  -webkit-app-region: drag;
+}
+
+.sprite-canvas.hidden {
+  display: none;
+}
+
 .orb-glow {
   position: absolute;
   inset: -6px;
