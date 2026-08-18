@@ -42,6 +42,13 @@ DEFAULT_WAKE_WORD_VARIANTS = (
     "l ǔ l ǔ l ǔ l ǔ",
 )
 
+# Beam-search budget and trigger sensitivity for the KWS decoder. Capping the
+# active paths at 4 (sherpa-onnx's default) cuts steady-state CPU markedly
+# while leaving fixed-keyword accuracy essentially unchanged; 0.25 is the
+# false-wake vs miss trade-off point tuned for ordinary office noise.
+_MAX_ACTIVE_PATHS = 4
+_KEYWORDS_THRESHOLD = 0.25
+
 # Reset the decoder stream after this much audio without a hit. Long window so
 # a reset can never land inside a wake word (~1.5 s): the earlier 8 s window
 # split roughly one attempt in seven, which read as "wake word not sensitive".
@@ -144,6 +151,8 @@ class WakeWordDetector:
             joiner=str(self._model_dir / "joiner-epoch-12-avg-2-chunk-16-left-64.onnx"),
             keywords_file=str(self._model_dir / "keywords.txt"),
             num_threads=num_threads,
+            max_active_paths=_MAX_ACTIVE_PATHS,
+            keywords_threshold=_KEYWORDS_THRESHOLD,
             provider="cpu",
         )
         self._keyword_spec = keyword_spec
