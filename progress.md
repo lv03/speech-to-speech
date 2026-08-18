@@ -40,6 +40,19 @@
   - `gateway/tests/test_task_queue.py`、`test_pi_rpc.py`、`test_app.py`（created）
   - `task_plan.md`（updated）、`progress.md`（updated）
 
+### Phase 2: 语音引擎接入
+- **Status:** complete
+- **Started:** 2026-08-18
+- Actions taken:
+  - 调研工具机制：local 模式 `--tool-module` 已有服务端工具执行（load_realtime_tool_module + ToolExecutor + ToolResult）；serve 模式工具由客户端回传（不改造）
+  - 新建 tools/agent_gateway.py：TOOLS（3 工具）+ async execute_tool（httpx 调 Gateway）+ CREATE_RESPONSE
+  - 7 单测通过；load_realtime_tool_module 加载验证通过；真实 Gateway 集成验证（spawn→running→completed，result=“工具链路打通”）
+  - 清理残留 gateway 进程
+- Files created/modified:
+  - `src/speech_to_speech/tools/__init__.py`、`agent_gateway.py`（created）
+  - `tests/test_agent_gateway_tools.py`（created）
+  - `task_plan.md`（updated）、`progress.md`（updated）
+
 ## Test Results
 
 | Test | Input | Expected | Actual | Status |
@@ -47,6 +60,8 @@
 | gateway 单测 | pytest gateway/tests/ | 全部通过 | 15 passed | ✓ |
 | pi 冒烟测试 | adapter.run('请只回复四个字：测试成功') | 返回文本 | '测试成功' | ✓ |
 | 端到端 | HTTP POST /tasks → pi 执行 | completed | result='端到端测试通过' | ✓ |
+| 工具单测 | pytest tests/test_agent_gateway_tools.py | 全部通过 | 7 passed | ✓ |
+| 工具集成 | execute_tool spawn→轮询→completed | 结果回传 | result='工具链路打通' | ✓ |
 
 ## Error Log
 
@@ -58,8 +73,8 @@
 
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase 1 完成（Gateway 可运行），进入 Phase 2 |
-| Where am I going? | Phase 2 语音接入 → Phase 3 桌面端 → Phase 4 测试打包 |
+| Where am I? | Phase 2 完成（工具模块已接入 Gateway），进入 Phase 3 |
+| Where am I going? | Phase 3 桌面端 → Phase 4 测试打包 |
 | What's the goal? | speech-to-speech 增加桌面端 + 独立 Python Gateway 驱动 pi/codex |
-| What have I learned? | 见 findings.md（qwen 三层架构、ACP/RPC 机制、pi/codex 接入方式） |
-| What have I done? | Phase 1 Gateway 完成（15 测试 + 冒烟 + 端到端验证） |
+| What have I learned? | 见 findings.md（qwen 三层架构、ACP/RPC 机制、pi/codex 接入方式、local 模式工具机制） |
+| What have I done? | Phase 1 Gateway + Phase 2 工具模块（22 测试 + 集成验证） |

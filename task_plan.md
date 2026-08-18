@@ -44,7 +44,7 @@
 
 ## Current Phase
 
-Phase 2（语音引擎接入 spawn_agent_task 工具）
+Phase 3（桌面端 Electron floating orb）
 
 ## Phases
 
@@ -70,14 +70,15 @@ Phase 2（语音引擎接入 spawn_agent_task 工具）
 - [x] 1.6 单元测试（15 个）+ 端到端验证（真实 gateway + 真实 pi，HTTP→pi→结果回传）
 - **Status:** complete
 
-### Phase 2: 语音引擎接入（spawn_agent_task 工具）
+### Phase 2: 语音引擎接入（spawn_agent_task 工具）✅
 > 目标：语音 LLM 能通过工具把任务交给 Gateway。
 
-- [ ] 2.1 在 speech-to-speech 加 `spawn_agent_task` RealtimeFunctionTool（HTTP 调 Gateway POST /tasks）
-- [ ] 2.2 工具结果回传：Gateway 完成 → 结果文本注入 Chat → LLM 二次生成语音 summary
-- [ ] 2.3 任务状态查询工具 `get_agent_task_status` + 取消工具 `cancel_agent_task`
-- [ ] 2.4 端到端测试（语音引擎 + Gateway + mock agent）
-- **Status:** pending
+- [x] 2.1 新建 `src/speech_to_speech/tools/agent_gateway.py`：TOOLS + `async execute_tool`，复用 local 模式的 `--tool-module` 服务端工具机制
+- [x] 2.2 三个工具：`spawn_agent_task`（POST /tasks）、`get_agent_task_status`（GET）、`cancel_agent_task`（DELETE），均返回 JSON 字符串
+- [x] 2.3 工具结果回传：返回 str → LLM 生成确认；CREATE_RESPONSE=True
+- [x] 2.4 测试：7 单测（mock Gateway HTTP）+ load_realtime_tool_module 加载验证 + 真实 Gateway 集成（spawn→轮询→completed）
+- **Status:** complete
+- ⚠️ 已知边界：任务完成需 LLM 主动轮询 get_agent_task_status；“完成自动通知语音”需 Gateway→语音引擎推送机制（后续增强）
 
 ### Phase 3: 桌面端（Electron floating orb）
 > 目标：可拖动悬浮球，内嵌启动 Gateway + 语音引擎。
