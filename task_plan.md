@@ -93,7 +93,8 @@ Phase 3（桌面端 Electron floating orb）
 - [x] 3.8 **内嵌启动 speech-to-speech 语音引擎**：spawn `speech-to-speech local` + `--tool-module agent_gateway` + `--enable_wake_word`，就绪探测，已实测（唤醒词锁定日志确认）
 - [x] 3.9 **状态动画接通**：Gateway 任务状态 → working/idle 动画
 - [x] 3.10 **全局快捷键 + 自动休眠**：可配置快捷键切换悬浮球显示/隐藏，空闲自动隐藏，用户活动重置倒计时
-- **Status:** complete（核心 + 增强全部完成，仅剩第 2 项语音状态细化与 Codex 联调）
+- [x] 3.11 **语音状态动画细化**：解析 local 模式 `--local_audio_print_json` 的 EVENT 事件，speech_started→listening、response.created→thinking、audio.delta→speaking、response.done→idle，通过 IPC 推送驱动宠物动画
+- **Status:** complete
 
 ### Phase 4: 整合、测试与打包
 - [ ] 4.1 全链路回归：语音 → spawn_agent_task → pi/codex 执行 → 结果语音回传

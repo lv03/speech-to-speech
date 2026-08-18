@@ -55,7 +55,7 @@ desktop/
 - [x] 设置窗口：后端 Agent 类型、Gateway 端口、语音引擎开关、唤醒词开关/文本、悬浮球皮肤
 - [x] **自定义外观**：兼容 Awesome Codex Pet 宠物包（pet.json + spritesheet.webp），扫描 `~/.codex/pets/` + 自己的 skins 目录，sprite 帧动画渲染，状态映射动画轨道（idle/working/attention…）
 - [x] **内嵌启动 speech-to-speech 语音引擎**：spawn `speech-to-speech local`，挂工具模块（agent_gateway）+ 唤醒词，就绪探测（stdout 启动完成消息）
-- [x] **状态动画接通**：Gateway 有任务运行时宠物播 working 动画，空闲播 idle
+- [x] **状态动画接通**：Gateway 任务状态 → working/idle；语音状态 → listening/thinking/speaking/idle（通过 local 模式 `--local_audio_print_json` 的 EVENT 事件解析）
 - [x] **全局快捷键 + 自动休眠**：可配置唤醒快捷键（切换悬浮球显示/隐藏），空闲自动隐藏
 - [x] **Electron 打包**：electron-builder（macOS zip/dmg，未签名）
 

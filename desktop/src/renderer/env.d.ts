@@ -5,6 +5,7 @@ declare global {
     desktop: {
       getGatewayUrl(): Promise<string | null>
       onGatewayReady(cb: (url: string) => void): void
+      onVoiceState(cb: (state: string) => void): void
       createTask(prompt: string, kind?: string): Promise<Record<string, unknown>>
       listTasks(): Promise<unknown[]>
       getSettings(): Promise<Record<string, unknown>>

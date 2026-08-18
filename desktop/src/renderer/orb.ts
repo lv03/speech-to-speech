@@ -1,5 +1,5 @@
 import { SpriteRenderer } from './sprite-renderer'
-import type { SkinManifest } from './sprite-orb'
+import type { OrbState, SkinManifest } from './sprite-orb'
 
 interface TaskView {
   id: string
@@ -31,11 +31,23 @@ const STATUS_COLORS: Record<string, string> = {
 let gatewayUrl: string | null = null
 let ws: WebSocket | null = null
 let spriteRenderer: SpriteRenderer | null = null
+let voiceState: OrbState = 'idle'
+let busy = false
+
+function updateOrbState(): void {
+  if (!spriteRenderer) return
+  if (voiceState !== 'idle') {
+    spriteRenderer.setState(voiceState)
+  } else if (busy) {
+    spriteRenderer.setState('working')
+  } else {
+    spriteRenderer.setState('idle')
+  }
+}
 
 function updateOrbStateFromTasks(tasks: TaskView[]): void {
-  if (!spriteRenderer) return
-  const busy = tasks.some((t) => t.status === 'queued' || t.status === 'running' || t.status === 'cancelling')
-  spriteRenderer.setState(busy ? 'working' : 'idle')
+  busy = tasks.some((t) => t.status === 'queued' || t.status === 'running' || t.status === 'cancelling')
+  updateOrbState()
 }
 
 function setOrbColor(color: string): void {
@@ -144,6 +156,12 @@ async function initSkin(): Promise<void> {
 taskSend.addEventListener('click', () => void sendTask())
 taskInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') void sendTask()
+})
+
+// 语音状态驱动动画（listening/thinking/speaking/idle）
+window.desktop.onVoiceState((state) => {
+  voiceState = (state as OrbState) || 'idle'
+  updateOrbState()
 })
 
 // 启动：监听 gateway 就绪事件，并尝试获取已就绪的 URL

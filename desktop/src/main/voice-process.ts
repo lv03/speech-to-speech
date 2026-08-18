@@ -20,6 +20,10 @@ export interface VoiceOptions {
   gatewayUrl?: string
   /** 就绪探测超时（ms） */
   startupTimeoutMs?: number
+  /** 打印 Realtime JSON 事件（供状态动画） */
+  printJson?: boolean
+  /** 收到一个 Realtime 事件时回调 */
+  onEvent?: (event: Record<string, unknown>) => void
 }
 
 /**
@@ -36,6 +40,8 @@ export class EmbeddedVoice {
   private readonly wakeWord: string
   private readonly gatewayUrl: string
   private readonly startupTimeoutMs: number
+  private readonly printJson: boolean
+  private readonly onEvent: ((event: Record<string, unknown>) => void) | undefined
 
   constructor(options: VoiceOptions = {}) {
     this.root = options.root || process.env.GATEWAY_ROOT || DEFAULT_ROOT
@@ -45,6 +51,8 @@ export class EmbeddedVoice {
     this.wakeWord = options.wakeWord || '噜噜噜噜'
     this.gatewayUrl = options.gatewayUrl || process.env.GATEWAY_URL || 'http://127.0.0.1:3101'
     this.startupTimeoutMs = options.startupTimeoutMs ?? 120_000
+    this.printJson = options.printJson ?? true
+    this.onEvent = options.onEvent
   }
 
   private findPython(): string {
@@ -70,7 +78,25 @@ export class EmbeddedVoice {
     if (this.wakeWordEnabled) {
       args.push('--enable_wake_word', '--wake_word', this.wakeWord)
     }
+    if (this.printJson) {
+      args.push('--local_audio_print_json')
+    }
     return args
+  }
+
+  /** 行缓冲，从 stdout 解析 EVENT: {json} 事件并回调。 */
+  private parseStdout(chunk: Buffer): void {
+    for (const line of chunk.toString('utf-8').split('\n')) {
+      const trimmed = line.trim()
+      if (trimmed.startsWith('EVENT: ')) {
+        try {
+          const event = JSON.parse(trimmed.slice('EVENT: '.length))
+          this.onEvent?.(event as Record<string, unknown>)
+        } catch {
+          // 非 JSON 行忽略
+        }
+      }
+    }
   }
 
   async start(): Promise<void> {
@@ -89,6 +115,7 @@ export class EmbeddedVoice {
     })
 
     this.child.stdout?.on('data', (chunk) => {
+      this.parseStdout(chunk)
       process.stdout.write(`[voice] ${chunk}`)
     })
     this.child.stderr?.on('data', (chunk) => {

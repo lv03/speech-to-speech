@@ -5,6 +5,8 @@ export interface DesktopApi {
   getGatewayUrl(): Promise<string | null>
   /** Gateway 就绪事件（回传 URL） */
   onGatewayReady(cb: (url: string) => void): void
+  /** 语音状态事件（listening/thinking/speaking/idle） */
+  onVoiceState(cb: (state: string) => void): void
   /** 创建后台任务（POST /tasks） */
   createTask(prompt: string, kind?: string): Promise<Record<string, unknown>>
   /** 列出任务（GET /tasks） */
@@ -25,6 +27,9 @@ const api: DesktopApi = {
   getGatewayUrl: () => ipcRenderer.invoke('gateway:url'),
   onGatewayReady: (cb) => {
     ipcRenderer.on('gateway:ready', (_e, url: string) => cb(url))
+  },
+  onVoiceState: (cb) => {
+    ipcRenderer.on('voice:state', (_e, state: string) => cb(state))
   },
   createTask: (prompt, kind) => ipcRenderer.invoke('gateway:create-task', prompt, kind),
   listTasks: () => ipcRenderer.invoke('gateway:list-tasks'),

@@ -202,9 +202,34 @@ async function startVoice(): Promise<void> {
     wakeWordEnabled: settings.wakeWordEnabled,
     wakeWord: settings.wakeWord,
     gatewayUrl: gatewayUrl() ?? 'http://127.0.0.1:3101',
+    onEvent: (event) => {
+      const state = voiceStateFromEvent(event)
+      if (state && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('voice:state', state)
+      }
+    },
   })
   await voice.start()
   console.log('[desktop] voice engine ready')
+}
+
+/** Realtime 事件 → orb 语音状态（用于驱动宠物动画）。 */
+function voiceStateFromEvent(event: Record<string, unknown>): string | null {
+  const type = String(event.type || '')
+  switch (type) {
+    case 'input_audio_buffer.speech_started':
+      return 'listening'
+    case 'response.created':
+      return 'thinking'
+    case 'response.output_audio.delta':
+    case 'response.output_audio_transcript.delta':
+    case 'response.audio_transcript.delta':
+      return 'speaking'
+    case 'response.done':
+      return 'idle'
+    default:
+      return null
+  }
 }
 
 // ── IPC ────────────────────────────────────────────────────────────────
