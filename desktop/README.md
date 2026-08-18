@@ -43,6 +43,7 @@ desktop/
 | `GATEWAY_ROOT` | 自动推断（仓库根） | 含 `gateway/` Python 包的目录 |
 | `GATEWAY_PYTHON` | 自动探测 | Python 解释器（优先 `.venv/bin/python`） |
 | `GATEWAY_PORT` | `3101` | Gateway 端口 |
+| `VOICE_PORT` | `8765` | 语音引擎 Realtime 端口 |
 
 ## 当前状态（Phase 3 进行中）
 
@@ -52,8 +53,9 @@ desktop/
 - [x] orb 前端：Gateway 状态 + 任务列表 + 派任务（WS /events 实时刷新）
 - [x] 设置窗口：后端 Agent 类型、Gateway 端口、语音引擎开关、唤醒词开关/文本、悬浮球皮肤
 - [x] **自定义外观**：兼容 Awesome Codex Pet 宠物包（pet.json + spritesheet.webp），扫描 `~/.codex/pets/` + 自己的 skins 目录，sprite 帧动画渲染，状态映射动画轨道（idle/working/attention…）
-- [ ] 内嵌启动 speech-to-speech 语音引擎（local 模式 + 工具模块 + 唤醒词）
-- [ ] 全局快捷键 + 自动休眠 + 唤醒词接入
+- [x] **内嵌启动 speech-to-speech 语音引擎**：spawn `speech-to-speech local`，挂工具模块（agent_gateway）+ 唤醒词，就绪探测（stdout 启动完成消息）
+- [x] **状态动画接通**：Gateway 有任务运行时宠物播 working 动画，空闲播 idle
+- [ ] 全局快捷键 + 自动休眠（可选）
 
 ## 自定义外观（Codex Pet 包）
 

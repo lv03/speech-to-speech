@@ -90,9 +90,10 @@ Phase 3（桌面端 Electron floating orb）
 - [x] 3.5 托盘 + 菜单（显示/设置/退出）
 - [x] 3.6 设置窗口（独立 BrowserWindow）：后端 Agent 类型、Gateway 端口、语音引擎开关、唤醒词开关/文本、**悬浮球皮肤**，JSON 持久化
 - [x] 3.7 **自定义外观（Codex Pet 包兼容）**：扫描 ~/.codex/pets/ + 自有 skins 目录，skin:// 协议，sprite 帧动画（对齐 Codex App），状态→动画轨道映射，设置面板选择皮肤
-- [ ] 3.8 内嵌启动 speech-to-speech 语音引擎（local 模式 + --tool-module + 唤醒词）
-- [ ] 3.9 全局快捷键 + 自动休眠 + 唤醒词接入
-- **Status:** in_progress
+- [x] 3.8 **内嵌启动 speech-to-speech 语音引擎**：spawn `speech-to-speech local` + `--tool-module agent_gateway` + `--enable_wake_word`，就绪探测，已实测（唤醒词锁定日志确认）
+- [x] 3.9 **状态动画接通**：Gateway 任务状态 → working/idle 动画
+- [ ] 3.10 全局快捷键 + 自动休眠（可选增强）
+- **Status:** in_progress（核心已全部完成，剩余可选增强）
 
 ### Phase 4: 整合、测试与打包
 - [ ] 4.1 全链路回归：语音 → spawn_agent_task → pi/codex 执行 → 结果语音回传

@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu, nativeImage, net, protocol, Tray } f
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { EmbeddedGateway } from './gateway-process'
+import { EmbeddedVoice } from './voice-process'
 import { SettingsStore, type DesktopSettings } from './settings'
 import { listSkins, skinDirectories, type SkinInfo } from './skin-catalog'
 
@@ -14,6 +15,7 @@ let mainWindow: BrowserWindow | null = null
 let settingsWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let gateway: EmbeddedGateway | null = null
+let voice: EmbeddedVoice | null = null
 let settingsStore: SettingsStore | null = null
 let skinsCache: SkinInfo[] = []
 
@@ -156,6 +158,18 @@ async function startGateway(): Promise<void> {
   }
 }
 
+async function startVoice(): Promise<void> {
+  const settings = settingsStore?.get()
+  if (!settings?.enableVoice) return
+  voice = new EmbeddedVoice({
+    wakeWordEnabled: settings.wakeWordEnabled,
+    wakeWord: settings.wakeWord,
+    gatewayUrl: gatewayUrl() ?? 'http://127.0.0.1:3101',
+  })
+  await voice.start()
+  console.log('[desktop] voice engine ready')
+}
+
 // ── IPC ────────────────────────────────────────────────────────────────
 
 function gatewayUrl(): string | null {
@@ -221,12 +235,14 @@ app.whenReady().then(async () => {
   createTray()
   createWindow()
 
-  void startGateway().catch((error) => {
-    console.error('[desktop] gateway 启动失败：', error)
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('gateway:error', String(error))
-    }
-  })
+  void startGateway()
+    .then(() => startVoice())
+    .catch((error) => {
+      console.error('[desktop] 服务启动失败：', error)
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('gateway:error', String(error))
+      }
+    })
 
   app.on('activate', () => showOrb())
 })
@@ -236,9 +252,18 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', (event) => {
-  if (!gateway) return
+  if (!gateway && !voice) return
   event.preventDefault()
-  const g = gateway
-  gateway = null
-  void g.stop().finally(() => app.quit())
+  const stops: Promise<void>[] = []
+  if (voice) {
+    const v = voice
+    voice = null
+    stops.push(v.stop())
+  }
+  if (gateway) {
+    const g = gateway
+    gateway = null
+    stops.push(g.stop())
+  }
+  void Promise.allSettled(stops).finally(() => app.quit())
 })

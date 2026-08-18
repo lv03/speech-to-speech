@@ -30,6 +30,13 @@ const STATUS_COLORS: Record<string, string> = {
 
 let gatewayUrl: string | null = null
 let ws: WebSocket | null = null
+let spriteRenderer: SpriteRenderer | null = null
+
+function updateOrbStateFromTasks(tasks: TaskView[]): void {
+  if (!spriteRenderer) return
+  const busy = tasks.some((t) => t.status === 'queued' || t.status === 'running' || t.status === 'cancelling')
+  spriteRenderer.setState(busy ? 'working' : 'idle')
+}
 
 function setOrbColor(color: string): void {
   orbStatus.style.backgroundColor = color
@@ -50,6 +57,7 @@ function renderTasks(tasks: TaskView[]): void {
     item.append(dot, text)
     taskList.appendChild(item)
   }
+  updateOrbStateFromTasks(tasks)
 }
 
 async function refreshTasks(): Promise<void> {
@@ -123,6 +131,7 @@ async function initSkin(): Promise<void> {
     }
     const renderer = new SpriteRenderer(spriteCanvas, manifest, skin.spritesheetUrl)
     await renderer.load()
+    spriteRenderer = renderer
     spriteCanvas.classList.remove('hidden')
     orb.classList.add('hidden')
   } catch (error) {
