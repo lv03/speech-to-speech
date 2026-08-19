@@ -2,7 +2,7 @@ import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, net, No
 import { existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { EmbeddedAnnouncer } from './announcer-process'
 import { EmbeddedGateway } from './gateway-process'
@@ -86,8 +86,9 @@ function registerSkinProtocol(): void {
     if (!skin) return new Response('skin not found', { status: 404 })
     const file = decodeURIComponent(url.pathname.slice(1))
     const target = resolve(skin.directory, file)
-    // 安全：只允许读皮肤目录内的文件
-    if (!target.startsWith(skin.directory)) {
+    // 安全：只允许读皮肤目录内的文件（相对路径不得越界到目录外）
+    const rel = relative(skin.directory, target)
+    if (rel.startsWith('..') || isAbsolute(rel)) {
       return new Response('forbidden', { status: 403 })
     }
     return net.fetch(pathToFileURL(target).toString())
@@ -363,6 +364,7 @@ function ensureAnnouncer(): void {
     .catch((error) => {
       console.error('[desktop] 语音播报服务启动失败：', error)
       announcer = null
+      pendingSpeak = []
     })
 }
 

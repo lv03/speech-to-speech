@@ -50,6 +50,25 @@ def test_persistence_roundtrip(tmp_path) -> None:
     assert loaded.result == "结果"
 
 
+def test_persistence_resets_stale_non_terminal_states(tmp_path) -> None:
+    """重启后 queued/running/cancelling 没有进程驱动，应重置为 failed。"""
+    path = tmp_path / "tasks.json"
+    q = TaskQueue(persistence_path=path)
+    queued = q.create("排队中", "pi")
+    running = q.create("执行中", "pi")
+    q.mark_running(running.id)
+    cancelling = q.create("取消中", "pi")
+    q.mark_running(cancelling.id)
+    q.mark_cancelling(cancelling.id)
+
+    q2 = TaskQueue(persistence_path=path)
+    for task in (queued, running, cancelling):
+        loaded = q2.get(task.id)
+        assert loaded is not None
+        assert loaded.status == "failed"
+        assert "服务重启" in loaded.error
+
+
 def test_public_view_hides_internals() -> None:
     q = TaskQueue()
     t = q.create("p", "pi")

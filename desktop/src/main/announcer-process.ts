@@ -2,6 +2,8 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { findPython } from './gateway-process'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DEFAULT_ROOT = resolve(__dirname, '../../..')
 
@@ -39,7 +41,7 @@ export class EmbeddedAnnouncer {
 
   constructor(options: AnnouncerOptions = {}) {
     this.root = options.root || process.env.GATEWAY_ROOT || DEFAULT_ROOT
-    this.python = options.python || process.env.GATEWAY_PYTHON || `${this.root}/.venv/bin/python`
+    this.python = options.python || findPython(this.root)
     this.model = options.model || ''
     this.speaker = options.speaker || ''
     this.language = options.language || 'chinese'

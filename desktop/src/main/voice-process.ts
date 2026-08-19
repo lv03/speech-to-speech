@@ -2,6 +2,8 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { findPython } from './gateway-process'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DEFAULT_ROOT = resolve(__dirname, '../../..')
 
@@ -75,7 +77,7 @@ export class EmbeddedVoice {
 
   constructor(options: VoiceOptions = {}) {
     this.root = options.root || process.env.GATEWAY_ROOT || DEFAULT_ROOT
-    this.python = options.python || process.env.GATEWAY_PYTHON || this.findPython()
+    this.python = options.python || findPython(this.root)
     this.port = options.port ?? Number(process.env.VOICE_PORT || 8765)
     this.wakeWordEnabled = options.wakeWordEnabled ?? false
     this.wakeWord = options.wakeWord || '噜噜噜噜'
@@ -93,16 +95,6 @@ export class EmbeddedVoice {
     this.sttModel = options.sttModel || ''
     this.ttsBackend = options.ttsBackend || 'qwen3'
     this.ttsVoice = options.ttsVoice || ''
-  }
-
-  private findPython(): string {
-    const candidates = [
-      `${this.root}/.venv/bin/python`,
-      `${this.root}/.venv/Scripts/python.exe`,
-      'python3',
-      'python',
-    ]
-    return candidates[0] || 'python3'
   }
 
   get running(): boolean {

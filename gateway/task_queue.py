@@ -76,7 +76,13 @@ class TaskQueue:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
             for item in raw:
                 task = Task(**item)
+                # 重启后非终结态任务不会再被任何进程驱动，重置为失败避免永久卡住。
+                if task.status not in TERMINAL:
+                    task.status = "failed"
+                    task.error = task.error or "服务重启，任务中断"
+                    task.updated_at = time.time()
                 self._tasks[task.id] = task
+            self._save()
         except (json.JSONDecodeError, TypeError, OSError) as exc:
             logger.warning("任务持久化文件无法加载：%s", exc)
 
