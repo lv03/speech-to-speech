@@ -23,11 +23,11 @@ def test_serve_builds_pipeline_unit_pool(monkeypatch):
     units = [SimpleNamespace(handlers=[handler]) for handler in unit_handlers]
     calls = []
 
-    def fake_build_pipeline_unit(**kwargs):
+    def fake_instantiate(self, **kwargs):
         calls.append(kwargs)
         return units[kwargs["index"]]
 
-    monkeypatch.setattr("speech_to_speech.s2s_pipeline._build_pipeline_unit", fake_build_pipeline_unit)
+    monkeypatch.setattr("speech_to_speech.pipeline_graph.PipelineGraph.instantiate", fake_instantiate)
     stop_event = Event()
     manager = build_pipeline(args, stop_event)
 
@@ -45,7 +45,7 @@ def test_local_composes_loopback_client_with_same_server_builder(monkeypatch):
     args.realtime_server_kwargs.port = 9876
     pipeline_handler = object()
     unit = SimpleNamespace(handlers=[pipeline_handler])
-    monkeypatch.setattr("speech_to_speech.s2s_pipeline._build_pipeline_unit", lambda **_kwargs: unit)
+    monkeypatch.setattr("speech_to_speech.pipeline_graph.PipelineGraph.instantiate", lambda self, **_kwargs: unit)
 
     manager = build_local_pipeline(args, Event())
 

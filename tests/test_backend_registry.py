@@ -6,6 +6,7 @@ from threading import Event
 
 import pytest
 
+import speech_to_speech.pipeline_graph as pipeline_graph
 import speech_to_speech.s2s_pipeline as s2s_pipeline
 from speech_to_speech.arguments_classes.module_arguments import ModuleArguments
 from speech_to_speech.arguments_classes.vad_arguments import VADHandlerArguments
@@ -162,14 +163,24 @@ def test_new_stt_backend_gets_transcription_notifier_by_default(monkeypatch):
     stt_spec = BackendSpec("future-stt", "stt", FakeArguments, stt_factory)
     llm_spec = BackendSpec("future-llm", "llm", FakeArguments, other_factory)
     tts_spec = BackendSpec("future-tts", "tts", FakeArguments, other_factory)
+    stt_selection = BackendSelection(stt_spec, stt_spec.normalize(FakeArguments()))
+    llm_selection = BackendSelection(llm_spec, llm_spec.normalize(FakeArguments()))
+    tts_selection = BackendSelection(tts_spec, tts_spec.normalize(FakeArguments()))
     stt_output_queue = Queue()
     text_prompt_queue = Queue()
 
-    monkeypatch.setattr(s2s_pipeline, "VADHandler", DummyHandler)
-    monkeypatch.setattr(s2s_pipeline, "TranscriptionNotifier", DummyNotifier)
+    monkeypatch.setattr(pipeline_graph, "VADHandler", DummyHandler)
+    monkeypatch.setattr(pipeline_graph, "TranscriptionNotifier", DummyNotifier)
     monkeypatch.setattr("speech_to_speech.LLM.lm_output_processor.LMOutputProcessor", DummyHandler)
 
-    handlers = s2s_pipeline._build_handlers(
+    graph = pipeline_graph.PipelineGraph(
+        module_kwargs=ModuleArguments(),
+        vad_handler_kwargs=VADHandlerArguments(),
+        stt_backend=stt_selection,
+        llm_backend=llm_selection,
+        tts_backend=tts_selection,
+    )
+    handlers = graph._build_handlers(
         stop_event=Event(),
         should_listen=Event(),
         recv_audio_chunks_queue=Queue(),
@@ -182,9 +193,9 @@ def test_new_stt_backend_gets_transcription_notifier_by_default(monkeypatch):
         text_output_queue=Queue(),
         module_kwargs=ModuleArguments(),
         vad_handler_kwargs=VADHandlerArguments(),
-        stt_backend=BackendSelection(stt_spec, stt_spec.normalize(FakeArguments())),
-        llm_backend=BackendSelection(llm_spec, llm_spec.normalize(FakeArguments())),
-        tts_backend=BackendSelection(tts_spec, tts_spec.normalize(FakeArguments())),
+        stt_backend=stt_selection,
+        llm_backend=llm_selection,
+        tts_backend=tts_selection,
         speculative_turns=SpeculativeTurnTracker(),
         cancel_scope=CancelScope(),
         pipeline_index=0,
