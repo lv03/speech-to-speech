@@ -19,6 +19,24 @@ export interface DesktopApi {
   listSkins(): Promise<unknown[]>
   /** 报告用户活动（重置自动休眠倒计时） */
   reportActivity(): void
+  /** 面板展开/收起（调整窗口尺寸） */
+  setPanelOpen(open: boolean): void
+  /** 任务卡片数量（调整窗口高度） */
+  setTaskCount(count: number): void
+  /** 切换语音引擎启停 */
+  toggleVoice(): Promise<Record<string, unknown>>
+  /** 查询语音引擎状态 */
+  voiceStatus(): Promise<Record<string, unknown>>
+  /** 语音引擎就绪事件 */
+  onVoiceReady(cb: () => void): void
+  /** 语音引擎错误事件 */
+  onVoiceError(cb: (message: string) => void): void
+  /** 语音引擎状态变化（starting/running/stopped） */
+  onVoiceStatusChange(cb: (status: string) => void): void
+  /** 语音引擎日志 */
+  onVoiceLog(cb: (line: string) => void): void
+  /** 打开设置窗口 */
+  openSettings(): void
   /** 查询声纹注册状态 */
   voiceprintStatus(): Promise<Record<string, unknown>>
   /** 注册声纹（录 3 遍唤醒词） */
@@ -45,6 +63,23 @@ const api: DesktopApi = {
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
   listSkins: () => ipcRenderer.invoke('skin:list'),
   reportActivity: () => ipcRenderer.send('app:activity'),
+  setPanelOpen: (open) => ipcRenderer.send('orb:panel-open', open),
+  setTaskCount: (count) => ipcRenderer.send('orb:task-count', count),
+  toggleVoice: () => ipcRenderer.invoke('voice:toggle'),
+  voiceStatus: () => ipcRenderer.invoke('voice:status'),
+  onVoiceReady: (cb) => {
+    ipcRenderer.on('voice:ready', () => cb())
+  },
+  onVoiceError: (cb) => {
+    ipcRenderer.on('voice:error', (_e, message: string) => cb(message))
+  },
+  onVoiceStatusChange: (cb) => {
+    ipcRenderer.on('voice:status-change', (_e, status: string) => cb(status))
+  },
+  onVoiceLog: (cb) => {
+    ipcRenderer.on('voice:log', (_e, line: string) => cb(line))
+  },
+  openSettings: () => ipcRenderer.send('app:open-settings'),
   voiceprintStatus: () => ipcRenderer.invoke('voiceprint:status'),
   voiceprintEnroll: () => ipcRenderer.invoke('voiceprint:enroll'),
   voiceprintVerify: () => ipcRenderer.invoke('voiceprint:verify'),

@@ -21,6 +21,24 @@ export interface DesktopSettings {
   autoHideSeconds: number
   /** 是否启用声纹验证（需先注册声纹） */
   enableVoiceprint: boolean
+  /** 语音引擎 LLM 后端 */
+  llmBackend: string
+  /** LLM API Key（responses-api 用） */
+  llmApiKey: string
+  /** LLM API 地址（远程后端用，对应 --responses_api_base_url） */
+  llmBaseUrl: string
+  /** LLM 模型名（空 = 后端默认） */
+  llmModel: string
+  /** STT 后端 */
+  sttBackend: string
+  /** STT 模型名（空 = 后端默认） */
+  sttModel: string
+  /** TTS 后端 */
+  ttsBackend: string
+  /** TTS 音色（空 = 后端默认） */
+  ttsVoice: string
+  /** 界面语言 */
+  language: string
 }
 
 export const DEFAULT_SETTINGS: DesktopSettings = {
@@ -33,6 +51,15 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   wakeShortcut: 'CommandOrControl+Shift+O',
   autoHideSeconds: 0,
   enableVoiceprint: false,
+  llmBackend: 'responses-api',
+  llmApiKey: '',
+  llmBaseUrl: '',
+  llmModel: '',
+  sttBackend: 'parakeet-tdt',
+  sttModel: '',
+  ttsBackend: 'qwen3',
+  ttsVoice: '',
+  language: 'auto',
 }
 
 export class SettingsStore {
@@ -84,6 +111,15 @@ export class SettingsStore {
       out.autoHideSeconds = Math.floor(raw.autoHideSeconds)
     }
     if (typeof raw.enableVoiceprint === 'boolean') out.enableVoiceprint = raw.enableVoiceprint
+    if (typeof raw.llmBackend === 'string' && raw.llmBackend.trim()) out.llmBackend = raw.llmBackend.trim()
+    if (typeof raw.llmApiKey === 'string') out.llmApiKey = raw.llmApiKey
+    if (typeof raw.llmBaseUrl === 'string') out.llmBaseUrl = raw.llmBaseUrl.trim()
+    if (typeof raw.llmModel === 'string') out.llmModel = raw.llmModel.trim()
+    if (typeof raw.language === 'string' && raw.language.trim()) out.language = raw.language.trim()
+    if (typeof raw.sttBackend === 'string' && raw.sttBackend.trim()) out.sttBackend = raw.sttBackend.trim()
+    if (typeof raw.sttModel === 'string') out.sttModel = raw.sttModel.trim()
+    if (typeof raw.ttsBackend === 'string' && raw.ttsBackend.trim()) out.ttsBackend = raw.ttsBackend.trim()
+    if (typeof raw.ttsVoice === 'string') out.ttsVoice = raw.ttsVoice.trim()
     return out
   }
 

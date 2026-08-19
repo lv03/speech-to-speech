@@ -18,12 +18,36 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  padding-top: 16px;
+}
+
+.desktop-shell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* ── 球体 + 控制按钮 ────────────────────────────────────────────────── */
+
+.orb-anchor {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.orb-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
 }
 
 /* 悬浮球 */
 .orb {
   position: relative;
+  flex-shrink: 0;
   width: 120px;
   height: 120px;
   border-radius: 50%;
@@ -38,36 +62,12 @@ body {
   -webkit-app-region: drag;
 }
 
-/* 精灵皮肤画布 */
-.sprite-canvas {
-  position: absolute;
-  top: 0;
-  left: 0;
-  -webkit-app-region: drag;
-}
-
-.sprite-canvas.hidden {
-  display: none;
-}
-
 .orb-glow {
   position: absolute;
   inset: -6px;
   border-radius: 50%;
   background: radial-gradient(circle, rgba(99, 102, 241, 0.35), transparent 70%);
   pointer-events: none;
-}
-
-.orb-status {
-  position: absolute;
-  top: 18px;
-  right: 18px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #9ca3af;
-  border: 2px solid rgba(255, 255, 255, 0.85);
-  -webkit-app-region: no-drag;
 }
 
 .orb-label {
@@ -77,92 +77,285 @@ body {
   letter-spacing: 0.5px;
 }
 
-/* 任务面板 */
-.panel {
-  position: absolute;
-  top: 132px;
-  width: 320px;
-  max-height: 420px;
-  background: rgba(255, 255, 255, 0.96);
-  border-radius: 16px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  -webkit-app-region: no-drag;
-}
-
-.panel.hidden {
+.orb.hidden {
   display: none;
 }
 
-.panel-header {
-  padding: 10px 14px;
-  border-bottom: 1px solid #e5e7eb;
-  font-size: 12px;
-  color: #6b7280;
-}
-
-.task-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px 0;
-  min-height: 80px;
-  max-height: 300px;
-}
-
-.task-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 8px 14px;
-  font-size: 12px;
-  color: #374151;
-}
-
-.task-dot {
-  flex-shrink: 0;
-  width: 8px;
-  height: 8px;
+/* 状态灯 */
+.orb-status {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
-  margin-top: 4px;
+  background: #9ca3af;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
-.task-text {
+.orb-status.ok {
+  background: #22c55e;
+}
+
+.orb-status.busy {
+  background: #f59e0b;
+}
+
+.orb-status.error {
+  background: #ef4444;
+}
+
+/* 精灵皮肤画布 */
+.sprite-canvas {
+  flex-shrink: 0;
+  -webkit-app-region: drag;
+  cursor: pointer;
+}
+
+.sprite-canvas.hidden {
+  display: none;
+}
+
+/* 控制按钮（球体下方一排小圆钮） */
+.orb-controls {
+  display: flex;
+  gap: 8px;
+  -webkit-app-region: no-drag;
+}
+
+.orb-controls .control {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  transition: background 0.15s, transform 0.1s;
+}
+
+.orb-controls .control svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: #4b5563;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.orb-controls .control:hover {
+  background: #fff;
+  transform: scale(1.08);
+}
+
+.orb-controls .control.active {
+  background: #6366f1;
+  border-color: #6366f1;
+}
+
+.orb-controls .control.active svg {
+  stroke: #fff;
+}
+
+.orb-controls .control.danger:hover {
+  background: #fef2f2;
+  border-color: #fca5a5;
+}
+
+.orb-controls .control.danger:hover svg {
+  stroke: #dc2626;
+}
+
+.orb-controls .control.loading svg {
+  animation: spin 1s linear infinite;
+}
+
+.orb-controls .control.hidden {
+  display: none;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── 任务卡片 ────────────────────────────────────────────────────────── */
+
+.task-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  width: 300px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 2px;
+  -webkit-app-region: no-drag;
+}
+
+.task-stack:empty {
+  display: none;
+}
+
+.task-stack.hidden {
+  display: none;
+}
+
+.task-card {
+  background: rgba(255, 255, 255, 0.96);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-kind {
+  font-size: 10px;
+  font-weight: 700;
+  color: #6366f1;
+  background: #eef2ff;
+  border-radius: 4px;
+  padding: 1px 6px;
+  text-transform: lowercase;
+}
+
+.task-time {
+  margin-left: auto;
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.task-title,
+.task-result,
+.task-error {
+  font-size: 13px;
+  color: #1f2937;
   word-break: break-all;
   line-height: 1.4;
 }
 
-.panel-input {
-  display: flex;
-  gap: 6px;
-  padding: 10px 14px;
-  border-top: 1px solid #e5e7eb;
+.task-title {
+  font-weight: 600;
 }
 
-.panel-input input {
-  flex: 1;
-  padding: 8px 10px;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  font-size: 13px;
-  outline: none;
+.task-result {
+  color: #065f46;
+  background: #ecfdf5;
+  border-radius: 6px;
+  padding: 6px 8px;
 }
 
-.panel-input input:focus {
-  border-color: #6366f1;
+.task-error {
+  color: #991b1b;
+  background: #fef2f2;
+  border-radius: 6px;
+  padding: 6px 8px;
 }
 
-.panel-input button {
-  padding: 8px 14px;
-  border: none;
-  border-radius: 8px;
-  background: #6366f1;
-  color: #fff;
-  font-size: 13px;
+.expandable {
   cursor: pointer;
+  user-select: text;
 }
 
-.panel-input button:hover {
-  background: #4f46e5;
+.expandable.expanded {
+  white-space: pre-wrap;
+}
+
+.task-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.task-tool {
+  font-size: 10px;
+  color: #4b5563;
+  background: #f3f4f6;
+  border-radius: 4px;
+  padding: 1px 6px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-tool.more {
+  color: #6b7280;
+}
+
+.task-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.task-state i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.task-state i.queued,
+.task-state i.running,
+.task-state i.cancelling {
+  background: #f59e0b;
+}
+
+.task-state i.completed {
+  background: #22c55e;
+}
+
+.task-state i.failed {
+  background: #ef4444;
+}
+
+.task-state i.cancelled {
+  background: #9ca3af;
+}
+
+.task-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: #e5e7eb;
+  overflow: hidden;
+}
+
+.task-progress > span {
+  display: block;
+  height: 100%;
+  background: #6366f1;
+  border-radius: 2px;
+  width: 0;
+  transition: width 0.3s;
+}
+
+.task-progress.indeterminate > span {
+  width: 30%;
+  animation: progress-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+  0% {
+    margin-left: -30%;
+  }
+  100% {
+    margin-left: 100%;
+  }
 }

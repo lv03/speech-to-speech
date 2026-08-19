@@ -67,9 +67,9 @@ export class EmbeddedGateway {
   }
 
   async health(): Promise<Record<string, unknown> | null> {
-    if (!this.origin) return null
+    const base = this.origin ?? `http://127.0.0.1:${this.port}`
     try {
-      const resp = await fetch(`${this.origin}/health`, {
+      const resp = await fetch(`${base}/health`, {
         signal: AbortSignal.timeout(2000),
       })
       if (!resp.ok) return null
