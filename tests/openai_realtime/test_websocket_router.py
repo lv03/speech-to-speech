@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 from starlette.testclient import TestClient
 
+import speech_to_speech.api.openai_realtime.session_lifecycle as session_lifecycle
 import speech_to_speech.api.openai_realtime.websocket_router as router_module
 from speech_to_speech.api.openai_realtime.pipeline_unit import PipelineUnit
 from speech_to_speech.api.openai_realtime.service import CHUNK_SIZE_BYTES, RealtimeService
@@ -58,7 +59,7 @@ def short_drain_timeout(monkeypatch):
     stay unavailable until SESSION_END actually drains; tests that exercise the
     quarantine shorten it themselves.
     """
-    monkeypatch.setattr(router_module, "SESSION_END_DRAIN_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(session_lifecycle, "SESSION_END_DRAIN_TIMEOUT_S", 0.1)
 
 
 @pytest.fixture
@@ -1291,7 +1292,7 @@ class TestDrainRelease:
         q.put(AssistantOutputEvent(text="stale"))
         q.put(audio_event)
 
-        router_module._flush_queue(q, preserve=router_module._keep_user_text_event)
+        session_lifecycle._flush_queue(q, preserve=session_lifecycle._keep_user_text_event)
 
         assert q.get_nowait() is audio_event
         assert q.empty()
@@ -1303,7 +1304,7 @@ class TestDrainRelease:
         q.put(_pcm_bytes(10))
         q.put(PipelineControlMessage(SESSION_END.kind, session_id="sess_a"))
         q.put(_pcm_bytes(10))
-        router_module._flush_queue(q, preserve=router_module._keep_cancel_bookkeeping)
+        session_lifecycle._flush_queue(q, preserve=session_lifecycle._keep_cancel_bookkeeping)
         assert is_control_message(q.get_nowait(), SESSION_END.kind)
         assert q.empty()
 
@@ -1312,7 +1313,7 @@ class TestDrainRelease:
         the quarantine timeout the session is unregistered (no more chat
         mutation or billing) but the unit must NOT become claimable — its
         handlers could still emit the old session's output."""
-        monkeypatch.setattr(router_module, "SESSION_END_QUARANTINE_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(session_lifecycle, "SESSION_END_QUARANTINE_TIMEOUT_S", 0.2)
         app, service, *_ = setup
         with TestClient(app) as client:
             with client.websocket_connect("/v1/realtime") as ws:
@@ -1331,7 +1332,7 @@ class TestDrainRelease:
     def test_quarantined_unit_returns_to_pool_after_late_drain(self, setup, monkeypatch):
         """If SESSION_END eventually drains after the quarantine kicked in, the
         chain has proven itself clean and the unit becomes claimable again."""
-        monkeypatch.setattr(router_module, "SESSION_END_QUARANTINE_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(session_lifecycle, "SESSION_END_QUARANTINE_TIMEOUT_S", 0.2)
         app, service, input_queue, output_queue, *_ = setup
         with TestClient(app) as client:
             with client.websocket_connect("/v1/realtime") as ws:

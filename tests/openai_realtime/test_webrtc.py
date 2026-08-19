@@ -33,6 +33,7 @@ from aiortc import RTCPeerConnection, RTCSessionDescription  # noqa: E402
 from aiortc.mediastreams import AudioStreamTrack, MediaStreamError  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
+import speech_to_speech.api.openai_realtime.session_lifecycle as session_lifecycle  # noqa: E402
 import speech_to_speech.api.openai_realtime.websocket_router as router_module  # noqa: E402
 from speech_to_speech.api.openai_realtime.pipeline_unit import PipelineUnit  # noqa: E402
 from speech_to_speech.api.openai_realtime.service import CHUNK_SIZE_BYTES, RealtimeService  # noqa: E402
@@ -246,7 +247,7 @@ class TestWebRTCDispatch:
         conn_id = unit.service.register()
         transport = _FakeTransport()
 
-        await router_module._dispatch_client_event(
+        await session_lifecycle._dispatch_client_event(
             unit,
             conn_id,
             {"type": "input_audio_buffer.append", "audio": "AAAA"},
@@ -280,7 +281,7 @@ class TestWebRTCDispatch:
         unit.output_queue.put(done_event)
         unit.output_queue.put(AUDIO_RESPONSE_DONE)
 
-        await router_module._dispatch_client_event(
+        await session_lifecycle._dispatch_client_event(
             unit,
             conn_id,
             {"type": "output_audio_buffer.clear"},
@@ -308,7 +309,7 @@ class TestWebRTCDispatch:
         transport = _FakeTransport()
         transport.kind = "websocket"
 
-        await router_module._dispatch_client_event(
+        await session_lifecycle._dispatch_client_event(
             unit,
             conn_id,
             {"type": "output_audio_buffer.clear"},
@@ -325,7 +326,7 @@ class TestWebRTCDispatch:
         conn_id = unit.service.register()
         transport = _FakeTransport()
 
-        await router_module._dispatch_client_event(
+        await session_lifecycle._dispatch_client_event(
             unit,
             conn_id,
             {"type": "response.cancel"},
