@@ -115,7 +115,7 @@ def setup():
 def _simulate_session_end_drain(input_queue: Queue, output_queue: Queue, timeout: float = 1.0) -> None:
     """Wait for SESSION_END to land in input_queue (from the route handler's
     release path) and forward it to output_queue — simulating the handler chain.
-    The send loop will then observe SESSION_END and set `session.drained`,
+    The send loop will then observe SESSION_END and set `session._drained`,
     letting the release task complete (unregister + clear `unit.session`).
     """
     deadline = time.monotonic() + timeout
@@ -1267,7 +1267,7 @@ class TestCleanup:
                 )
                 unit.output_queue.put(AssistantOutputEvent(text="queued", response_key=request.response_key))
                 time.sleep(0.1)
-                assert isinstance(unit.session.pending_output_item, TokenUsageEvent)
+                assert isinstance(unit.session._pending_output_item, TokenUsageEvent)
 
             _simulate_session_end_drain(unit.input_queue, unit.output_queue)
             time.sleep(0.3)
@@ -1357,10 +1357,10 @@ class TestDrainRelease:
                 assert unit.session is not None
                 unit.output_queue.put(PipelineControlMessage(SESSION_END.kind, session_id="sess_stale"))
                 time.sleep(0.3)
-                assert not unit.session.drained.is_set()
+                assert not unit.session._drained.is_set()
                 unit.output_queue.put(PipelineControlMessage(SESSION_END.kind, session_id=unit.session.session_id))
                 time.sleep(0.3)
-                assert unit.session.drained.is_set()
+                assert unit.session._drained.is_set()
 
     def test_register_failure_still_releases_unit(self, setup, monkeypatch):
         """An exception during session setup (after the claim) must not leak the

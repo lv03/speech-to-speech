@@ -700,7 +700,7 @@ class TestWebRTCLoopback:
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 session = server_env.unit.session
-                if session is None or session.released_at is not None:
+                if session is None or session.is_released:
                     break
                 await asyncio.sleep(0.05)
             else:
@@ -825,7 +825,7 @@ async def _wait_for_release(server_env, timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         session = server_env.unit.session
-        if session is None or session.released_at is not None:
+        if session is None or session.is_released:
             return
         await asyncio.sleep(0.05)
     raise AssertionError("failed WebRTC call left the pipeline unit claimed")

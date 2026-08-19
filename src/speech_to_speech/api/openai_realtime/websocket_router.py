@@ -20,6 +20,7 @@ from speech_to_speech.api.openai_realtime.session_lifecycle import (
     _dispatch_client_event,
     _release_session,
     claim_unit,
+    pool_view,
     send_loop_for,
 )
 from speech_to_speech.api.openai_realtime.transports import (
@@ -168,38 +169,10 @@ def create_app(
     @app.get("/v1/pool")
     async def pool_endpoint() -> dict[str, Any]:
         now = time.monotonic()
-
-        def _state(u: PipelineUnit) -> dict[str, Any]:
-            s = u.session
-            if s is None:
-                return {"index": u.index, "state": "idle", "session_id": None}
-            if s.released_at is None:
-                return {"index": u.index, "state": "active", "session_id": s.session_id}
-            # Drain wait gave up (quarantine timeout): the unit stays occupied
-            # until SESSION_END actually drains — possibly forever if a handler
-            # thread died. Surfaced distinctly so operators can act on it.
-            if s.quarantined_at is not None:
-                return {
-                    "index": u.index,
-                    "state": "stuck",
-                    "session_id": s.session_id,
-                    "draining_for_s": round(now - s.released_at, 2),
-                    "stuck_for_s": round(now - s.quarantined_at, 2),
-                }
-            # released by client but SESSION_END hasn't drained yet → unit
-            # is still occupied; surface elapsed time so operators can spot
-            # stuck handlers.
-            return {
-                "index": u.index,
-                "state": "draining",
-                "session_id": s.session_id,
-                "draining_for_s": round(now - s.released_at, 2),
-            }
-
         return {
             "size": len(pool),
-            "in_use": sum(1 for u in pool if u.session is not None),
-            "units": [_state(u) for u in pool],
+            "in_use": sum(1 for u in pool if u.is_claimed),
+            "units": [pool_view(u, now) for u in pool],
         }
 
     @app.post("/v1/realtime/calls")
@@ -333,7 +306,7 @@ def create_app(
             if (
                 session is None
                 or session.session_id != call_id
-                or session.released_at is not None
+                or session.is_released
                 or session.transport is None
                 or session.transport.kind != "webrtc"
             ):

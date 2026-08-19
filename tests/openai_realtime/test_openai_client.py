@@ -704,7 +704,7 @@ class TestPackagedAudioClient:
                     server_env.unit.session
                     and any(
                         isinstance(item, AssistantToolCallReadyEvent) and item.part.tool.call_id == second_call.call_id
-                        for item in server_env.unit.session.pending_text_output_items
+                        for item in server_env.unit.session._pending_text_output_items
                     )
                 )
             )

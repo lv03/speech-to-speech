@@ -29,7 +29,7 @@ from openai.types.realtime import (
 from openai.types.realtime.realtime_conversation_item_user_message import Content
 from openai.types.realtime.realtime_response_create_params import RealtimeResponseCreateParams
 
-from speech_to_speech.api.openai_realtime.pipeline_unit import PipelineUnit, SessionState
+from speech_to_speech.api.openai_realtime.pipeline_unit import PipelineUnit
 from speech_to_speech.api.openai_realtime.transports import SessionTransport
 from speech_to_speech.pipeline.control import SESSION_END, PipelineControlMessage, is_control_message
 from speech_to_speech.pipeline.events import (
@@ -49,6 +49,29 @@ from speech_to_speech.pipeline.log_context import pipeline_log_ctx
 from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE, PIPELINE_END, AudioOutput
 
 logger = logging.getLogger(__name__)
+
+
+class SessionState:
+    """Per-client ephemeral session state owned by the session lifecycle.
+
+    Send-loop scratch (``_pending_output_item`` / ``_pending_text_output_items`` /
+    ``_drained``) and lifecycle timing (``_released_at`` / ``_quarantined_at``)
+    are private to this module. Transport routes only see the public
+    ``transport`` / ``session_id`` / ``is_released`` surface.
+    """
+
+    def __init__(self, transport: SessionTransport | None = None) -> None:
+        self.transport: SessionTransport | None = transport
+        self.session_id: str = ""
+        self._pending_output_item: Any = None
+        self._pending_text_output_items: list[Any] = []
+        self._drained: asyncio.Event = asyncio.Event()
+        self._released_at: float | None = None
+        self._quarantined_at: float | None = None
+
+    @property
+    def is_released(self) -> bool:
+        return self._released_at is not None
 MAX_AUDIO_BATCH_BYTES = 6400
 # How long the release path waits for SESSION_END to propagate through the
 # handler chain back to output_queue before warning that the unit is stuck.
@@ -218,7 +241,7 @@ async def _send_unlock_acknowledgment(
     if result is None:
         return
     if result.type != "error":
-        unit.cancel_scope.new_response()
+        unit.new_response_generation()
         response_key = unit.service.current_response_key(session_id)
         if transport is not None:
             await transport.send_events([result])
@@ -242,13 +265,13 @@ def _clean_unit(
     handler *after* this returns to serve as the soft reset signal for
     stateful handlers.
     """
-    unit.cancel_scope.cancel()
+    unit.cancel_generation()
     _flush_queue(unit.input_queue)
     _flush_queue(unit.text_prompt_queue)
     _flush_queue(unit.output_queue, preserve=preserve, on_discard=on_discard)
     _flush_queue(unit.text_output_queue, preserve=preserve, on_discard=on_discard)
     unit.response_playing.clear()
-    unit.cancel_scope.reset()
+    unit.reset_generation()
     unit.should_listen.set()
 
 
@@ -282,9 +305,9 @@ def _generation_is_discardable(unit: PipelineUnit, generation: int | None) -> bo
     lingers — e.g. a superseded speculative turn whose TTS never emitted an
     AUDIO_RESPONSE_DONE sentinel, so response_done() never cleared the flag.
     """
-    if generation is not None and unit.cancel_scope.is_stale(generation):
+    if unit.is_generation_stale(generation):
         return True
-    if unit.cancel_scope.discarding and generation != unit.cancel_scope.generation:
+    if unit.is_generation_discarding(generation):
         return True
     return False
 
@@ -306,7 +329,7 @@ async def _release_unit_after_drain(unit: PipelineUnit, session: Any, session_id
     Runs in its own asyncio task so the route handler's finally block can return
     immediately. The unit stays unavailable for new claims (unit.session != None)
     until SESSION_END travels all the way through the handler chain back to
-    output_queue — observed by the send loop, which sets session.drained.
+    output_queue — observed by the send loop, which sets session._drained.
 
     Past SESSION_END_QUARANTINE_TIMEOUT_S (a wedged or dead handler thread) the
     unit is quarantined, NOT released: still-running handlers could emit the old
@@ -320,7 +343,7 @@ async def _release_unit_after_drain(unit: PipelineUnit, session: Any, session_id
     elapsed = 0.0
     warned = False
     try:
-        while not session.drained.is_set():
+        while not session._drained.is_set():
             await asyncio.sleep(0.05)
             elapsed += 0.05
             if not warned and elapsed >= SESSION_END_DRAIN_TIMEOUT_S:
@@ -329,8 +352,8 @@ async def _release_unit_after_drain(unit: PipelineUnit, session: Any, session_id
                     f"unit will remain unavailable until handlers finish (session {session_id})"
                 )
                 warned = True
-            if session.quarantined_at is None and elapsed >= SESSION_END_QUARANTINE_TIMEOUT_S:
-                session.quarantined_at = time.monotonic()
+            if session._quarantined_at is None and elapsed >= SESSION_END_QUARANTINE_TIMEOUT_S:
+                session._quarantined_at = time.monotonic()
                 _safe_unregister(unit, session_id)
                 logger.error(
                     f"Pipeline {unit.index}: SESSION_END still not drained after {elapsed:.0f}s — "
@@ -344,7 +367,7 @@ async def _release_unit_after_drain(unit: PipelineUnit, session: Any, session_id
             _safe_unregister(unit, session_id)
         finally:
             unit.session = None
-        recovered = " after quarantine" if session.quarantined_at is not None else ""
+        recovered = " after quarantine" if session._quarantined_at is not None else ""
         logger.info(f"Pipeline {unit.index} released{recovered} (session {session_id} ended)")
 
 
@@ -365,7 +388,7 @@ def _release_session(unit: PipelineUnit, session_id: str) -> None:
     if old_session is None:
         # Already released (e.g. duplicate close callbacks racing).
         return
-    old_session.released_at = time.monotonic()
+    old_session._released_at = time.monotonic()
     # The send loop can be parked on output from an unclaimed internal
     # prefetch. Invalidate that response while its connection state is still
     # registered, and drop the per-session held item so SESSION_END can drain.
@@ -383,12 +406,12 @@ def _release_session(unit: PipelineUnit, session_id: str) -> None:
             # A duplicate close callback may race the drain task's unregister.
             logger.debug("Skipped late usage for unregistered session %s", session_id)
 
-    if old_session.pending_output_item is not None:
-        account_usage(old_session.pending_output_item)
-        old_session.pending_output_item = None
-    for item in old_session.pending_text_output_items:
+    if old_session._pending_output_item is not None:
+        account_usage(old_session._pending_output_item)
+        old_session._pending_output_item = None
+    for item in old_session._pending_text_output_items:
         account_usage(item)
-    old_session.pending_text_output_items.clear()
+    old_session._pending_text_output_items.clear()
     _clean_unit(unit, on_discard=account_usage)
     # Tag SESSION_END with this session's id so that, after a force
     # release, a late arrival can't satisfy the next session's drain.
@@ -500,7 +523,7 @@ async def _dispatch_client_event(
         if result:
             response_key = None
             if result.type != "error":
-                unit.cancel_scope.new_response()
+                unit.new_response_generation()
                 response_key = service.current_response_key(session_id)
             await send_correlated([result])
             if result.type == "response.created":
@@ -509,7 +532,7 @@ async def _dispatch_client_event(
     elif isinstance(event, ResponseCancelEvent):
         had_response = service.has_active_or_pending_response(session_id)
         if had_response:
-            unit.cancel_scope.cancel()
+            unit.cancel_generation()
             _flush_queue(unit.text_prompt_queue, preserve=_keep_pipeline_control)
         _flush_queue(unit.output_queue, preserve=_keep_cancel_bookkeeping)
         _flush_queue(unit.text_output_queue, preserve=_keep_user_text_event)
@@ -568,13 +591,13 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
             try:
                 text_msg = None
                 if session is not None and session_id is not None:
-                    for index, pending in enumerate(session.pending_text_output_items):
+                    for index, pending in enumerate(session._pending_text_output_items):
                         if not _response_key_output_is_blocked(
                             unit,
                             session_id,
                             _output_response_key(pending),
                         ):
-                            text_msg = session.pending_text_output_items.pop(index)
+                            text_msg = session._pending_text_output_items.pop(index)
                             break
                 if text_msg is None:
                     text_msg = unit.text_output_queue.get_nowait()
@@ -593,7 +616,7 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
                     # an early tool call must never overtake response.created.
                     # Unlike the serial output hold, this list does not stall
                     # the origin response whose completion enables the claim.
-                    session.pending_text_output_items.append(text_msg)
+                    session._pending_text_output_items.append(text_msg)
                     text_msg = None
                 if text_msg is None:
                     raise Empty
@@ -632,7 +655,7 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
                         transport.discard_pending_audio()
                     if was_in_response or was_response_pending:
                         if interrupt_enabled:
-                            unit.cancel_scope.cancel()
+                            unit.cancel_generation()
                             unit.service.close_pending_responses(session_id)
                             _flush_queue(unit.text_prompt_queue, preserve=_keep_pipeline_control)
                             _flush_queue(unit.output_queue, preserve=_keep_cancel_bookkeeping)
@@ -652,9 +675,9 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
                 pass
 
             try:
-                if session is not None and session.pending_output_item is not None:
-                    audio_chunk = session.pending_output_item
-                    session.pending_output_item = None
+                if session is not None and session._pending_output_item is not None:
+                    audio_chunk = session._pending_output_item
+                    session._pending_output_item = None
                 else:
                     audio_chunk = unit.output_queue.get_nowait()
 
@@ -671,7 +694,7 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
                     # response.create, or before response.created finishes
                     # sending. Keep every lifecycle event private until the
                     # response is publicly announced.
-                    session.pending_output_item = audio_chunk
+                    session._pending_output_item = audio_chunk
                     await asyncio.sleep(0.01)
                     continue
 
@@ -721,16 +744,16 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
                                 unit.response_playing.clear()
                             if not unit.service.has_active_or_pending_response(session_id):
                                 unit.should_listen.set()
-                        unit.cancel_scope.response_done(audio_generation)
+                        unit.mark_generation_done(audio_generation)
                         logger.info(
                             "Pipeline %d: stale response lifecycle cleaned up",
                             unit.index,
                         )
                         continue
-                    if audio_generation is not None and unit.cancel_scope.is_stale(audio_generation):
+                    if audio_generation is not None and unit.is_generation_stale(audio_generation):
                         if session_id:
                             unit.service.close_response_key(session_id, response_key)
-                        unit.cancel_scope.response_done(audio_generation)
+                        unit.mark_generation_done(audio_generation)
                         unit.should_listen.set()
                         logger.info(f"Pipeline {unit.index}: stale response complete, listening re-enabled")
                         continue
@@ -744,7 +767,7 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
                     if session_id:
                         unit.service.clear_pending_response(session_id, response_key)
                     unit.response_playing.clear()
-                    unit.cancel_scope.response_done(audio_generation)
+                    unit.mark_generation_done(audio_generation)
                     unit.should_listen.set()
                     logger.info(f"Pipeline {unit.index}: response complete, listening re-enabled")
                     continue
@@ -757,7 +780,7 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
                 if is_control_message(audio_chunk, SESSION_END.kind):
                     chunk_session_id = getattr(audio_chunk, "session_id", None)
                     if session is not None and chunk_session_id in (None, session.session_id):
-                        session.drained.set()
+                        session._drained.set()
                         logger.debug(f"Pipeline {unit.index}: SESSION_END drained")
                     continue
 
@@ -789,7 +812,7 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
                     ):
                         # Only stash if we still have a session; otherwise drop it.
                         if session is not None:
-                            session.pending_output_item = next_chunk
+                            session._pending_output_item = next_chunk
                         break
 
                     if _should_discard_audio(unit, next_chunk):
@@ -797,13 +820,13 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
 
                     if _audio_response_key(next_chunk) != response_key:
                         if session is not None:
-                            session.pending_output_item = next_chunk
+                            session._pending_output_item = next_chunk
                         break
 
                     next_audio = _to_audio_bytes(next_chunk)
                     if len(audio_batch) + len(next_audio) > MAX_AUDIO_BATCH_BYTES:
                         if session is not None:
-                            session.pending_output_item = next_chunk
+                            session._pending_output_item = next_chunk
                         break
                     audio_batch.extend(next_audio)
 
@@ -828,3 +851,26 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
         except Exception as e:
             logger.error(f"Pipeline {unit.index} send loop error: {e}")
             await asyncio.sleep(0.1)
+
+def pool_view(unit: PipelineUnit, now: float) -> dict[str, Any]:
+    """Status view for /v1/pool — the only place lifecycle timing escapes."""
+    s = unit.session
+    if s is None:
+        return {"index": unit.index, "state": "idle", "session_id": None}
+    if s._released_at is None:
+        return {"index": unit.index, "state": "active", "session_id": s.session_id}
+    if s._quarantined_at is not None:
+        return {
+            "index": unit.index,
+            "state": "stuck",
+            "session_id": s.session_id,
+            "draining_for_s": round(now - s._released_at, 2),
+            "stuck_for_s": round(now - s._quarantined_at, 2),
+        }
+    return {
+        "index": unit.index,
+        "state": "draining",
+        "session_id": s.session_id,
+        "draining_for_s": round(now - s._released_at, 2),
+    }
+
