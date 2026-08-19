@@ -17,6 +17,7 @@ interface SettingsPayload {
   ttsBackend: string
   ttsVoice: string
   language: string
+  llmDisableThinking: boolean
 }
 
 // ── DOM 引用 ────────────────────────────────────────────────────────────
@@ -27,6 +28,7 @@ const llmBackend = document.getElementById('llm-backend') as HTMLSelectElement
 const llmModel = document.getElementById('llm-model') as HTMLInputElement
 const llmApiKey = document.getElementById('llm-api-key') as HTMLInputElement
 const llmBaseUrl = document.getElementById('llm-base-url') as HTMLInputElement
+const llmDisableThinking = document.getElementById('llm-disable-thinking') as HTMLInputElement
 const sttBackend = document.getElementById('stt-backend') as HTMLSelectElement
 const sttModel = document.getElementById('stt-model') as HTMLInputElement
 const ttsBackend = document.getElementById('tts-backend') as HTMLSelectElement
@@ -70,6 +72,7 @@ function updateLlmFields(): void {
   const remote = ['responses-api', 'chat-completions'].includes(llmBackend.value)
   document.getElementById('llm-base-url-row')!.style.display = remote ? '' : 'none'
   document.getElementById('llm-api-key-row')!.style.display = remote ? '' : 'none'
+  document.getElementById('llm-disable-thinking-row')!.style.display = remote ? '' : 'none'
   llmModel.placeholder = remote
     ? '远程模型名（如 gpt-5.4-mini、Qwen3.6）'
     : '本地 HF 模型名（如 mlx-community/Qwen3-4B-Instruct-2507-bf16）'
@@ -85,6 +88,7 @@ function render(settings: SettingsPayload): void {
   llmModel.value = settings.llmModel
   llmApiKey.value = settings.llmApiKey
   llmBaseUrl.value = settings.llmBaseUrl
+  llmDisableThinking.checked = settings.llmDisableThinking
   updateLlmFields()
   sttBackend.value = settings.sttBackend
   sttModel.value = settings.sttModel
@@ -108,6 +112,7 @@ function collect(): SettingsPayload {
     llmModel: llmModel.value.trim(),
     llmApiKey: llmApiKey.value,
     llmBaseUrl: llmBaseUrl.value.trim(),
+    llmDisableThinking: llmDisableThinking.checked,
     sttBackend: sttBackend.value,
     sttModel: sttModel.value.trim(),
     ttsBackend: ttsBackend.value,

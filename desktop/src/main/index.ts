@@ -240,6 +240,7 @@ async function startVoice(): Promise<void> {
     sttModel: settings.sttModel,
     ttsBackend: settings.ttsBackend,
     ttsVoice: settings.ttsVoice,
+    llmDisableThinking: settings.llmDisableThinking,
     onLog: (line) => pushVoiceLog(line),
     onEvent: (event) => {
       const state = voiceStateFromEvent(event)
@@ -291,23 +292,75 @@ function notify(title: string, body: string): void {
   new Notification({ title, body }).show()
 }
 
-/** 摘要截断（用于播报/通知，避免念出整段结果）。 */
-function summarize(text: string | undefined, max = 60): string {
+/** 摘要截断：按句子边界截断，避免念一半断句。 */
+function summarize(text: string | undefined, max = 120): string {
   const s = (text || '').trim()
-  return s.length > max ? `${s.slice(0, max)}……` : s
+  if (s.length <= max) return s
+  const cut = s.slice(0, max)
+  // 在 max 内找最后一个句子结束符（。！？!?；;\n）
+  const ends = ['。', '！', '？', '!', '?', '；', ';', '\n']
+  let last = -1
+  for (const ch of ends) last = Math.max(last, cut.lastIndexOf(ch))
+  if (last >= Math.floor(max * 0.4)) {
+    return `${s.slice(0, last + 1)}……`
+  }
+  return `${cut}……`
+}
+
+/** 用远程 LLM 把任务结果概括成一句话；失败或本地后端时回退到句子截断。 */
+async function summarizeTaskResult(text: string | undefined): Promise<string> {
+  const s = (text || '').trim()
+  if (!s) return ''
+  const settings = settingsStore?.get()
+  const remote = settings && ['responses-api', 'chat-completions'].includes(settings.llmBackend)
+  if (!remote || !settings) return summarize(s)
+  const baseUrl = (settings.llmBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '')
+  const url = `${baseUrl}/chat/completions`
+  const key = settings.llmApiKey || process.env.OPENAI_API_KEY || 'none'
+  const body: Record<string, unknown> = {
+    model: settings.llmModel || 'gpt-5.4-mini',
+    messages: [
+      {
+        role: 'user',
+        content: `请用一句话（不超过50字）简洁概括下面任务结果的核心结论，只输出概括本身：\n\n${s}`,
+      },
+    ],
+    stream: false,
+  }
+  if (settings.llmDisableThinking) body.chat_template_kwargs = { enable_thinking: false }
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    })
+    if (!resp.ok) return summarize(s)
+    const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> }
+    const summary = data.choices?.[0]?.message?.content?.trim()
+    if (!summary) return summarize(s)
+    return summary.length > 150 ? summarize(summary, 150) : summary
+  } catch {
+    return summarize(s)
+  }
 }
 
 /** 任务完成/失败/取消时：系统通知 + Qwen3 语音播报。 */
-function announceTaskCompletion(task: Record<string, unknown>): void {
+async function announceTaskCompletion(task: Record<string, unknown>): Promise<void> {
   const id = String(task.id || '')
   if (!id || announcedTaskIds.has(id)) return
   announcedTaskIds.add(id)
   const status = String(task.status || '')
   let body = ''
-  if (status === 'completed') body = `任务已完成：${summarize(task.result as string | undefined)}`
-  else if (status === 'failed') body = `任务执行失败：${summarize(task.error as string | undefined)}`
-  else if (status === 'cancelled') body = '任务已取消'
-  else return
+  if (status === 'completed') {
+    body = `任务已完成：${await summarizeTaskResult(task.result as string | undefined)}`
+  } else if (status === 'failed') {
+    body = `任务执行失败：${summarize(task.error as string | undefined)}`
+  } else if (status === 'cancelled') {
+    body = '任务已取消'
+  } else {
+    return
+  }
   notify('speech-to-speech', body)
   if (announcer?.running) {
     announcer.speak(body)
@@ -332,7 +385,7 @@ function subscribeGatewayEvents(): void {
       const task = (msg.data?.task ?? null) as Record<string, unknown> | null
       const status = String(msg.data?.status ?? task?.status ?? '')
       if (status === 'completed' || status === 'failed' || status === 'cancelled') {
-        if (task) announceTaskCompletion(task)
+        if (task) void announceTaskCompletion(task)
       }
     } catch {
       // 忽略无法解析的消息

@@ -103,6 +103,13 @@
                 <label for="llm-api-key">API Key</label>
                 <input id="llm-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="留空用环境变量 OPENAI_API_KEY" />
               </div>
+              <div class="setting-row remote-only" id="llm-disable-thinking-row">
+                <label for="llm-disable-thinking">禁用 LLM 思考（reasoning）</label>
+                <label class="toggle-switch">
+                  <input id="llm-disable-thinking" type="checkbox" />
+                  <span class="toggle-track"></span>
+                </label>
+              </div>
               <div class="setting-row">
                 <label for="wake-word-enabled">唤醒词</label>
                 <div class="toggle-field">

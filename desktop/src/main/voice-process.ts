@@ -46,6 +46,8 @@ export interface VoiceOptions {
   ttsBackend?: string
   /** TTS 音色 */
   ttsVoice?: string
+  /** 禁用远程 LLM 思考/推理（仅 responses-api / chat-completions 后端生效） */
+  llmDisableThinking?: boolean
 }
 
 /**
@@ -74,6 +76,7 @@ export class EmbeddedVoice {
   private readonly sttModel: string
   private readonly ttsBackend: string
   private readonly ttsVoice: string
+  private readonly llmDisableThinking: boolean
 
   constructor(options: VoiceOptions = {}) {
     this.root = options.root || process.env.GATEWAY_ROOT || DEFAULT_ROOT
@@ -95,6 +98,7 @@ export class EmbeddedVoice {
     this.sttModel = options.sttModel || ''
     this.ttsBackend = options.ttsBackend || 'qwen3'
     this.ttsVoice = options.ttsVoice || ''
+    this.llmDisableThinking = options.llmDisableThinking ?? true
   }
 
   get running(): boolean {
@@ -133,6 +137,10 @@ export class EmbeddedVoice {
     }
     if (this.llmBaseUrl) {
       args.push('--responses_api_base_url', this.llmBaseUrl)
+    }
+    // 远程 LLM 思考开关（vLLM/Qwen 通过 chat_template_kwargs.enable_thinking=false 生效）
+    if (this.llmBackend === 'responses-api' || this.llmBackend === 'chat-completions') {
+      args.push(this.llmDisableThinking ? '--responses_api_disable_thinking' : '--no_responses_api_disable_thinking')
     }
     if (this.wakeWordEnabled) {
       args.push('--enable_wake_word', '--wake_word', this.wakeWord)

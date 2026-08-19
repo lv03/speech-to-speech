@@ -39,6 +39,8 @@ export interface DesktopSettings {
   ttsVoice: string
   /** 界面语言 */
   language: string
+  /** 禁用远程 LLM 的思考/推理（对应 --responses_api_disable_thinking） */
+  llmDisableThinking: boolean
 }
 
 export const DEFAULT_SETTINGS: DesktopSettings = {
@@ -60,6 +62,7 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   ttsBackend: 'qwen3',
   ttsVoice: '',
   language: 'auto',
+  llmDisableThinking: true,
 }
 
 export class SettingsStore {
@@ -120,6 +123,7 @@ export class SettingsStore {
     if (typeof raw.sttModel === 'string') out.sttModel = raw.sttModel.trim()
     if (typeof raw.ttsBackend === 'string' && raw.ttsBackend.trim()) out.ttsBackend = raw.ttsBackend.trim()
     if (typeof raw.ttsVoice === 'string') out.ttsVoice = raw.ttsVoice.trim()
+    if (typeof raw.llmDisableThinking === 'boolean') out.llmDisableThinking = raw.llmDisableThinking
     return out
   }
 
