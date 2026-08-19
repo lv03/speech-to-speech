@@ -365,6 +365,46 @@ class RealtimeService:
     def connection_ids(self) -> list[str]:
         return list(self._conns)
 
+    # ── Connection state accessors ────────────────────────────────────
+    # Public read surface for the session lifecycle layer (websocket_router /
+    # session_lifecycle). Hides ConnState so callers never reach into _state().
+
+    def runtime_config(self, conn_id: str) -> RuntimeConfig:
+        return self._conns[conn_id].runtime_config
+
+    def current_response_key(self, conn_id: str) -> str | None:
+        return self._conns[conn_id].current_response_key
+
+    def is_in_response(self, conn_id: str) -> bool:
+        return self._conns[conn_id].in_response
+
+    def is_response_pending(self, conn_id: str) -> bool:
+        return self._conns[conn_id].response_pending
+
+    def has_active_or_pending_response(self, conn_id: str) -> bool:
+        st = self._conns[conn_id]
+        return st.in_response or st.response_pending
+
+    def is_active_response(self, conn_id: str, response_key: str | None) -> bool:
+        st = self._conns[conn_id]
+        return st.in_response and st.current_response_key in (None, response_key)
+
+    def response_key_is_obsolete(self, conn_id: str, response_key: str | None) -> bool:
+        """Whether *response_key* belongs to a closed response rather than a queued one."""
+        if response_key is None:
+            return False
+        st = self._conns[conn_id]
+        if response_key in st.closed_response_keys:
+            return True
+        return (
+            st.in_response
+            and st.current_response_key not in (None, response_key)
+            and response_key not in st.pending_response_keys
+        )
+
+    def clear_pending_response(self, conn_id: str, response_key: str | None = None) -> None:
+        self._conns[conn_id].clear_pending_response(response_key)
+
     # ── Client event parsing ─────────────────────
 
     @staticmethod

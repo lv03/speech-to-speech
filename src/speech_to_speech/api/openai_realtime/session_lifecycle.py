@@ -126,16 +126,7 @@ def _response_event_key(item: Any) -> str | None:
 
 def _response_key_is_obsolete(unit: PipelineUnit, session_id: str, response_key: str | None) -> bool:
     """Whether *response_key* belongs to a closed response rather than a queued one."""
-    if response_key is None:
-        return False
-    st = unit.service._state(session_id)
-    if response_key in st.closed_response_keys:
-        return True
-    return (
-        st.in_response
-        and st.current_response_key not in (None, response_key)
-        and response_key not in st.pending_response_keys
-    )
+    return unit.service.response_key_is_obsolete(session_id, response_key)
 
 
 def _output_response_key(item: Any) -> str | None:
@@ -228,7 +219,7 @@ async def _send_unlock_acknowledgment(
         return
     if result.type != "error":
         unit.cancel_scope.new_response()
-        response_key = unit.service._state(session_id).current_response_key
+        response_key = unit.service.current_response_key(session_id)
         if transport is not None:
             await transport.send_events([result])
         if result.type == "response.created":
@@ -452,7 +443,7 @@ async def _dispatch_client_event(
             )
             return
         chunks = service.handle_audio_append(session_id, event)
-        rt_cfg = service._state(session_id).runtime_config
+        rt_cfg = service.runtime_config(session_id)
         for chunk in chunks:
             unit.input_queue.put((chunk, rt_cfg))
 
@@ -510,14 +501,13 @@ async def _dispatch_client_event(
             response_key = None
             if result.type != "error":
                 unit.cancel_scope.new_response()
-                response_key = service._state(session_id).current_response_key
+                response_key = service.current_response_key(session_id)
             await send_correlated([result])
             if result.type == "response.created":
                 service.response.mark_response_created_sent(session_id, response_key)
 
     elif isinstance(event, ResponseCancelEvent):
-        st = service._state(session_id)
-        had_response = st.in_response or st.response_pending
+        had_response = service.has_active_or_pending_response(session_id)
         if had_response:
             unit.cancel_scope.cancel()
             _flush_queue(unit.text_prompt_queue, preserve=_keep_pipeline_control)
@@ -620,9 +610,8 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
                 was_in_response = False
                 was_response_pending = False
                 if is_speech_start and session_id:
-                    st = unit.service._state(session_id)
-                    was_in_response = st.in_response
-                    was_response_pending = st.response_pending
+                    was_in_response = unit.service.is_in_response(session_id)
+                    was_response_pending = unit.service.is_response_pending(session_id)
 
                 if transport is not None and isinstance(text_msg, PipelineEvent) and session_id:
                     events = unit.service.dispatch_pipeline_event(session_id, text_msg)
@@ -630,7 +619,7 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
                         await transport.send_events(events)
 
                 if isinstance(text_msg, SpeechStartedEvent) and session_id:
-                    active_cfg = unit.service._state(session_id).runtime_config
+                    active_cfg = unit.service.runtime_config(session_id)
                     interrupt_enabled = text_msg.interrupt_response and (
                         active_cfg is None or active_cfg.interrupt_response_enabled
                     )
@@ -717,8 +706,7 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
                             continue
                         cleaned_active_response = False
                         if session_id:
-                            st = unit.service._state(session_id)
-                            if st.in_response and st.current_response_key in (None, response_key):
+                            if unit.service.is_active_response(session_id, response_key):
                                 cleaned_active_response = True
                                 events = unit.service.finish_response(
                                     session_id,
@@ -731,7 +719,7 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
                                 unit.service.close_response_key(session_id, response_key)
                             if cleaned_active_response:
                                 unit.response_playing.clear()
-                            if not (st.in_response or st.response_pending):
+                            if not unit.service.has_active_or_pending_response(session_id):
                                 unit.should_listen.set()
                         unit.cancel_scope.response_done(audio_generation)
                         logger.info(
@@ -754,7 +742,7 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
                             unit.service.finish_response(session_id, response_key=response_key)
                         )
                     if session_id:
-                        unit.service._state(session_id).clear_pending_response(response_key)
+                        unit.service.clear_pending_response(session_id, response_key)
                     unit.response_playing.clear()
                     unit.cancel_scope.response_done(audio_generation)
                     unit.should_listen.set()

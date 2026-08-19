@@ -277,7 +277,7 @@ def create_app(
             chunks = unit.service.append_pcm(session_id, pcm, PIPELINE_SAMPLE_RATE)
             if not chunks:
                 return
-            rt_cfg = unit.service._state(session_id).runtime_config
+            rt_cfg = unit.service.runtime_config(session_id)
             for chunk in chunks:
                 unit.input_queue.put((chunk, rt_cfg))
 
