@@ -691,7 +691,7 @@ class RealtimeService:
         queue = self.text_prompt_queue
         if queue and transcript:
             request = GenerateResponseRequest(
-                runtime_config=cfg,
+                runtime_config=cfg.snapshot(),
                 language_code=event.language_code,
                 turn_id=event.turn_id,
                 turn_revision=event.turn_revision,
@@ -726,7 +726,7 @@ class RealtimeService:
         queue = self.text_prompt_queue
         if queue:
             request = GenerateResponseRequest(
-                runtime_config=st.runtime_config,
+                runtime_config=st.runtime_config.snapshot(),
                 audio=event.audio,
                 audio_sample_rate=event.audio_sample_rate,
                 turn_id=event.turn_id,

@@ -1770,7 +1770,9 @@ class TestHandleResponseCreate:
         assert req.response is not None
         assert req.response.instructions == "override instructions"
         assert req.response.tool_choice == "auto"
-        assert req.runtime_config is runtime_config
+        assert req.runtime_config.chat is runtime_config.chat
+        assert req.runtime_config.session == runtime_config.session
+        assert req.runtime_config.session is not runtime_config.session
 
     def test_response_create_preserves_latest_user_turn_timing(self, service, conn_id, text_prompt_queue):
         service.dispatch_pipeline_event(
@@ -3699,7 +3701,9 @@ class TestDispatchPipelineEvent:
         assert started[0].item_id not in state.input_items
         request = text_prompt_queue.get_nowait()
         assert isinstance(request, GenerateResponseRequest)
-        assert request.runtime_config is runtime_config
+        assert request.runtime_config.chat is runtime_config.chat
+        assert request.runtime_config.session == runtime_config.session
+        assert request.runtime_config.session is not runtime_config.session
         assert np.array_equal(request.audio, audio)
         assert request.audio_sample_rate == 16000
         assert request.turn_id == "turn_1"

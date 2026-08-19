@@ -179,7 +179,7 @@ class ResponseHandler(RealtimeBaseHandler):
             return False
 
         request = GenerateResponseRequest(
-            runtime_config=st.runtime_config,
+            runtime_config=st.runtime_config.snapshot(),
             turn_id=st.speculative_user_turn_id,
             turn_revision=st.speculative_user_turn_revision,
             speech_stopped_at_s=st.speculative_user_speech_stopped_at_s,
@@ -585,7 +585,7 @@ class ResponseHandler(RealtimeBaseHandler):
         cfg = st.runtime_config
         queue = self._queue(conn_id)
         request = GenerateResponseRequest(
-            runtime_config=cfg,
+            runtime_config=cfg.snapshot(),
             response=event.response,
             turn_id=None if out_of_band else st.speculative_user_turn_id,
             turn_revision=None if out_of_band else st.speculative_user_turn_revision,

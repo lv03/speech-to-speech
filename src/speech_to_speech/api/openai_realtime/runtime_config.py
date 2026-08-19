@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from openai.types.realtime import RealtimeSessionCreateRequest
 from openai.types.realtime.realtime_audio_config import RealtimeAudioConfig
 from openai.types.realtime.realtime_audio_config_input import RealtimeAudioConfigInput
@@ -79,3 +81,13 @@ class RuntimeConfig(BaseModel):
         """Merge non-None, explicitly-set fields from 'update' into the
         current 'session', preserving any fields not present in the update."""
         _apply_update(self.session, update)
+
+    def snapshot(self) -> RuntimeConfig:
+        """Return a request-time snapshot for a pipeline message.
+
+        The conversation (``chat``) is shared by reference — the LLM handler
+        must append/rollback against the live chat. The session config is
+        deep-copied so an in-flight response cannot observe a concurrent
+        ``session.update`` mutation from the RealtimeService.
+        """
+        return RuntimeConfig(chat=self.chat, session=self.session.model_copy(deep=True))
