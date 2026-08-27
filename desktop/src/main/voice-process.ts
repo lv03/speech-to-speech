@@ -132,6 +132,9 @@ export class EmbeddedVoice {
       }
       if (ttsVoiceArg[this.ttsBackend]) args.push(ttsVoiceArg[this.ttsBackend], this.ttsVoice)
     }
+    // VAD 投机重开调参（实验）：拉长提交窗口、收紧未回复重开窗口，
+    // 避免「短句+停顿+继续补充」的说话方式触发过频 revision 重开。
+    args.push('--speculative_reopen_ms', '2500', '--unanswered_reopen_ms', '1500')
     if (this.llmModel) {
       args.push('--model_name', this.llmModel)
     }

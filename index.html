@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Developer Card</title>
+  <style>
+    :root {
+      --bg: #f4f6fb;
+      --bg-grad-1: #e0e7ff;
+      --bg-grad-2: #fae8ff;
+      --card-bg: rgba(255, 255, 255, 0.75);
+      --card-border: rgba(255, 255, 255, 0.9);
+      --text: #1e293b;
+      --text-muted: #64748b;
+      --accent: #6366f1;
+      --accent-2: #a855f7;
+      --shadow: 0 20px 50px rgba(99, 102, 241, 0.18);
+      --btn-bg: rgba(255, 255, 255, 0.7);
+      --btn-text: #1e293b;
+      --chip-bg: rgba(99, 102, 241, 0.1);
+      --chip-text: #4f46e5;
+    }
+
+    [data-theme="dark"] {
+      --bg: #0b1020;
+      --bg-grad-1: #111827;
+      --bg-grad-2: #1e1b4b;
+      --card-bg: rgba(30, 41, 59, 0.7);
+      --card-border: rgba(148, 163, 184, 0.2);
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+      --accent: #818cf8;
+      --accent-2: #c084fc;
+      --shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+      --btn-bg: rgba(51, 65, 85, 0.7);
+      --btn-text: #e2e8f0;
+      --chip-bg: rgba(129, 140, 248, 0.15);
+      --chip-text: #a5b4fc;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: var(--bg);
+      background-image:
+        radial-gradient(60rem 60rem at 15% 10%, var(--bg-grad-1), transparent 60%),
+        radial-gradient(50rem 50rem at 85% 90%, var(--bg-grad-2), transparent 60%);
+      color: var(--text);
+      transition: background-color 0.5s ease, color 0.5s ease;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: var(--card-bg);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      border: 1px solid var(--card-border);
+      border-radius: 28px;
+      padding: 40px 36px;
+      box-shadow: var(--shadow);
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+      transition: background-color 0.5s ease, border-color 0.5s ease,
+        box-shadow 0.5s ease, transform 0.3s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-4px);
+    }
+
+    /* Decorative top gradient bar */
+    .card::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 5px;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent));
+      background-size: 200% 100%;
+      animation: shimmer 4s linear infinite;
+    }
+
+    @keyframes shimmer {
+      0% { background-position: 0% 0; }
+      100% { background-position: 200% 0; }
+    }
+
+    .avatar {
+      width: 112px;
+      height: 112px;
+      border-radius: 50%;
+      margin: 0 auto 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      padding: 4px;
+      box-shadow: 0 8px 24px rgba(99, 102, 241, 0.35);
+    }
+
+    .avatar-inner {
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      background: var(--card-bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 3rem;
+      font-weight: 700;
+      color: var(--accent);
+      transition: background-color 0.5s ease;
+    }
+
+    .name {
+      font-size: 1.65rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 4px;
+    }
+
+    .role {
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--accent);
+      margin-bottom: 16px;
+    }
+
+    .bio {
+      font-size: 0.95rem;
+      line-height: 1.6;
+      color: var(--text-muted);
+      margin-bottom: 24px;
+    }
+
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: center;
+      margin-bottom: 28px;
+    }
+
+    .tag {
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: var(--chip-bg);
+      color: var(--chip-text);
+      transition: background-color 0.5s ease, color 0.5s ease;
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 13px 16px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      border: none;
+      border-radius: 14px;
+      cursor: pointer;
+      background: var(--btn-bg);
+      color: var(--btn-text);
+      transition: transform 0.15s ease, box-shadow 0.2s ease,
+        background-color 0.3s ease;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    }
+
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn.primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #fff;
+    }
+
+    .quote {
+      margin-top: 24px;
+      min-height: 56px;
+      padding: 16px 18px;
+      border-radius: 16px;
+      background: var(--chip-bg);
+      color: var(--text);
+      font-style: italic;
+      font-size: 0.9rem;
+      line-height: 1.5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.4s ease, transform 0.4s ease,
+        background-color 0.5s ease;
+    }
+
+    .quote.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="avatar">
+      <div class="avatar-inner" id="avatar">A</div>
+    </div>
+    <h1 class="name">Alex Morgan</h1>
+    <p class="role">Full-Stack Developer</p>
+    <p class="bio">
+      I build fast, delightful web experiences with modern JavaScript,
+      clean CSS, and a love for elegant APIs. Always learning, always shipping.
+    </p>
+    <div class="tags">
+      <span class="tag">JavaScript</span>
+      <span class="tag">React</span>
+      <span class="tag">Node.js</span>
+      <span class="tag">CSS</span>
+    </div>
+    <div class="actions">
+      <button class="btn" id="themeToggle" aria-label="Toggle theme">
+        🌙 Dark Mode
+      </button>
+      <button class="btn primary" id="quoteBtn">⚡ New Quote</button>
+    </div>
+    <div class="quote" id="quote">Click "New Quote" for a dose of code wisdom.</div>
+  </div>
+
+  <script>
+    const quotes = [
+      "First, solve the problem. Then, write the code. — John Johnson",
+      "Any fool can write code that a computer can understand. Good programmers write code that humans can understand. — Martin Fowler",
+      "Code is like humor. When you have to explain it, it's bad. — Cory House",
+      "Simplicity is the soul of efficiency. — Austin Freeman",
+      "Before software can be reusable it first has to be usable. — Ralph Johnson",
+      "Make it work, make it right, make it fast. — Kent Beck",
+      "Programs must be written for people to read, and only incidentally for machines to execute. — Harold Abelson",
+      "The best way to predict the future is to invent it. — Alan Kay",
+      "Talk is cheap. Show me the code. — Linus Torvalds",
+      "It's not a bug — it's an undocumented feature. — Anonymous",
+      "Clean code always looks like it was written by someone who cares. — Robert C. Martin",
+      "The only way to go fast, is to go well. — Robert C. Martin"
+    ];
+
+    const themeToggle = document.getElementById("themeToggle");
+    const quoteBtn = document.getElementById("quoteBtn");
+    const quoteEl = document.getElementById("quote");
+
+    let lastQuote = -1;
+
+    themeToggle.addEventListener("click", () => {
+      const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+      if (isDark) {
+        document.documentElement.removeAttribute("data-theme");
+        themeToggle.innerHTML = "🌙 Dark Mode";
+      } else {
+        document.documentElement.setAttribute("data-theme", "dark");
+        themeToggle.innerHTML = "☀️ Light Mode";
+      }
+    });
+
+    quoteBtn.addEventListener("click", () => {
+      let idx;
+      do {
+        idx = Math.floor(Math.random() * quotes.length);
+      } while (idx === lastQuote && quotes.length > 1);
+      lastQuote = idx;
+
+      quoteEl.classList.remove("visible");
+      setTimeout(() => {
+        quoteEl.textContent = quotes[idx];
+        quoteEl.classList.add("visible");
+      }, 200);
+    });
+
+    // Show an initial quote on load
+    setTimeout(() => quoteEl.classList.add("visible"), 300);
+  </script>
+</body>
+</html>

@@ -335,12 +335,17 @@ async function summarizeTaskResult(text: string | undefined): Promise<string> {
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(30_000),
     })
-    if (!resp.ok) return summarize(s)
+    if (!resp.ok) {
+      console.error(`[desktop] 任务总结 LLM 请求失败: ${resp.status} ${await resp.text().catch(() => '')}`)
+      return summarize(s)
+    }
     const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> }
     const summary = data.choices?.[0]?.message?.content?.trim()
+    console.log(`[desktop] 任务总结 LLM 返回: ${summary?.slice(0, 80) ?? '（空）'}`)
     if (!summary) return summarize(s)
     return summary.length > 150 ? summarize(summary, 150) : summary
-  } catch {
+  } catch (error) {
+    console.error('[desktop] 任务总结 LLM 调用异常:', error)
     return summarize(s)
   }
 }

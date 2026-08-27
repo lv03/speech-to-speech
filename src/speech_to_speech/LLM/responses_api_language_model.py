@@ -138,6 +138,7 @@ class ResponsesApiModelHandler(BaseOpenAICompatibleHandler):
         return optional_kwargs
 
     def _request(self, api_input: Any, optional_kwargs: dict[str, Any]) -> Any:
+        logger.info("[LLM-REQ] model=%s extra_body=%s", self.model_name, self._extra_body)
         return self.client.responses.create(
             model=self.model_name,
             input=api_input,
