@@ -110,6 +110,8 @@ enable_live_transcription / live_transcription_update_interval
 | `faster-whisper` | FasterWhisper...Args | simple | faster_whisper_stt | faster-whisper | |
 | `parakeet-tdt` | ParakeetTDT...Args | `_create_parakeet` | parakeet_tdt | — | |
 | `paraformer` | Paraformer...Args | simple | paraformer_stt | paraformer | |
+| `fun-asr-nano` | FunASRNano...Args | simple | fun_asr_nano_stt | paraformer | |
+| `openai` | OpenAICompatible...Args | simple | openai_stt | — | |
 
 ### 4.2 LLM_BACKENDS
 
@@ -129,6 +131,9 @@ enable_live_transcription / live_transcription_update_interval
 | `pocket` | PocketTTS...Args | simple (同左) | pocket_tts | pocket |
 | `kokoro` | KokoroTTS...Args | simple (同左) | kokoro | kokoro |
 | `qwen3` | Qwen3TTS...Args | simple (同左) | qwen3_tts | — |
+| `openai` | OpenAICompatibleTTS...Args | simple (同左) | openai_tts | — |
+| `omnivoice` | OmniVoiceTTS...Args | simple (同左) | omnivoice | omnivoice |
+| `supertonic` | SupertonicTTS...Args | simple (同左) | supertonic_tts | supertonic |
 
 ---
 

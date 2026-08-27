@@ -55,6 +55,7 @@ speech-to-speech serve          # 默认 parakeet-tdt + responses-api(云 LLM) +
 | `faster-whisper` | faster-whisper | CUDA/CPU | `[faster-whisper]` | 更快 |
 | `whisper-mlx` | lightning-whisper-mlx | MPS | `[whisper-mlx]` | Mac |
 | `mlx-audio-whisper` | mlx-community/whisper-large-v3-turbo | MPS | 无 | Mac |
+| `openai` | 远程 OpenAI 兼容端点（如 Qwen3-ASR / gpt-transcribe） | 全平台 | 无 | 上传内存 WAV；见 [openai-compatible-stt.md](openai-compatible-stt.md) |
 | `none` | — | 全平台 | — | 音频直通给音频 LLM |
 
 **两个 FunASR 后端务必注意设备**：在 Mac 上要么用 `--mac-optimal-settings`，要么显式 `--paraformer_stt_device mps` / `--fun_asr_nano_stt_device mps`（否则默认 `cuda` 会回落到 CPU）。
@@ -79,10 +80,13 @@ speech-to-speech serve --stt fun-asr-nano \
 | `--tts` | 模型 | 平台 | 需额外装 | 备注 |
 |---|---|---|---|---|
 | `qwen3` | `Qwen3-TTS-12Hz-1.7B-CustomVoice`（MPS 走 `mlx-community/...-6bit`） | 全平台 | 无 | 默认；支持 CustomVoice/VoiceDesign/克隆 |
+| `openai` | 远程 OpenAI 兼容端点（`/v1/audio/speech`） | 全平台 | 无 | 默认 196ms 播放缓冲；见 [openai-compatible-tts.md](openai-compatible-tts.md) |
 | `kokoro` | `Kokoro-82M` | CUDA/CPU/MPS | `[kokoro]`(非 Mac) | 轻量 |
 | `pocket` | Pocket TTS | CPU/CUDA | `[pocket]` | 轻量 |
 | `chatTTS` | ChatTTS | CUDA/CPU | `[chattts]` | 对话感 |
 | `facebookMMS` | MMS TTS | CUDA/CPU | 无 | 多语言（1000+） |
+| `omnivoice` | k2-fsa OmniVoice | CUDA / Intel XPU / MPS | `[omnivoice]` | 声音克隆；⚠️ 权重 CC-BY-NC 非商用 |
+| `supertonic` | Supertonic ONNX | 全平台 | `[supertonic]` | 10 个内置音色（M1-M5/F1-F5） |
 
 ```bash
 # 换 TTS 音色/后端
