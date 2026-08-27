@@ -15,6 +15,13 @@ class _FakeParaformerModel:
         return [{"text": " 今 天 天 气 不 错 "}]
 
 
+class _FakeMisheardModel:
+    """Simulates SEACO output mishearing 脐腐病 as 皮酒病 (per-char spaced)."""
+
+    def generate(self, audio):
+        return [{"text": "番茄 皮 酒 病 补 钙 "}]
+
+
 def _handler(*, language: str = "zh", device: str = "cpu"):
     handler = object.__new__(ParaformerSTTHandler)
     handler.gen_kwargs = {}
@@ -131,3 +138,50 @@ def test_paraformer_skips_mps_cache_clear_on_cpu(monkeypatch):
 
     assert len(result) == 1
     assert isinstance(result[0], Transcription)
+
+
+def test_paraformer_applies_text_level_hotword_correction(monkeypatch):
+    """Text-level postprocess_hotwords replace the misheard term in the output."""
+    monkeypatch.setattr(paraformer_handler.console, "print", lambda *args, **kwargs: None)
+    monkeypatch.setattr(paraformer_handler.torch.mps, "empty_cache", lambda: None)
+
+    handler = _handler()
+    handler._shared = SharedModel(lambda: _FakeMisheardModel())
+    # Normalized per-character spacing, matching SEACO output (as
+    # _prepare_hotwords would build it from {"皮酒病": "脐腐病"}).
+    handler._postprocess_hotwords = {"皮 酒 病": "脐 腐 病"}
+
+    result = list(
+        handler.process(
+            VADAudio(
+                audio=np.zeros(16000, dtype=np.float32),
+                mode="final",
+                turn_id="turn_1",
+                turn_revision=2,
+                created_at_s=123.0,
+            )
+        )
+    )
+
+    assert result[0].text == "番茄脐腐病补钙"
+    assert result[0].language_code == "zh"
+
+
+def test_paraformer_text_level_hotword_leaves_unknown_text_unchanged(monkeypatch):
+    monkeypatch.setattr(paraformer_handler.console, "print", lambda *args, **kwargs: None)
+    monkeypatch.setattr(paraformer_handler.torch.mps, "empty_cache", lambda: None)
+
+    handler = _handler()
+    handler._postprocess_hotwords = {"皮 酒 病": "脐 腐 病"}
+
+    result = list(
+        handler.process(
+            VADAudio(
+                audio=np.zeros(16000, dtype=np.float32),
+                mode="final",
+            )
+        )
+    )
+
+    # Default fake model output "今天天气不错" contains no hotword match.
+    assert result[0].text == "今天天气不错"
