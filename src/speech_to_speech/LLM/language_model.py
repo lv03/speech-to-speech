@@ -47,7 +47,13 @@ from speech_to_speech.LLM.text_prompt import build_text_system_prompt
 from speech_to_speech.LLM.tool_call.function_call import extract_function_calls_from_text
 from speech_to_speech.LLM.tool_call.function_tool import FunctionTool
 from speech_to_speech.LLM.tool_call.tool_prompt import END_CODE, ENTER_CODE, build_block_regex, build_tool_system_prompt
-from speech_to_speech.LLM.utils import image_url_to_pil, remove_unspeechable, resolve_auto_language
+from speech_to_speech.LLM.utils import (
+    image_url_to_pil,
+    remove_markdown,
+    remove_unspeechable,
+    resolve_auto_language,
+    sent_tokenize_preserving_markdown_code,
+)
 from speech_to_speech.LLM.voice_prompt import build_voice_system_prompt
 from speech_to_speech.pipeline.cancel_scope import CancelScope
 from speech_to_speech.pipeline.handler_types import LLMIn, LLMOut
@@ -62,6 +68,7 @@ from speech_to_speech.pipeline.messages import (
     TokenUsage,
 )
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
+from speech_to_speech.pipeline.transcript_logging import log_exception, transcript_for_log
 from speech_to_speech.utils.utils import is_out_of_band, response_wants_audio
 
 try:
@@ -340,8 +347,8 @@ class BaseLanguageModelHandler(BaseHandler[LLMIn, LLMOut], ABC):
             if text_only and before:
                 chunks.append(text_chunk(before))
             elif before.strip():
-                for s in sent_tokenize(before):
-                    ctx.sentence_batch.append(s)
+                for s in sent_tokenize_preserving_markdown_code(before, sent_tokenize):
+                    ctx.sentence_batch.append(remove_markdown(s))
             if ctx.sentence_batch:
                 chunks.append(text_chunk(" ".join(ctx.sentence_batch)))
                 ctx.sentence_batch = []
@@ -393,14 +400,15 @@ class BaseLanguageModelHandler(BaseHandler[LLMIn, LLMOut], ABC):
             return chunks, tools, pending_marker
 
         if printable_text:
-            sentences = sent_tokenize(printable_text)
+            trailing_whitespace = printable_text[len(printable_text.rstrip()) :]
+            sentences = sent_tokenize_preserving_markdown_code(printable_text, sent_tokenize)
             if len(sentences) > 1:
                 for s in sentences[:-1]:
-                    ctx.sentence_batch.append(s)
+                    ctx.sentence_batch.append(remove_markdown(s))
                     if len(ctx.sentence_batch) >= self.stream_batch_sentences:
                         chunks.append(text_chunk(" ".join(ctx.sentence_batch)))
                         ctx.sentence_batch = []
-                printable_text = sentences[-1]
+                printable_text = sentences[-1] + trailing_whitespace
 
         return chunks, tools, printable_text
 
@@ -534,7 +542,8 @@ class BaseLanguageModelHandler(BaseHandler[LLMIn, LLMOut], ABC):
 
         if ctx.sentence_batch and not ctx.interrupted:
             if ctx.printable_text.strip():
-                ctx.sentence_batch.append(ctx.printable_text.strip())
+                leftover = ctx.printable_text.strip()
+                ctx.sentence_batch.append(remove_markdown(leftover) if wants_audio else leftover)
                 ctx.printable_text = ""
             if not self._turn_output_allowed(ctx.turn_id, ctx.turn_revision):
                 ctx.cancelled = True
@@ -595,7 +604,7 @@ class BaseLanguageModelHandler(BaseHandler[LLMIn, LLMOut], ABC):
             try:
                 active_chat = build_active_chat(original_chat, response)
             except ChatItemError as exc:
-                logger.info("Out-of-band response rejected: %s", exc)
+                log_exception(logger, "Out-of-band response rejected", exc, level=logging.INFO)
                 yield EndOfResponse(
                     turn_id=ctx.turn_id,
                     turn_revision=ctx.turn_revision,
@@ -679,7 +688,7 @@ class BaseLanguageModelHandler(BaseHandler[LLMIn, LLMOut], ABC):
             trailing_text = ctx.printable_text.strip() if response_wants_audio(response) else ctx.printable_text
             if turn_output_allowed and trailing_text:
                 trailing_chunk = LLMResponseChunk(
-                    text=trailing_text,
+                    text=remove_markdown(trailing_text) if response_wants_audio(response) else trailing_text,
                     language_code=language_code,
                     runtime_config=runtime_config,
                     response=response,
@@ -719,8 +728,8 @@ class BaseLanguageModelHandler(BaseHandler[LLMIn, LLMOut], ABC):
                     history_committed = True
                 else:
                     trailing_chunk = None
-            logger.debug("Clean text: %s", ctx.generated_text)
-            logger.info(f"Tools: {ctx.tools}")
+            logger.debug("Clean text: %s", transcript_for_log(ctx.generated_text))
+            logger.info("Tools: %s", transcript_for_log(ctx.tools))
 
             if trailing_chunk is not None:
                 yield trailing_chunk
@@ -739,7 +748,7 @@ class BaseLanguageModelHandler(BaseHandler[LLMIn, LLMOut], ABC):
             # Any generation failure must still terminate the response. Without this
             # the exception would escape process() and no EndOfResponse would be
             # emitted, leaving st.in_response stuck and locking every later response.
-            logger.exception("LLM generation failed; ending the current response")
+            log_exception(logger, "LLM generation failed; ending the current response", exc)
             rollback_history()
             if request.prefetch_transaction is not None:
                 # The terminal is queued before this generator resumes into its

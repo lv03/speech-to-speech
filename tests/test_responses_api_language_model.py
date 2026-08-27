@@ -137,7 +137,7 @@ def _chat_tool_delta(index, *, tool_id=None, name=None, arguments=None):
     )
 
 
-def _make_handler(*, disable_thinking=False, stream=True, cancel_scope=None):
+def _make_handler(*, disable_thinking=False, stream=True, cancel_scope=None, reasoning_effort="none"):
     handler = object.__new__(ResponsesApiModelHandler)
     handler.model_name = "test-model"
     handler.stream = stream
@@ -146,7 +146,12 @@ def _make_handler(*, disable_thinking=False, stream=True, cancel_scope=None):
     handler.request_timeout_s = 20.0
     handler.request_timeout = 20.0
     handler.disable_thinking = disable_thinking
-    handler._extra_body = {"chat_template_kwargs": {"enable_thinking": False}} if disable_thinking else None
+    handler.reasoning_effort = reasoning_effort
+    handler._extra_body = ResponsesApiModelHandler._build_extra_body(
+        "http://fake/v1",
+        disable_thinking,
+        reasoning_effort,
+    )
     handler.user_role = "user"
     handler.cancel_scope = cancel_scope
     handler.speculative_turns = None
@@ -470,6 +475,21 @@ def test_warmup_uses_request_scoped_sdk_retries():
 
     handler.client.with_options.assert_called_once_with(max_retries=WARMUP_MAX_RETRIES)
     handler.client.responses.create.assert_called_once()
+    assert handler.client.responses.create.call_args.kwargs["reasoning"] == {"effort": "none"}
+
+
+def test_compaction_uses_responses_reasoning_shape():
+    handler = _make_handler()
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(output_text="summary")
+
+    handler.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+
+    assert handler._build_compaction_generate_fn()("system", "user") == "summary"
+    assert captured["reasoning"] == {"effort": "none"}
 
 
 def test_warmup_failure_propagates_and_prevents_readiness():
@@ -583,6 +603,34 @@ def test_process_flushes_tool_lead_in_before_function_call_with_sentence_batchin
     assert outputs[1].text == ""
     assert [tool.name for tool in outputs[1].tools] == ["camera"]
     assert isinstance(outputs[2], EndOfResponse)
+
+
+def test_markdown_cleanup_does_not_modify_responses_api_tool_arguments():
+    handler = _make_handler()
+    arguments = {"query": "**bold** _italic_ x*y", "tag": "#topic"}
+    streamed_events = [
+        _make_text_delta_event("**Let me check.**"),
+        _make_function_call_done_event(name="search_docs", arguments=json.dumps(arguments)),
+    ]
+    handler.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **kwargs: _make_stream(streamed_events),
+        )
+    )
+
+    request = _make_request("Find it")
+    request.runtime_config.session.tools = [
+        {"type": "function", "name": "search_docs", "parameters": {"type": "object"}}
+    ]
+    outputs = list(handler.process(request))
+    chunks = [output for output in outputs if isinstance(output, LLMResponseChunk)]
+    spoken_chunks = [chunk.text for chunk in chunks if chunk.text]
+    tool_chunks = [chunk for chunk in chunks if chunk.tools]
+
+    assert spoken_chunks == ["Let me check."]
+    assert len(tool_chunks) == 1
+    assert [tool.name for tool in tool_chunks[0].tools] == ["search_docs"]
+    assert json.loads(tool_chunks[0].tools[0].arguments) == arguments
 
 
 def test_process_preserves_streamed_text_after_function_call_order():
@@ -1070,7 +1118,7 @@ def test_empty_context_fails_with_clear_message_without_calling_provider():
 
 
 def test_disable_thinking_passes_extra_body():
-    handler = _make_handler(disable_thinking=True)
+    handler = _make_handler(disable_thinking=True, reasoning_effort=None)
     captured = {}
 
     def fake_create(**kwargs):
@@ -1107,6 +1155,36 @@ def test_no_disable_thinking_omits_extra_body():
     list(handler.process(_make_request("Hi")))
 
     assert captured.get("extra_body") is None
+    assert captured["reasoning"] == {"effort": "none"}
+
+
+def test_responses_reasoning_omitted_when_unset():
+    handler = _make_handler(reasoning_effort=None)
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return _make_stream(
+            [
+                _make_text_delta_event("Ok"),
+                _make_output_item_done_event(content="Ok"),
+            ]
+        )
+
+    handler.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+
+    list(handler.process(_make_request("Hi")))
+
+    assert "reasoning" not in captured
+
+
+def test_responses_extra_body_uses_provider_fallback_only_without_reasoning_effort():
+    build_extra_body = ResponsesApiModelHandler._build_extra_body
+
+    assert build_extra_body(None, True, "none") is None
+    assert build_extra_body("https://api.openai.com/v1", True, "none") is None
+    assert build_extra_body("http://provider/v1", True, "none") is None
+    assert build_extra_body("http://provider/v1", True, None) == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 def test_second_turn_flattens_assistant_history_for_responses():
