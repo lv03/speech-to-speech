@@ -15,6 +15,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import numpy as np
@@ -168,3 +169,60 @@ class Voiceprint:
             enrollment_protocol=enrollment_protocol,
             total_duration_s=sum(len(take) for take in takes) / SAMPLE_RATE,
         )
+
+
+@dataclass(frozen=True)
+class VoiceprintMatch:
+    """A speaker score plus the embedding that produced it."""
+
+    score: float
+    embedding: np.ndarray
+
+
+class VoiceprintVerifier:
+    """Thread-safe speaker scoring around one profile and one extractor."""
+
+    def __init__(
+        self,
+        *,
+        profile: VoiceprintProfile,
+        voiceprint: Voiceprint,
+        profile_path: Path | None = None,
+    ) -> None:
+        self.profile = profile
+        self.voiceprint = voiceprint
+        self.profile_path = Path(profile_path) if profile_path else None
+        self._lock = Lock()
+
+    @classmethod
+    def load(
+        cls,
+        path: Path | str,
+        *,
+        require_conversation: bool = False,
+    ) -> "VoiceprintVerifier":
+        profile_path = Path(path)
+        profile = VoiceprintProfile.load(profile_path)
+        if require_conversation:
+            profile.require_conversation_gate()
+        return cls(
+            profile=profile,
+            voiceprint=Voiceprint(model_name=profile.model_name),
+            profile_path=profile_path,
+        )
+
+    def preload(self) -> None:
+        with self._lock:
+            _ = self.voiceprint.model
+
+    def verify(self, audio: np.ndarray) -> VoiceprintMatch:
+        with self._lock:
+            embedding = self.voiceprint.embed(audio)
+            return VoiceprintMatch(self.profile.score(embedding), embedding)
+
+    def adapt(self, embedding: np.ndarray, *, weight: float = 0.15) -> None:
+        with self._lock:
+            blended = (1.0 - weight) * self.profile.embedding + weight * embedding
+            self.profile.embedding = _normalized(blended)
+            if self.profile_path is not None:
+                self.profile.save(self.profile_path)

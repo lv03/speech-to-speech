@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -15,7 +16,9 @@ from speech_to_speech.security.voiceprint import (
     LEGACY_ENROLLMENT_PROTOCOL,
     PROFILE_SCHEMA_VERSION,
     Voiceprint,
+    VoiceprintMatch,
     VoiceprintProfile,
+    VoiceprintVerifier,
 )
 
 
@@ -170,6 +173,63 @@ def test_gate_relocks_after_session_end(monkeypatch):
     assert list(gate.process(chunk)) == [chunk]
     gate.on_session_end()
     assert list(gate.process(_chunk())) == []
+
+
+def test_voiceprint_verifier_serializes_model_calls():
+    active = 0
+    peak = 0
+    guard = threading.Lock()
+
+    class SlowVoiceprint:
+        @property
+        def model(self) -> object:
+            return object()
+
+        def embed(self, _audio: np.ndarray) -> np.ndarray:
+            nonlocal active, peak
+            with guard:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.02)
+            with guard:
+                active -= 1
+            return np.array([1.0, 0.0], dtype=np.float32)
+
+    verifier = VoiceprintVerifier(
+        profile=VoiceprintProfile(embedding=np.array([1.0, 0.0], dtype=np.float32)),
+        voiceprint=SlowVoiceprint(),  # type: ignore[arg-type]
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(verifier.verify, [np.ones(16000), np.ones(16000)]))
+
+    assert [result.score for result in results] == pytest.approx([1.0, 1.0])
+    assert peak == 1
+
+
+def test_security_gate_uses_injected_verifier(monkeypatch):
+    detector = _FakeDetector(detections=1)
+    monkeypatch.setattr(gate_module, "WakeWordDetector", lambda **_kwargs: detector)
+
+    class FakeVerifier:
+        def preload(self) -> None:
+            pass
+
+        def verify(self, _audio: np.ndarray) -> VoiceprintMatch:
+            return VoiceprintMatch(0.9, np.ones(192, dtype=np.float32))
+
+        def adapt(self, _embedding: np.ndarray, *, weight: float = 0.15) -> None:
+            assert weight == pytest.approx(0.15)
+
+    gate = gate_module.SecurityGateHandler(
+        threading.Event(),
+        queue_in=None,  # type: ignore[arg-type]
+        queue_out=None,  # type: ignore[arg-type]
+        setup_kwargs={"voiceprint_verifier": FakeVerifier(), "voiceprint_threshold": 0.75},
+    )
+
+    assert list(gate.process(_chunk())) == []
+    assert list(gate.process(_chunk())) == [_chunk()]
 
 
 def test_voiceprint_profile_roundtrip_and_score(tmp_path: Path):

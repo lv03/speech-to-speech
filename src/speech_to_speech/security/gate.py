@@ -22,7 +22,7 @@ import numpy as np
 
 from speech_to_speech.baseHandler import BaseHandler
 from speech_to_speech.pipeline.handler_types import VADIn
-from speech_to_speech.security.voiceprint import SAMPLE_RATE, Voiceprint, VoiceprintProfile
+from speech_to_speech.security.voiceprint import SAMPLE_RATE, Voiceprint, VoiceprintProfile, VoiceprintVerifier
 from speech_to_speech.security.wake_word import DEFAULT_WAKE_WORD, WakeWordDetector
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,7 @@ class SecurityGateHandler(BaseHandler[VADIn, VADIn]):
         wake_word: str = DEFAULT_WAKE_WORD,
         wake_word_variants: tuple[str, ...] | None = None,
         voiceprint_enrollment: str | Path | None = None,
+        voiceprint_verifier: VoiceprintVerifier | None = None,
         voiceprint_threshold: float = 0.75,
         security_timeout_s: float = 60.0,
         unlock_acknowledgment: str = "",
@@ -52,6 +53,8 @@ class SecurityGateHandler(BaseHandler[VADIn, VADIn]):
     ) -> None:
         if not 0.0 < voiceprint_threshold <= 1.0:
             raise ValueError(f"voiceprint_threshold must be in (0, 1], got {voiceprint_threshold}")
+        if voiceprint_enrollment and voiceprint_verifier:
+            raise ValueError("Provide either voiceprint_enrollment or voiceprint_verifier, not both")
         self._wake_word = wake_word
         self._threshold = voiceprint_threshold
         self._timeout_s = max(0.0, security_timeout_s)
@@ -65,16 +68,21 @@ class SecurityGateHandler(BaseHandler[VADIn, VADIn]):
         if wake_word_variants:
             detector_kwargs["variants"] = wake_word_variants
         self._detector = WakeWordDetector(**detector_kwargs)
-        self._profile: VoiceprintProfile | None = None
-        self._voiceprint: Voiceprint | None = None
-        self._enrollment_path: Path | None = None
-        if voiceprint_enrollment:
-            self._enrollment_path = Path(voiceprint_enrollment)
-            self._profile = VoiceprintProfile.load(self._enrollment_path)
-            self._voiceprint = Voiceprint(model_name=self._profile.model_name)
+
+        self._verifier: VoiceprintVerifier | None = voiceprint_verifier
+        if self._verifier is None and voiceprint_enrollment:
+            enrollment_path = Path(voiceprint_enrollment)
+            profile = VoiceprintProfile.load(enrollment_path)
+            voiceprint = Voiceprint(model_name=profile.model_name)
+            self._verifier = VoiceprintVerifier(
+                profile=profile,
+                voiceprint=voiceprint,
+                profile_path=enrollment_path,
+            )
+
+        if self._verifier is not None:
             logger.info(
-                "Security gate: voiceprint enabled (profile=%s, threshold=%.2f)",
-                self._enrollment_path,
+                "Security gate: voiceprint enabled (threshold=%.2f)",
                 self._threshold,
             )
             # Preload the model here, during pipeline construction, instead of
@@ -82,7 +90,7 @@ class SecurityGateHandler(BaseHandler[VADIn, VADIn]):
             # handler thread while audio flows has wedged the thread before,
             # and this also removes the ~10 s first-wake delay.
             logger.info("Security gate: preloading voiceprint model...")
-            _ = self._voiceprint.model
+            self._verifier.preload()
             logger.info("Security gate: voiceprint model loaded")
         else:
             logger.info("Security gate: wake word only (no voiceprint profile configured)")
@@ -97,37 +105,28 @@ class SecurityGateHandler(BaseHandler[VADIn, VADIn]):
 
     # ── lock lifecycle ──────────────────────────────────────────────────────
 
-    def _adapt_profile(self, embedding: np.ndarray) -> None:
-        """Blend an accepted live embedding into the stored profile."""
-        if self._profile is None:
-            return
-        blended = (1.0 - _PROFILE_ADAPT_WEIGHT) * self._profile.embedding + _PROFILE_ADAPT_WEIGHT * embedding
-        norm = float(np.linalg.norm(blended))
-        if norm <= 0:
-            return
-        self._profile.embedding = (blended / norm).astype(np.float32)
-        if self._enrollment_path is not None:
-            try:
-                self._profile.save(self._enrollment_path)
-            except OSError:
-                logger.warning("Security gate: could not save adapted profile to %s", self._enrollment_path)
-
     def _try_unlock(self, wake_audio: np.ndarray) -> None:
-        if self._profile is not None and self._voiceprint is not None:
+        if self._verifier is not None:
             if len(wake_audio) < SAMPLE_RATE // 2:
                 logger.warning("Security gate: too little wake-word audio to verify, staying locked")
                 return
-            embedding = self._voiceprint.embed(wake_audio)
-            score = self._profile.score(embedding)
-            if score < self._threshold:
+            match = self._verifier.verify(wake_audio)
+            if match.score < self._threshold:
                 logger.info(
                     "Security gate: wake word heard but voice rejected (score=%.3f < %.2f)",
-                    score,
+                    match.score,
                     self._threshold,
                 )
                 return
-            logger.info("Security gate: voiceprint accepted (score=%.3f >= %.2f)", score, self._threshold)
-            self._adapt_profile(embedding)
+            logger.info(
+                "Security gate: voiceprint accepted (score=%.3f >= %.2f)",
+                match.score,
+                self._threshold,
+            )
+            try:
+                self._verifier.adapt(match.embedding, weight=_PROFILE_ADAPT_WEIGHT)
+            except OSError:
+                logger.warning("Security gate: could not save adapted voiceprint profile")
         self._locked = False
         self._idle_since = time.monotonic()
         logger.info("Security gate: unlocked (wake word %r)", self._wake_word)
