@@ -212,7 +212,7 @@ or another compatible server, see
 | `serve` | Runs the pipeline server over OpenAI Realtime WebSocket and WebRTC. | You are building an app or device against the API. |
 | `talk --url <full-realtime-url>` | Runs the packaged microphone/speaker client. | You want to talk to an existing Realtime server. |
 | `local` | Composes `serve` and `talk` in-process over loopback. | You want to run the server and talk to it from one command. |
-| `voiceprint enroll` / `verify` / `info` | Enrolls or checks a speaker voiceprint for the security gate. | You want the assistant to unlock only for your voice. |
+| `voiceprint enroll` / `verify` / `info` | Enrolls or checks a speaker voiceprint for the security gate. | You want the assistant to unlock and respond only for your voice. |
 
 `serve` binds to `127.0.0.1` by default; pass `--host 0.0.0.0` explicitly for network exposure. `local` always binds to loopback and connects the same packaged client at `ws://127.0.0.1:<port>/v1/realtime`.
 
@@ -298,13 +298,15 @@ python scripts/benchmark_tts.py \
 
 Lock the pipeline behind a wake word and a speaker voiceprint: while locked, the
 assistant stays completely silent (audio is swallowed and text/response triggers
-are dropped), and only the enrolled speaker saying the wake word unlocks it. On
-unlock the assistant audibly confirms ("我在，请说。" by default), and the gate
-re-locks after the microphone has been quiet for `--security_timeout_s` or when
-the session ends.
+are dropped), and only the enrolled speaker saying the wake word unlocks it.
+With `--enable_voiceprint`, every subsequent speech segment is also verified
+before it can emit a speech event, reach STT, or trigger the LLM, so non-target
+speakers talking alone are silently ignored. On unlock the assistant audibly
+confirms ("我在，请说。" by default), and the gate re-locks after the microphone
+has been quiet for `--security_timeout_s` or when the session ends.
 
 ```bash
-# 1. Enroll the speaker's voice (record the wake word three times)
+# 1. Enroll the speaker's voice (record natural speech for continuous gating)
 speech-to-speech voiceprint enroll
 
 # 2. Serve with the gate enabled
@@ -315,6 +317,17 @@ speech-to-speech serve \
 ```
 
 Full documentation (models, tuning, limitations): [Security gate](./src/speech_to_speech/security/README.md).
+
+Offline threshold calibration against your own target/non-target/overlap
+recordings is strongly recommended before enabling the feature in production:
+
+```bash
+uv run python scripts/evaluate_voiceprint_gate.py \
+    --profile ~/.cache/speech_to_speech/voiceprint/default.npz \
+    --manifest ./voiceprint-eval/manifest.jsonl \
+    --threshold 0.60 --threshold 0.65 --threshold 0.70 \
+    --output ./voiceprint-eval/report.json
+```
 
 ### Docker
 
