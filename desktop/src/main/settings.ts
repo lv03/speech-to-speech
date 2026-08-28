@@ -39,8 +39,8 @@ export interface DesktopSettings {
   ttsVoice: string
   /** 界面语言 */
   language: string
-  /** 禁用远程 LLM 的思考/推理（对应 --responses_api_disable_thinking） */
-  llmDisableThinking: boolean
+  /** LLM 推理等级：none（关闭思考）/ low / medium / high（对应 --responses_api_reasoning_effort） */
+  llmReasoningEffort: 'none' | 'low' | 'medium' | 'high'
 }
 
 export const DEFAULT_SETTINGS: DesktopSettings = {
@@ -62,7 +62,7 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   ttsBackend: 'qwen3',
   ttsVoice: '',
   language: 'auto',
-  llmDisableThinking: true,
+  llmReasoningEffort: 'none',
 }
 
 export class SettingsStore {
@@ -123,7 +123,12 @@ export class SettingsStore {
     if (typeof raw.sttModel === 'string') out.sttModel = raw.sttModel.trim()
     if (typeof raw.ttsBackend === 'string' && raw.ttsBackend.trim()) out.ttsBackend = raw.ttsBackend.trim()
     if (typeof raw.ttsVoice === 'string') out.ttsVoice = raw.ttsVoice.trim()
-    if (typeof raw.llmDisableThinking === 'boolean') out.llmDisableThinking = raw.llmDisableThinking
+    if (typeof raw.llmReasoningEffort === 'string' && ['none', 'low', 'medium', 'high'].includes(raw.llmReasoningEffort)) {
+      out.llmReasoningEffort = raw.llmReasoningEffort as DesktopSettings['llmReasoningEffort']
+    } else if (typeof raw.llmDisableThinking === 'boolean') {
+      // 旧版布尔开关迁移：true（禁用思考）→ none；false（开启思考）→ medium
+      out.llmReasoningEffort = raw.llmDisableThinking ? 'none' : 'medium'
+    }
     return out
   }
 

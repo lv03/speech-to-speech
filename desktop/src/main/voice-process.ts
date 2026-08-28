@@ -46,8 +46,8 @@ export interface VoiceOptions {
   ttsBackend?: string
   /** TTS 音色 */
   ttsVoice?: string
-  /** 禁用远程 LLM 思考/推理（仅 responses-api / chat-completions 后端生效） */
-  llmDisableThinking?: boolean
+  /** LLM 推理等级（none/low/medium/high，仅 responses-api / chat-completions 后端生效） */
+  llmReasoningEffort?: 'none' | 'low' | 'medium' | 'high'
 }
 
 /**
@@ -57,6 +57,8 @@ export interface VoiceOptions {
 export class EmbeddedVoice {
   private child: ChildProcess | null = null
   private ready = false
+  private stdoutBuffer = ''
+  private stderrBuffer = ''
   private readonly root: string
   private readonly python: string
   private readonly port: number
@@ -76,7 +78,7 @@ export class EmbeddedVoice {
   private readonly sttModel: string
   private readonly ttsBackend: string
   private readonly ttsVoice: string
-  private readonly llmDisableThinking: boolean
+  private readonly llmReasoningEffort: 'none' | 'low' | 'medium' | 'high'
 
   constructor(options: VoiceOptions = {}) {
     this.root = options.root || process.env.GATEWAY_ROOT || DEFAULT_ROOT
@@ -98,7 +100,7 @@ export class EmbeddedVoice {
     this.sttModel = options.sttModel || ''
     this.ttsBackend = options.ttsBackend || 'qwen3'
     this.ttsVoice = options.ttsVoice || ''
-    this.llmDisableThinking = options.llmDisableThinking ?? true
+    this.llmReasoningEffort = options.llmReasoningEffort ?? 'none'
   }
 
   get running(): boolean {
@@ -141,9 +143,17 @@ export class EmbeddedVoice {
     if (this.llmBaseUrl) {
       args.push('--responses_api_base_url', this.llmBaseUrl)
     }
-    // 远程 LLM 思考开关（vLLM/Qwen 通过 chat_template_kwargs.enable_thinking=false 生效）
+    // 远程 LLM 推理等级：none = 关闭思考（走 --responses_api_disable_thinking，
+    // vLLM/Qwen 经 chat_template_kwargs.enable_thinking=false 生效；responses-api
+    // 后端由 reasoning_effort 默认值 "none" 短路为原生 reasoning.effort=none）；
+    // low/medium/high = 思考强度（--responses_api_reasoning_effort）。
     if (this.llmBackend === 'responses-api' || this.llmBackend === 'chat-completions') {
-      args.push(this.llmDisableThinking ? '--responses_api_disable_thinking' : '--no_responses_api_disable_thinking')
+      const effort = this.llmReasoningEffort ?? 'none'
+      if (effort === 'none') {
+        args.push('--responses_api_disable_thinking')
+      } else {
+        args.push('--responses_api_reasoning_effort', effort)
+      }
     }
     if (this.wakeWordEnabled) {
       args.push('--enable_wake_word', '--wake_word', this.wakeWord)
@@ -157,21 +167,35 @@ export class EmbeddedVoice {
     return args
   }
 
-  /** 行缓冲，从 stdout 解析 EVENT 行给 onEvent，其余行给 onLog。 */
+  /** 行缓冲，从 stdout 解析 EVENT 行给 onEvent，其余行给 onLog。
+   *  跨 chunk 断行时保留残尾到下一块拼接，避免事件/日志被拆丢。 */
   private parseStdout(chunk: Buffer): void {
-    for (const line of chunk.toString('utf-8').split('\n')) {
+    this.stdoutBuffer += chunk.toString('utf-8')
+    const lines = this.stdoutBuffer.split('\n')
+    this.stdoutBuffer = lines.pop() ?? ''
+    for (const line of lines) {
       const trimmed = line.trim()
       if (!trimmed) continue
       if (trimmed.startsWith('EVENT: ')) {
         try {
-          const event = JSON.parse(trimmed.slice('EVENT: '.length))
-          this.onEvent?.(event as Record<string, unknown>)
+          this.onEvent?.(JSON.parse(trimmed.slice('EVENT: '.length)) as Record<string, unknown>)
         } catch {
           // 非 JSON 行忽略
         }
       } else {
         this.onLog?.(trimmed)
       }
+    }
+  }
+
+  /** stderr 行缓冲：按 \n 拆行并保留残尾。 */
+  private parseStderr(chunk: Buffer): void {
+    this.stderrBuffer += chunk.toString('utf-8')
+    const lines = this.stderrBuffer.split('\n')
+    this.stderrBuffer = lines.pop() ?? ''
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (trimmed) this.onLog?.(trimmed)
     }
   }
 
@@ -199,10 +223,7 @@ export class EmbeddedVoice {
     })
     this.child.stderr?.on('data', (chunk) => {
       process.stderr.write(`[voice] ${chunk}`)
-      for (const line of chunk.toString('utf-8').split('\n')) {
-        const trimmed = line.trim()
-        if (trimmed) this.onLog?.(trimmed)
-      }
+      this.parseStderr(chunk)
     })
     this.child.once('exit', (code, signal) => {
       this.child = null
@@ -225,16 +246,20 @@ export class EmbeddedVoice {
       }, this.startupTimeoutMs)
       // local 模式不跑 uvicorn 启动日志；真正的就绪信号是回环客户端
       // 连上服务后打印的 "Connected."（以及 session.created 事件）。
+      // 用独立缓冲拼接所有 stdout/stderr，避免就绪标记被 chunk 拆断。
       const READY_MARKERS = [
         'Application startup complete',
         'Uvicorn running',
         'Connected.',
         'session.created',
       ]
+      let readyText = ''
       const check = (chunk: Buffer) => {
-        const text = chunk.toString()
-        if (READY_MARKERS.some((marker) => text.includes(marker))) {
+        readyText += chunk.toString()
+        if (READY_MARKERS.some((marker) => readyText.includes(marker))) {
           clearTimeout(timer)
+          child.stdout?.removeListener('data', check)
+          child.stderr?.removeListener('data', check)
           this.ready = true
           resolvePromise()
         }
@@ -254,6 +279,9 @@ export class EmbeddedVoice {
     this.child = null
     this.ready = false
     if (!child) return
+    // 进程已退出时无需等待：once('exit') 在事件已发生后注册不会触发，
+    // 否则会白等 5s 再 SIGKILL（app 退出会被拖慢）。
+    if (child.exitCode !== null || child.signalCode !== null) return
     child.kill()
     await new Promise<void>((resolvePromise) => {
       const timer = setTimeout(() => {

@@ -114,6 +114,11 @@ export class EmbeddedGateway {
     const base = `http://127.0.0.1:${this.port}`
     const deadline = Date.now() + this.startupTimeoutMs
     while (Date.now() < deadline) {
+      // 子进程已退出（如端口被占用）时立即失败，不要继续轮询——
+      // 否则可能命中端口上其他服务的 /health，误判为就绪。
+      if (this.child && this.child.exitCode !== null) {
+        throw new Error(`Gateway 进程提前退出（code=${this.child.exitCode}）`)
+      }
       if (await this.health()) {
         this.origin = base
         return base
@@ -128,6 +133,8 @@ export class EmbeddedGateway {
     this.child = null
     this.origin = null
     if (!child) return
+    // 进程已退出时直接返回，避免 once('exit') 永不触发而白等 3s
+    if (child.exitCode !== null || child.signalCode !== null) return
     child.kill()
     await new Promise<void>((resolvePromise) => {
       const timer = setTimeout(() => {

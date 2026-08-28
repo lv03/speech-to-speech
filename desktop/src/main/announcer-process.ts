@@ -31,6 +31,7 @@ export interface AnnouncerOptions {
 export class EmbeddedAnnouncer {
   private child: ChildProcess | null = null
   private ready = false
+  private stderrBuffer = ''
   private readonly root: string
   private readonly python: string
   private readonly model: string
@@ -74,7 +75,11 @@ export class EmbeddedAnnouncer {
     })
     this.child.stderr?.on('data', (chunk) => {
       process.stderr.write(`[announcer] ${chunk}`)
-      for (const line of chunk.toString('utf-8').split('\n')) {
+      // 行缓冲：跨 chunk 断行时保留残尾，避免日志被拆碎
+      this.stderrBuffer += chunk.toString('utf-8')
+      const lines = this.stderrBuffer.split('\n')
+      this.stderrBuffer = lines.pop() ?? ''
+      for (const line of lines) {
         const trimmed = line.trim()
         if (trimmed) this.onLog?.(trimmed)
       }
@@ -97,9 +102,13 @@ export class EmbeddedAnnouncer {
       const timer = setTimeout(() => {
         rejectPromise(new Error('announcer 启动超时'))
       }, this.startupTimeoutMs)
+      // 独立缓冲拼接 stdout，避免 ready JSON 被 chunk 拆断
+      let readyText = ''
       const check = (chunk: Buffer) => {
-        if (chunk.toString().includes('"type":"ready"') || chunk.toString().includes('"type": "ready"')) {
+        readyText += chunk.toString()
+        if (readyText.includes('"type":"ready"') || readyText.includes('"type": "ready"')) {
           clearTimeout(timer)
+          child.stdout?.removeListener('data', check)
           this.ready = true
           resolvePromise()
         }
@@ -123,6 +132,8 @@ export class EmbeddedAnnouncer {
     this.child = null
     this.ready = false
     if (!child) return
+    // 进程已退出时直接返回，避免 once('exit') 永不触发而白等 5s
+    if (child.exitCode !== null || child.signalCode !== null) return
     try {
       child.stdin?.write(JSON.stringify({ type: 'shutdown' }) + '\n')
       child.stdin?.end()

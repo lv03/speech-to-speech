@@ -171,20 +171,26 @@ function renderTasks(): void {
 
 function connectEvents(url: string): void {
   const wsUrl = url.replace(/^http/, 'ws') + '/events'
-  ws = new WebSocket(wsUrl)
-  ws.onopen = () => {
+  // 主动关闭旧连接：旧 socket 的 onclose 会被 ws !== socket 拦截，不会触发重连
+  ws?.close()
+  const socket = new WebSocket(wsUrl)
+  ws = socket
+  socket.onopen = () => {
     orbStatus.className = 'orb-status ok'
     orbStatus.title = 'Gateway 已连接'
   }
-  ws.onclose = () => {
+  socket.onclose = () => {
+    // 已被更新的连接替换时，重连由新连接负责，这里直接退出
+    if (ws !== socket) return
+    ws = null
     orbStatus.className = 'orb-status error'
     orbStatus.title = 'Gateway 连接断开'
-    // 断线重连
+    // 断线重连（仅当仍是最新连接且 gateway 地址未变化）
     setTimeout(() => {
-      if (gatewayUrl) connectEvents(gatewayUrl)
+      if (gatewayUrl && !ws) connectEvents(gatewayUrl)
     }, 3000)
   }
-  ws.onmessage = (event) => {
+  socket.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data as string)
       if (msg.event === 'snapshot') {
@@ -226,7 +232,10 @@ function toggleVoice(): void {
   void window.desktop.toggleVoice().then((result) => {
     const r = result as { running: boolean; starting: boolean }
     if (r.starting) {
-      // 后台启动中，等待 voice:ready / voice:error 事件
+      // 后台启动中，等待 voice:ready / voice:error 事件；
+      // 兜底：事件若在订阅前已发出（如页面 reload 后引擎已在运行），
+      // 延迟轮询一次把按钮恢复成真实状态，避免永久卡在 loading。
+      setTimeout(() => void refreshVoiceStatus(), 2000)
       return
     }
     btnMic.classList.toggle('active', r.running)
@@ -259,8 +268,13 @@ async function refreshVoiceStatus(): Promise<void> {
   try {
     const status = (await window.desktop.voiceStatus()) as { running: boolean }
     btnMic.classList.toggle('active', status.running)
+    btnMic.classList.remove('loading')
+    btnMic.disabled = false
+    btnMic.title = status.running ? '关闭语音引擎' : '开启语音引擎'
   } catch {
-    btnMic.classList.remove('active')
+    btnMic.classList.remove('active', 'loading')
+    btnMic.disabled = false
+    btnMic.title = '开启语音引擎'
   }
 }
 

@@ -17,7 +17,7 @@ interface SettingsPayload {
   ttsBackend: string
   ttsVoice: string
   language: string
-  llmDisableThinking: boolean
+  llmReasoningEffort: 'none' | 'low' | 'medium' | 'high'
 }
 
 // ── DOM 引用 ────────────────────────────────────────────────────────────
@@ -28,7 +28,7 @@ const llmBackend = document.getElementById('llm-backend') as HTMLSelectElement
 const llmModel = document.getElementById('llm-model') as HTMLInputElement
 const llmApiKey = document.getElementById('llm-api-key') as HTMLInputElement
 const llmBaseUrl = document.getElementById('llm-base-url') as HTMLInputElement
-const llmDisableThinking = document.getElementById('llm-disable-thinking') as HTMLInputElement
+const llmReasoningEffort = document.getElementById('llm-reasoning-effort') as HTMLSelectElement
 const sttBackend = document.getElementById('stt-backend') as HTMLSelectElement
 const sttModel = document.getElementById('stt-model') as HTMLInputElement
 const ttsBackend = document.getElementById('tts-backend') as HTMLSelectElement
@@ -72,7 +72,7 @@ function updateLlmFields(): void {
   const remote = ['responses-api', 'chat-completions'].includes(llmBackend.value)
   document.getElementById('llm-base-url-row')!.style.display = remote ? '' : 'none'
   document.getElementById('llm-api-key-row')!.style.display = remote ? '' : 'none'
-  document.getElementById('llm-disable-thinking-row')!.style.display = remote ? '' : 'none'
+  document.getElementById('llm-reasoning-effort-row')!.style.display = remote ? '' : 'none'
   llmModel.placeholder = remote
     ? '远程模型名（如 gpt-5.4-mini、Qwen3.6）'
     : '本地 HF 模型名（如 mlx-community/Qwen3-4B-Instruct-2507-bf16）'
@@ -88,7 +88,7 @@ function render(settings: SettingsPayload): void {
   llmModel.value = settings.llmModel
   llmApiKey.value = settings.llmApiKey
   llmBaseUrl.value = settings.llmBaseUrl
-  llmDisableThinking.checked = settings.llmDisableThinking
+  llmReasoningEffort.value = settings.llmReasoningEffort
   updateLlmFields()
   sttBackend.value = settings.sttBackend
   sttModel.value = settings.sttModel
@@ -112,7 +112,7 @@ function collect(): SettingsPayload {
     llmModel: llmModel.value.trim(),
     llmApiKey: llmApiKey.value,
     llmBaseUrl: llmBaseUrl.value.trim(),
-    llmDisableThinking: llmDisableThinking.checked,
+    llmReasoningEffort: (['none', 'low', 'medium', 'high'].includes(llmReasoningEffort.value) ? llmReasoningEffort.value : 'none') as 'none' | 'low' | 'medium' | 'high',
     sttBackend: sttBackend.value,
     sttModel: sttModel.value.trim(),
     ttsBackend: ttsBackend.value,
@@ -130,7 +130,11 @@ function collect(): SettingsPayload {
 // ── 皮肤 ────────────────────────────────────────────────────────────────
 async function loadSkins(): Promise<void> {
   try {
-    const current = orbSkin.value
+    // 从设置读取当前皮肤，而不是读下拉框的实时值——
+    // load() 与 loadSkins() 并发启动时 DOM 可能还是空值，
+    // 会导致皮肤下拉框被重置回“默认流光球”。
+    const settings = (await window.desktop.getSettings()) as unknown as SettingsPayload
+    const current = settings.orbSkin ?? orbSkin.value
     const skins = (await window.desktop.listSkins()) as Array<{ id: string; displayName: string }>
     orbSkin.innerHTML = '<option value="">默认流光球</option>'
     for (const skin of skins) {

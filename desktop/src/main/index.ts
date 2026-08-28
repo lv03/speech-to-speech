@@ -31,6 +31,13 @@ let gatewayWs: WebSocket | null = null
 const announcedTaskIds = new Set<string>()
 let pendingSpeak: string[] = []
 
+/** 影响运行中语音引擎行为的设置字段（变化时需重启引擎才生效）。 */
+const VOICE_AFFECTING_FIELDS = [
+  'llmBackend', 'llmApiKey', 'llmBaseUrl', 'llmModel',
+  'sttBackend', 'sttModel', 'ttsBackend', 'ttsVoice',
+  'wakeWordEnabled', 'wakeWord', 'enableVoiceprint', 'llmReasoningEffort',
+] as const
+
 // ── 快捷键与自动休眠 ───────────────────────────────────────────────────
 
 function registerWakeShortcut(accelerator: string): boolean {
@@ -240,7 +247,7 @@ async function startVoice(): Promise<void> {
     sttModel: settings.sttModel,
     ttsBackend: settings.ttsBackend,
     ttsVoice: settings.ttsVoice,
-    llmDisableThinking: settings.llmDisableThinking,
+    llmReasoningEffort: settings.llmReasoningEffort,
     onLog: (line) => pushVoiceLog(line),
     onEvent: (event) => {
       const state = voiceStateFromEvent(event)
@@ -327,7 +334,11 @@ async function summarizeTaskResult(text: string | undefined): Promise<string> {
     ],
     stream: false,
   }
-  if (settings.llmDisableThinking) body.chat_template_kwargs = { enable_thinking: false }
+  if (settings.llmReasoningEffort && settings.llmReasoningEffort !== 'none') {
+    body.reasoning_effort = settings.llmReasoningEffort
+  } else {
+    body.chat_template_kwargs = { enable_thinking: false }
+  }
   try {
     const resp = await fetch(url, {
       method: 'POST',
@@ -350,11 +361,20 @@ async function summarizeTaskResult(text: string | undefined): Promise<string> {
   }
 }
 
+/** 记录已播报的任务 id；超过上限时淘汰最旧，防止无限增长。 */
+function rememberAnnouncedTask(id: string): void {
+  announcedTaskIds.add(id)
+  if (announcedTaskIds.size > 1000) {
+    const oldest = announcedTaskIds.values().next().value
+    if (oldest !== undefined) announcedTaskIds.delete(oldest)
+  }
+}
+
 /** 任务完成/失败/取消时：系统通知 + Qwen3 语音播报。 */
 async function announceTaskCompletion(task: Record<string, unknown>): Promise<void> {
   const id = String(task.id || '')
   if (!id || announcedTaskIds.has(id)) return
-  announcedTaskIds.add(id)
+  rememberAnnouncedTask(id)
   const status = String(task.status || '')
   let body = ''
   if (status === 'completed') {
@@ -571,7 +591,7 @@ app.whenReady().then(async () => {
     return runVoiceprintCommand(['-m', 'speech_to_speech.cli', 'voiceprint', 'verify'])
   })
   ipcMain.handle('settings:get', () => settingsStore?.get() ?? {})
-  ipcMain.handle('settings:save', (_e, settings: Partial<DesktopSettings>) => {
+  ipcMain.handle('settings:save', async (_e, settings: Partial<DesktopSettings>) => {
     const before = settingsStore?.get()
     const saved = settingsStore?.save(settings)
     // 皮肤变化 → 重载 orb 让新皮肤生效
@@ -584,6 +604,45 @@ app.whenReady().then(async () => {
     if (before && saved && settings.wakeShortcut !== undefined && before.wakeShortcut !== saved.wakeShortcut) {
       globalShortcut.unregister(before.wakeShortcut)
       registerWakeShortcut(saved.wakeShortcut)
+    }
+    // 语音/网关相关字段变化 → 运行中的子进程需要重启才生效
+    if (before && saved) {
+      const enableChanged =
+        settings.enableVoice !== undefined && before.enableVoice !== saved.enableVoice
+      const voiceChanged = VOICE_AFFECTING_FIELDS.some(
+        (f) => settings[f] !== undefined && before[f] !== saved[f],
+      )
+      const gatewayPortChanged =
+        settings.gatewayPort !== undefined && before.gatewayPort !== saved.gatewayPort
+      try {
+        if (gatewayPortChanged && gateway) {
+          await gateway.stop()
+          gateway = null
+          void startGateway().catch((error) => {
+            console.error('[desktop] Gateway 重启失败：', error)
+          })
+        }
+        if (enableChanged) {
+          if (saved.enableVoice) {
+            void startVoice().catch((error) => {
+              console.error('[desktop] 语音引擎启动失败：', error)
+            })
+          } else if (voice) {
+            await voice.stop()
+            voice = null
+          }
+        } else if (voiceChanged && voice) {
+          pushVoiceStatus('starting')
+          const v = voice
+          voice = null
+          await v.stop()
+          void startVoice().catch((error) => {
+            console.error('[desktop] 语音引擎重启失败：', error)
+          })
+        }
+      } catch (error) {
+        console.error('[desktop] 设置变更后重启子进程失败：', error)
+      }
     }
     recordActivity()
     return saved ?? {}
