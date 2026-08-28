@@ -163,12 +163,26 @@ class PipelineGraph:
 
         vad_queue_in: Queue[Any] = recv_audio_chunks_queue
         gate = None
+        voiceprint_verifier = None
+        target_speaker_gate = None
+        enrollment = module_kwargs.voiceprint_enrollment
+        if module_kwargs.enable_voiceprint:
+            from speech_to_speech.security.speaker_gate import TargetSpeakerGate
+            from speech_to_speech.security.voiceprint import VoiceprintVerifier
+
+            enrollment = enrollment or str(
+                Path.home() / ".cache" / "speech_to_speech" / "voiceprint" / "default.npz"
+            )
+            voiceprint_verifier = VoiceprintVerifier.load(enrollment, require_conversation=True)
+            voiceprint_verifier.preload()
+            target_speaker_gate = TargetSpeakerGate(
+                voiceprint_verifier,
+                threshold=module_kwargs.voiceprint_threshold,
+            )
+
         if module_kwargs.enable_wake_word:
             from speech_to_speech.security.gate import SecurityGateHandler
 
-            enrollment = module_kwargs.voiceprint_enrollment
-            if module_kwargs.enable_voiceprint and enrollment is None:
-                enrollment = str(Path.home() / ".cache" / "speech_to_speech" / "voiceprint" / "default.npz")
             gate_queue: Queue[Any] = Queue()
             gate = SecurityGateHandler(
                 stop_event,
@@ -176,7 +190,7 @@ class PipelineGraph:
                 queue_out=gate_queue,
                 setup_kwargs={
                     "wake_word": module_kwargs.wake_word,
-                    "voiceprint_enrollment": enrollment if module_kwargs.enable_voiceprint else None,
+                    "voiceprint_verifier": voiceprint_verifier,
                     "voiceprint_threshold": module_kwargs.voiceprint_threshold,
                     "security_timeout_s": module_kwargs.security_timeout_s,
                     "unlock_acknowledgment": module_kwargs.unlock_acknowledgment,
@@ -196,6 +210,7 @@ class PipelineGraph:
                 },
                 "text_output_queue": text_output_queue,
                 "speculative_turns": speculative_turns,
+                "target_speaker_gate": target_speaker_gate,
             },
         )
 

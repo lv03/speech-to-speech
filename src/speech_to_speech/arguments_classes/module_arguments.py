@@ -129,8 +129,9 @@ class ModuleArguments:
     enable_voiceprint: bool = field(
         default=False,
         metadata={
-            "help": "Verify the speaker's voiceprint on the wake word before unlocking. Requires "
-            "--enable_wake_word and a profile created with `speech-to-speech voiceprint enroll`. Off by default."
+            "help": "Verify the enrolled speaker on the wake word and every subsequent speech segment "
+            "before emitting speech events or sending audio to STT. Requires --enable_wake_word and a "
+            "conversation profile created with `speech-to-speech voiceprint enroll`. Off by default."
         },
     )
     voiceprint_enrollment: Optional[str] = field(
@@ -145,8 +146,7 @@ class ModuleArguments:
         default=0.75,
         metadata={
             "help": "Cosine similarity threshold for voiceprint acceptance, in (0, 1]. Higher is stricter. "
-            "Enrollment and verification both use the wake word, so the enrolled speaker scores near 1.0. "
-            "Default is 0.75."
+            "Select the operating value from held-out target/non-target/overlap recordings. Default is 0.75."
         },
     )
     security_timeout_s: float = field(

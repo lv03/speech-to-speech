@@ -302,6 +302,108 @@ def test_new_stt_backend_gets_transcription_notifier_by_default(monkeypatch):
     assert any(isinstance(handler, DummyNotifier) for handler in handlers)
 
 
+def test_pipeline_shares_voiceprint_verifier_between_wake_and_vad(monkeypatch, tmp_path):
+    class SharedVerifier:
+        def preload(self) -> None:
+            pass
+
+    shared = SharedVerifier()
+    loaded: list[tuple[str, bool]] = []
+    security_kwargs: dict = {}
+    vad_kwargs: dict = {}
+
+    class FakeVoiceprintVerifierType:
+        @classmethod
+        def load(cls, path, *, require_conversation=False):
+            loaded.append((str(path), require_conversation))
+            return shared
+
+    class FakeTargetGate:
+        def __init__(self, verifier, *, threshold):
+            self.verifier = verifier
+            self.threshold = threshold
+
+    class DummyHandler:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    class CapturingGate(DummyHandler):
+        def __init__(self, *_args, **kwargs):
+            security_kwargs.update(kwargs.get("setup_kwargs", {}))
+
+    class CapturingVAD(DummyHandler):
+        def __init__(self, *_args, **kwargs):
+            vad_kwargs.update(kwargs.get("setup_kwargs", {}))
+
+    monkeypatch.setattr(
+        "speech_to_speech.security.voiceprint.VoiceprintVerifier",
+        FakeVoiceprintVerifierType,
+    )
+    monkeypatch.setattr(
+        "speech_to_speech.security.speaker_gate.TargetSpeakerGate",
+        FakeTargetGate,
+    )
+    monkeypatch.setattr("speech_to_speech.security.gate.SecurityGateHandler", CapturingGate)
+    monkeypatch.setattr(pipeline_graph, "VADHandler", CapturingVAD)
+    monkeypatch.setattr(pipeline_graph, "TranscriptionNotifier", DummyHandler)
+    monkeypatch.setattr(pipeline_graph, "create_backend_handler", lambda _sel, _ctx: object())
+    monkeypatch.setattr(
+        "speech_to_speech.LLM.lm_output_processor.LMOutputProcessor",
+        DummyHandler,
+    )
+
+    stt_selection = BackendSelection(
+        BackendSpec("fake-stt", "stt", FakeArguments, _factory),
+        {},
+    )
+    llm_selection = BackendSelection(
+        BackendSpec("fake-llm", "llm", FakeArguments, _factory),
+        {},
+    )
+    tts_selection = BackendSelection(
+        BackendSpec("fake-tts", "tts", FakeArguments, _factory),
+        {},
+    )
+
+    profile_path = tmp_path / "profile.npz"
+    module_args = ModuleArguments(
+        enable_wake_word=True,
+        enable_voiceprint=True,
+        voiceprint_enrollment=str(profile_path),
+    )
+    graph = pipeline_graph.PipelineGraph(
+        module_kwargs=module_args,
+        vad_handler_kwargs=VADHandlerArguments(),
+        stt_backend=stt_selection,
+        llm_backend=llm_selection,
+        tts_backend=tts_selection,
+    )
+    graph._build_handlers(
+        stop_event=Event(),
+        should_listen=Event(),
+        recv_audio_chunks_queue=Queue(),
+        spoken_prompt_queue=Queue(),
+        stt_output_queue=Queue(),
+        text_prompt_queue=Queue(),
+        lm_response_queue=Queue(),
+        lm_processed_queue=Queue(),
+        send_audio_chunks_queue=Queue(),
+        text_output_queue=Queue(),
+        module_kwargs=module_args,
+        vad_handler_kwargs=VADHandlerArguments(),
+        stt_backend=stt_selection,
+        llm_backend=llm_selection,
+        tts_backend=tts_selection,
+        speculative_turns=SpeculativeTurnTracker(),
+        cancel_scope=CancelScope(),
+        pipeline_index=0,
+    )
+
+    assert loaded == [(str(profile_path), True)]
+    assert security_kwargs["voiceprint_verifier"] is shared
+    assert vad_kwargs["target_speaker_gate"].verifier is shared
+
+
 def test_parser_carries_only_selected_normalized_configs():
     args = parse_arguments(
         [

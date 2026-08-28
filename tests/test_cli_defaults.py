@@ -63,6 +63,13 @@ def test_release_defaults_match_responses_api_parakeet_qwen3_profile():
     assert qwen3_args.qwen3_tts_mlx_quantization == "6bit"
 
 
+def test_voiceprint_defaults_remain_opt_in():
+    args = ModuleArguments()
+    assert args.enable_wake_word is False
+    assert args.enable_voiceprint is False
+    assert args.voiceprint_threshold == pytest.approx(0.75)
+
+
 def test_server_defaults_to_loopback():
     assert RealtimeServerArguments().host == "127.0.0.1"
 
