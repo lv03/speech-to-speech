@@ -8,6 +8,7 @@ interface SettingsPayload {
   wakeShortcut: string
   autoHideSeconds: number
   enableVoiceprint: boolean
+  voiceprintThreshold: number
   llmBackend: string
   llmApiKey: string
   llmBaseUrl: string
@@ -36,6 +37,7 @@ const ttsVoice = document.getElementById('tts-voice') as HTMLInputElement
 const wakeWordEnabled = document.getElementById('wake-word-enabled') as HTMLInputElement
 const wakeWord = document.getElementById('wake-word') as HTMLInputElement
 const voiceprintEnabled = document.getElementById('voiceprint-enabled') as HTMLInputElement
+const voiceprintThreshold = document.getElementById('voiceprint-threshold') as HTMLInputElement
 const orbSkin = document.getElementById('orb-skin') as HTMLSelectElement
 const refreshSkinsBtn = document.getElementById('refresh-skins') as HTMLButtonElement
 const autoHide = document.getElementById('auto-hide') as HTMLSelectElement
@@ -97,6 +99,7 @@ function render(settings: SettingsPayload): void {
   wakeWordEnabled.checked = settings.wakeWordEnabled
   wakeWord.value = settings.wakeWord
   voiceprintEnabled.checked = settings.enableVoiceprint
+  voiceprintThreshold.value = String(settings.voiceprintThreshold ?? 0.75)
   orbSkin.value = settings.orbSkin
   autoHide.value = String(settings.autoHideSeconds ?? 0)
   wakeShortcut.value = settings.wakeShortcut
@@ -120,6 +123,7 @@ function collect(): SettingsPayload {
     wakeWordEnabled: wakeWordEnabled.checked,
     wakeWord: wakeWord.value.trim() || '噜噜噜噜',
     enableVoiceprint: voiceprintEnabled.checked,
+    voiceprintThreshold: Number(voiceprintThreshold.value) || 0.75,
     orbSkin: orbSkin.value,
     autoHideSeconds: Number(autoHide.value) || 0,
     wakeShortcut: wakeShortcut.value.trim(),
@@ -154,13 +158,19 @@ refreshSkinsBtn.addEventListener('click', () => void loadSkins())
 // ── 声纹 ────────────────────────────────────────────────────────────────
 async function refreshVoiceprintStatus(): Promise<void> {
   try {
-    const status = (await window.desktop.voiceprintStatus()) as { enrolled: boolean }
-    if (status.enrolled) {
-      voiceprintStatusEl.textContent = '已注册'
-      voiceprintVerifyBtn.disabled = false
-    } else {
+    const status = (await window.desktop.voiceprintStatus()) as {
+      enrolled: boolean
+      supportsContinuous: boolean
+    }
+    if (!status.enrolled) {
       voiceprintStatusEl.textContent = '未注册'
       voiceprintVerifyBtn.disabled = true
+    } else if (status.supportsContinuous) {
+      voiceprintStatusEl.textContent = '已注册（自然语音）'
+      voiceprintVerifyBtn.disabled = false
+    } else {
+      voiceprintStatusEl.textContent = '已注册（旧版，需重新注册）'
+      voiceprintVerifyBtn.disabled = false
     }
   } catch {
     voiceprintStatusEl.textContent = '状态未知'

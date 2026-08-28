@@ -39,7 +39,7 @@ export interface DesktopApi {
   openSettings(): void
   /** 查询声纹注册状态 */
   voiceprintStatus(): Promise<Record<string, unknown>>
-  /** 注册声纹（录 3 遍唤醒词） */
+  /** 注册声纹（录多段自然语音） */
   voiceprintEnroll(): Promise<Record<string, unknown>>
   /** 验证声纹 */
   voiceprintVerify(): Promise<Record<string, unknown>>

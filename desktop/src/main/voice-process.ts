@@ -30,6 +30,8 @@ export interface VoiceOptions {
   onLog?: (line: string) => void
   /** 是否启用声纹验证 */
   voiceprintEnabled?: boolean
+  /** 声纹验证阈值（0,1] */
+  voiceprintThreshold?: number
   /** LLM 后端 */
   llmBackend?: string
   /** LLM API Key */
@@ -70,6 +72,7 @@ export class EmbeddedVoice {
   private readonly onEvent: ((event: Record<string, unknown>) => void) | undefined
   private readonly onLog: ((line: string) => void) | undefined
   private readonly voiceprintEnabled: boolean
+  private readonly voiceprintThreshold: number
   private readonly llmBackend: string
   private readonly llmApiKey: string
   private readonly llmBaseUrl: string
@@ -92,6 +95,7 @@ export class EmbeddedVoice {
     this.onEvent = options.onEvent
     this.onLog = options.onLog
     this.voiceprintEnabled = options.voiceprintEnabled ?? false
+    this.voiceprintThreshold = options.voiceprintThreshold ?? 0.75
     this.llmBackend = options.llmBackend || 'responses-api'
     this.llmApiKey = options.llmApiKey || ''
     this.llmBaseUrl = options.llmBaseUrl || ''
@@ -160,6 +164,7 @@ export class EmbeddedVoice {
     }
     if (this.voiceprintEnabled) {
       args.push('--enable_voiceprint')
+      args.push('--voiceprint_threshold', String(this.voiceprintThreshold))
     }
     if (this.printJson) {
       args.push('--local_audio_print_json')

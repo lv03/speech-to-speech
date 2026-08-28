@@ -35,7 +35,7 @@ let pendingSpeak: string[] = []
 const VOICE_AFFECTING_FIELDS = [
   'llmBackend', 'llmApiKey', 'llmBaseUrl', 'llmModel',
   'sttBackend', 'sttModel', 'ttsBackend', 'ttsVoice',
-  'wakeWordEnabled', 'wakeWord', 'enableVoiceprint', 'llmReasoningEffort',
+  'wakeWordEnabled', 'wakeWord', 'enableVoiceprint', 'voiceprintThreshold', 'llmReasoningEffort',
 ] as const
 
 // ── 快捷键与自动休眠 ───────────────────────────────────────────────────
@@ -239,6 +239,7 @@ async function startVoice(): Promise<void> {
     wakeWord: settings.wakeWord,
     gatewayUrl: gatewayUrl() ?? 'http://127.0.0.1:3101',
     voiceprintEnabled: settings.enableVoiceprint,
+    voiceprintThreshold: settings.voiceprintThreshold,
     llmBackend: settings.llmBackend,
     llmApiKey: settings.llmApiKey,
     llmBaseUrl: settings.llmBaseUrl,
@@ -528,6 +529,67 @@ async function runVoiceprintCommand(args: string[]): Promise<{ ok: boolean; outp
   })
 }
 
+interface VoiceprintStatus {
+  enrolled: boolean
+  supportsContinuous: boolean
+  protocol: string | null
+  model: string | null
+  takes: number
+  totalDurationS: number
+  path: string
+}
+
+/** 读取声纹档案元信息（JSON）；文件不存在或解析失败返回 null。 */
+function runVoiceprintInfoJson(): Promise<Record<string, unknown> | null> {
+  return new Promise((resolvePromise) => {
+    const child = spawn(
+      pythonForCommands(),
+      ['-m', 'speech_to_speech.cli', 'voiceprint', 'info', '--json', '--profile', voiceprintPath()],
+      { cwd: resolve(__dirname, '../../..') },
+    )
+    let output = ''
+    child.stdout?.on('data', (chunk) => {
+      output += chunk.toString()
+    })
+    child.on('close', (code) => {
+      if (code !== 0) {
+        resolvePromise(null)
+        return
+      }
+      const trimmed = output.trim()
+      if (!trimmed) {
+        resolvePromise(null)
+        return
+      }
+      try {
+        resolvePromise(JSON.parse(trimmed) as Record<string, unknown>)
+      } catch {
+        resolvePromise(null)
+      }
+    })
+  })
+}
+
+async function voiceprintStatusPayload(): Promise<VoiceprintStatus> {
+  const path = voiceprintPath()
+  if (!existsSync(path)) {
+    return { enrolled: false, supportsContinuous: false, protocol: null, model: null, takes: 0, totalDurationS: 0, path }
+  }
+  const info = await runVoiceprintInfoJson()
+  if (!info) {
+    return { enrolled: true, supportsContinuous: false, protocol: 'unknown', model: null, takes: 0, totalDurationS: 0, path }
+  }
+  return {
+    enrolled: true,
+    supportsContinuous: info.supports_continuous_gating === true,
+    protocol: typeof info.enrollment_protocol === 'string' ? info.enrollment_protocol : null,
+    model: typeof info.model === 'string' ? info.model : null,
+    takes: typeof info.takes === 'number' ? info.takes : 0,
+    totalDurationS: typeof info.total_duration_s === 'number' ? info.total_duration_s : 0,
+    path,
+  }
+}
+
 // ── IPC ────────────────────────────────────────────────────────────────
 
 function gatewayUrl(): string | null {
@@ -576,15 +638,12 @@ app.whenReady().then(async () => {
     })
   })
   ipcMain.handle('gateway:list-tasks', () => gatewayFetch('/tasks'))
-  ipcMain.handle('voiceprint:status', () => ({
-    enrolled: existsSync(voiceprintPath()),
-    path: voiceprintPath(),
-  }))
+  ipcMain.handle('voiceprint:status', () => voiceprintStatusPayload())
   ipcMain.handle('voiceprint:enroll', () => {
     const wakeWord = settingsStore?.get().wakeWord || '噜噜噜噜'
     return runVoiceprintCommand([
       '-m', 'speech_to_speech.cli', 'voiceprint', 'enroll',
-      '--takes', '3', '--wake-word', wakeWord,
+      '--wake-word', wakeWord,
     ])
   })
   ipcMain.handle('voiceprint:verify', () => {
@@ -592,6 +651,11 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('settings:get', () => settingsStore?.get() ?? {})
   ipcMain.handle('settings:save', async (_e, settings: Partial<DesktopSettings>) => {
+    if (settings.enableVoiceprint === true) {
+      const status = await voiceprintStatusPayload()
+      if (!status.enrolled) throw new Error('请先注册声纹，再启用声纹验证')
+      if (!status.supportsContinuous) throw new Error('当前声纹档案为旧版（仅唤醒词），请重新注册后再启用')
+    }
     const before = settingsStore?.get()
     const saved = settingsStore?.save(settings)
     // 皮肤变化 → 重载 orb 让新皮肤生效

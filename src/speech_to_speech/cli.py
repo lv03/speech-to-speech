@@ -251,6 +251,7 @@ def run_voiceprint_command(command_args: list[str]) -> None:
     verify_parser.add_argument("--threshold", type=float, default=None, help="Acceptance threshold for the verdict.")
     info_parser = subparsers.add_parser("info", help="Show a stored profile's metadata.")
     info_parser.add_argument("--profile", type=Path, default=None, help="Profile path. Defaults to the default profile.")
+    info_parser.add_argument("--json", action="store_true", help="Output machine-readable JSON instead of text.")
 
     namespace = parser.parse_args(command_args)
 
@@ -283,6 +284,26 @@ def run_voiceprint_command(command_args: list[str]) -> None:
 
     if namespace.action == "info":
         profile = VoiceprintProfile.load(profile_path)
+        if getattr(namespace, "json", False):
+            import json
+
+            print(
+                json.dumps(
+                    {
+                        "enrolled": True,
+                        "path": str(profile_path),
+                        "model": profile.model_name,
+                        "wake_word": profile.wake_word,
+                        "takes": profile.takes,
+                        "total_duration_s": profile.total_duration_s,
+                        "schema_version": profile.schema_version,
+                        "enrollment_protocol": profile.enrollment_protocol,
+                        "supports_continuous_gating": profile.supports_conversation_gate,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return
         print(f"档案: {profile_path}")
         print(f"  模型: {profile.model_name}")
         print(f"  唤醒词: {profile.wake_word}")

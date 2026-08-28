@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
+import pytest
 
 import speech_to_speech.cli as cli_module
 
@@ -53,3 +56,40 @@ def test_voiceprint_info_marks_legacy_profile(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "legacy_wake_word_v1" in out
     assert "否（需重新注册）" in out
+
+
+def test_voiceprint_info_json_output(tmp_path, capsys):
+    profile = cli_module.VoiceprintProfile(
+        embedding=np.ones(2, dtype=np.float32),
+        wake_word="噜噜噜噜",
+        takes=5,
+        total_duration_s=20.0,
+    )
+    path = profile.save(tmp_path / "profile.npz")
+
+    cli_module.run_voiceprint_command(["info", "--json", "--profile", str(path)])
+
+    data = json.loads(capsys.readouterr().out)
+    assert data["enrolled"] is True
+    assert data["supports_continuous_gating"] is True
+    assert data["enrollment_protocol"] == "conversation_v1"
+    assert data["takes"] == 5
+    assert data["total_duration_s"] == pytest.approx(20.0)
+
+
+def test_voiceprint_info_json_marks_legacy(tmp_path, capsys):
+    path = tmp_path / "legacy.npz"
+    np.savez(
+        path,
+        embedding=np.ones(2, dtype=np.float32),
+        model_name="legacy-model",
+        wake_word="噜噜噜噜",
+        takes=3,
+        created_at=123.0,
+    )
+
+    cli_module.run_voiceprint_command(["info", "--json", "--profile", str(path)])
+
+    data = json.loads(capsys.readouterr().out)
+    assert data["supports_continuous_gating"] is False
+    assert data["enrollment_protocol"] == "legacy_wake_word_v1"

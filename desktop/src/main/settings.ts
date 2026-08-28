@@ -21,6 +21,8 @@ export interface DesktopSettings {
   autoHideSeconds: number
   /** 是否启用声纹验证（需先注册声纹） */
   enableVoiceprint: boolean
+  /** 声纹验证阈值（0,1]，越高越严格 */
+  voiceprintThreshold: number
   /** 语音引擎 LLM 后端 */
   llmBackend: string
   /** LLM API Key（responses-api 用） */
@@ -53,6 +55,7 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   wakeShortcut: 'CommandOrControl+Shift+O',
   autoHideSeconds: 0,
   enableVoiceprint: false,
+  voiceprintThreshold: 0.75,
   llmBackend: 'responses-api',
   llmApiKey: '',
   llmBaseUrl: '',
@@ -114,6 +117,9 @@ export class SettingsStore {
       out.autoHideSeconds = Math.floor(raw.autoHideSeconds)
     }
     if (typeof raw.enableVoiceprint === 'boolean') out.enableVoiceprint = raw.enableVoiceprint
+    if (typeof raw.voiceprintThreshold === 'number' && raw.voiceprintThreshold > 0 && raw.voiceprintThreshold <= 1) {
+      out.voiceprintThreshold = raw.voiceprintThreshold
+    }
     if (typeof raw.llmBackend === 'string' && raw.llmBackend.trim()) out.llmBackend = raw.llmBackend.trim()
     if (typeof raw.llmApiKey === 'string') out.llmApiKey = raw.llmApiKey
     if (typeof raw.llmBaseUrl === 'string') out.llmBaseUrl = raw.llmBaseUrl.trim()
