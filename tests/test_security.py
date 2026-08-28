@@ -10,7 +10,13 @@ import numpy as np
 import pytest
 
 import speech_to_speech.security.gate as gate_module
-from speech_to_speech.security.voiceprint import Voiceprint, VoiceprintProfile
+from speech_to_speech.security.voiceprint import (
+    CONVERSATION_ENROLLMENT_PROTOCOL,
+    LEGACY_ENROLLMENT_PROTOCOL,
+    PROFILE_SCHEMA_VERSION,
+    Voiceprint,
+    VoiceprintProfile,
+)
 
 
 def _chunk(seconds: float = 0.032, value: float = 0.01) -> bytes:
@@ -179,6 +185,63 @@ def test_voiceprint_profile_roundtrip_and_score(tmp_path: Path):
 def test_voiceprint_profile_load_missing_raises(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
         VoiceprintProfile.load(tmp_path / "missing.npz")
+
+
+def test_voiceprint_profile_roundtrip_keeps_conversation_metadata(tmp_path: Path):
+    profile = VoiceprintProfile(
+        embedding=np.array([1.0, 0.0], dtype=np.float32),
+        takes=4,
+        total_duration_s=16.0,
+        schema_version=PROFILE_SCHEMA_VERSION,
+        enrollment_protocol=CONVERSATION_ENROLLMENT_PROTOCOL,
+    )
+    loaded = VoiceprintProfile.load(profile.save(tmp_path / "conversation.npz"))
+
+    assert loaded.schema_version == PROFILE_SCHEMA_VERSION
+    assert loaded.enrollment_protocol == CONVERSATION_ENROLLMENT_PROTOCOL
+    assert loaded.total_duration_s == pytest.approx(16.0)
+    assert loaded.supports_conversation_gate is True
+
+
+def test_voiceprint_profile_loads_legacy_npz_for_diagnostics(tmp_path: Path):
+    path = tmp_path / "legacy.npz"
+    np.savez(
+        path,
+        embedding=np.array([1.0, 0.0], dtype=np.float32),
+        model_name="legacy-model",
+        wake_word="噜噜噜噜",
+        takes=3,
+        created_at=123.0,
+    )
+
+    loaded = VoiceprintProfile.load(path)
+
+    assert loaded.schema_version == 1
+    assert loaded.enrollment_protocol == LEGACY_ENROLLMENT_PROTOCOL
+    assert loaded.supports_conversation_gate is False
+    with pytest.raises(ValueError, match="re-enroll"):
+        loaded.require_conversation_gate()
+
+
+def test_voiceprint_enroll_normalizes_each_take_before_centroid():
+    voiceprint = Voiceprint()
+    embeddings = iter(
+        [
+            np.array([10.0, 0.0], dtype=np.float32),
+            np.array([0.0, 1.0], dtype=np.float32),
+        ]
+    )
+    voiceprint.embed = lambda _audio: next(embeddings)  # type: ignore[method-assign]
+
+    profile = voiceprint.enroll(
+        [np.ones(32000, dtype=np.float32), np.ones(48000, dtype=np.float32)],
+        wake_word="噜噜噜噜",
+    )
+
+    expected = np.array([1.0, 1.0], dtype=np.float32) / np.sqrt(2.0)
+    assert profile.embedding == pytest.approx(expected)
+    assert profile.total_duration_s == pytest.approx(5.0)
+    assert profile.supports_conversation_gate is True
 
 
 def test_voiceprint_embed_rejects_short_audio():

@@ -25,6 +25,19 @@ DEFAULT_MODEL = "iic/speech_eres2netv2_sv_zh-cn_16k-common"
 SAMPLE_RATE = 16000
 DEFAULT_WAKE_WORD = "噜噜噜噜"
 
+PROFILE_SCHEMA_VERSION = 2
+CONVERSATION_ENROLLMENT_PROTOCOL = "conversation_v1"
+LEGACY_ENROLLMENT_PROTOCOL = "legacy_wake_word_v1"
+
+
+def _normalized(embedding: np.ndarray) -> np.ndarray:
+    """Return a non-zero vector scaled to unit L2 norm."""
+    value = np.asarray(embedding, dtype=np.float32).squeeze()
+    norm = float(np.linalg.norm(value))
+    if value.ndim != 1 or value.size == 0 or norm <= 0:
+        raise ValueError("Voiceprint embedding must be a non-zero vector")
+    return (value / norm).astype(np.float32)
+
 
 @dataclass
 class VoiceprintProfile:
@@ -35,9 +48,26 @@ class VoiceprintProfile:
     wake_word: str = DEFAULT_WAKE_WORD
     takes: int = 1
     created_at: float = field(default_factory=time.time)
+    schema_version: int = PROFILE_SCHEMA_VERSION
+    enrollment_protocol: str = CONVERSATION_ENROLLMENT_PROTOCOL
+    total_duration_s: float = 0.0
+
+    @property
+    def supports_conversation_gate(self) -> bool:
+        return (
+            self.schema_version == PROFILE_SCHEMA_VERSION
+            and self.enrollment_protocol == CONVERSATION_ENROLLMENT_PROTOCOL
+        )
+
+    def require_conversation_gate(self) -> None:
+        if not self.supports_conversation_gate:
+            raise ValueError(
+                "Voiceprint profile uses legacy wake-word enrollment; "
+                "re-enroll with `speech-to-speech voiceprint enroll`."
+            )
 
     def score(self, embedding: np.ndarray) -> float:
-        """Cosine similarity in [0, 1] between this profile and *embedding*."""
+        """Cosine similarity in [-1, 1] between this profile and *embedding*."""
         a = np.asarray(self.embedding, dtype=np.float32)
         b = np.asarray(embedding, dtype=np.float32)
         if a.shape != b.shape or a.size == 0:
@@ -57,6 +87,9 @@ class VoiceprintProfile:
             wake_word=self.wake_word,
             takes=self.takes,
             created_at=self.created_at,
+            schema_version=self.schema_version,
+            enrollment_protocol=self.enrollment_protocol,
+            total_duration_s=self.total_duration_s,
         )
         return path
 
@@ -66,12 +99,22 @@ class VoiceprintProfile:
         if not path.is_file():
             raise FileNotFoundError(f"Voiceprint profile not found: {path}")
         with np.load(path, allow_pickle=False) as data:
+            schema_version = int(data["schema_version"]) if "schema_version" in data.files else 1
+            enrollment_protocol = (
+                str(data["enrollment_protocol"])
+                if "enrollment_protocol" in data.files
+                else LEGACY_ENROLLMENT_PROTOCOL
+            )
+            total_duration_s = float(data["total_duration_s"]) if "total_duration_s" in data.files else 0.0
             return cls(
                 embedding=data["embedding"],
                 model_name=str(data["model_name"]),
                 wake_word=str(data["wake_word"]),
                 takes=int(data["takes"]),
                 created_at=float(data["created_at"]),
+                schema_version=schema_version,
+                enrollment_protocol=enrollment_protocol,
+                total_duration_s=total_duration_s,
             )
 
 
@@ -105,16 +148,23 @@ class Voiceprint:
         result = self.model.generate(input=audio, fs=SAMPLE_RATE)
         return np.asarray(result[0]["spk_embedding"], dtype=np.float32).squeeze()
 
-    def enroll(self, takes: list[np.ndarray], wake_word: str = DEFAULT_WAKE_WORD) -> VoiceprintProfile:
+    def enroll(
+        self,
+        takes: list[np.ndarray],
+        wake_word: str = DEFAULT_WAKE_WORD,
+        enrollment_protocol: str = CONVERSATION_ENROLLMENT_PROTOCOL,
+    ) -> VoiceprintProfile:
         """Average several enrollment takes into a normalized profile."""
         if not takes:
             raise ValueError("At least one enrollment take is required")
-        embeddings = np.stack([self.embed(take) for take in takes])
-        mean = embeddings.mean(axis=0)
-        norm = float(np.linalg.norm(mean))
-        if norm == 0:
-            raise ValueError("Enrollment produced a zero embedding")
+        normalized_takes = np.stack([_normalized(self.embed(take)) for take in takes])
+        centroid = _normalized(normalized_takes.mean(axis=0))
         logger.info("Enrolled voiceprint from %d takes (model=%s)", len(takes), self.model_name)
         return VoiceprintProfile(
-            embedding=(mean / norm), model_name=self.model_name, wake_word=wake_word, takes=len(takes)
+            embedding=centroid,
+            model_name=self.model_name,
+            wake_word=wake_word,
+            takes=len(takes),
+            enrollment_protocol=enrollment_protocol,
+            total_duration_s=sum(len(take) for take in takes) / SAMPLE_RATE,
         )
