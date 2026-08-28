@@ -11,11 +11,14 @@
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `qwen3_tts_handler.py` | 1005 | **默认后端**：Qwen3-TTS（三模式：声音克隆/预设音色/音色设计） |
-| `kokoro_handler.py` | 418 | Kokoro-82M（8 语言，自动语言切换） |
-| `pocket_tts_handler.py` | 227 | Kyutai Pocket TTS（轻量、CPU 优先） |
-| `facebookmms_handler.py` | 222 | Facebook MMS VITS（多语言，语言切换重载模型） |
-| `chatTTS_handler.py` | 115 | ChatTTS |
+| `qwen3_tts_handler.py` | 1061 | **默认后端**：Qwen3-TTS（三模式：声音克隆/预设音色/音色设计） |
+| `openai_compatible_handler.py` | 744 | OpenAI 兼容端点（`--tts openai`，远程合成） |
+| `kokoro_handler.py` | 420 | Kokoro-82M（8 语言，自动语言切换） |
+| `pocket_tts_handler.py` | 233 | Kyutai Pocket TTS（轻量、CPU 优先） |
+| `facebookmms_handler.py` | 224 | Facebook MMS VITS（多语言，语言切换重载模型） |
+| `supertonic_tts_handler.py` | 212 | Supertonic ONNX（10 个内置音色） |
+| `omnivoice_handler.py` | 178 | OmniVoice（声音克隆，k2-fsa） |
+| `chatTTS_handler.py` | 117 | ChatTTS |
 | `README.md` | — | 各后端用法与语言映射 |
 
 **定位**：管线第四站（最后一站）。输入是 `TTSInput`（LLM 句子块）与 `AssistantOutputEvent`
@@ -149,7 +152,7 @@ blocksize 切块 + 取消检查。
 
 ---
 
-## 6. 五个后端共享的管线契约
+## 6. 各后端共享的管线契约
 
 ```
 process(TTSInput):
@@ -173,9 +176,12 @@ on_session_end(): 恢复初始 voice/语言/参考
 | 后端 | 引擎 | 平台 | 流式 | 语言切换 | 特色 |
 |---|---|---|---|---|---|
 | `qwen3`（默认） | mlx-audio / faster-qwen3-tts | MPS / CUDA / CPU | ✅ | ✅ auto | 三模式（克隆/预设/设计）、会话 voice 动态切换 |
+| `openai` | 远程 OpenAI 兼容端点（`/v1/audio/speech`） | 全平台 | ✅ | ❌（语言值原样透传） | 流式 PCM16/WAV 增量解码；默认 196ms 播放缓冲；见 [openai-compatible-tts.md](openai-compatible-tts.md) |
 | `kokoro` | mlx-audio / 原生 kokoro | MPS / CUDA / CPU | ✅ | ✅ 自动换音色 | 8 语言预置音色 |
 | `pocket` | pocket_tts | CPU / CUDA / MPS | ✅ | ❌ | 轻量、三态 voice、默认 CPU |
 | `facebookMMS` | transformers VitsModel | CUDA / CPU | ✅ | ✅ 重载模型 | ~40 语言、MMS 模型按语言切换 |
+| `supertonic` | Supertonic ONNX runtime | 全平台 | ✅ | ✅ 按句语言码，回退 `--supertonic_tts_lang` | 10 个内置音色（M1-M5/F1-F5），44.1kHz 输出下采样；模型缓存 `~/.cache/supertonic3/` |
+| `omnivoice` | k2-fsa OmniVoice | CUDA / Intel XPU / MPS | ⚠️ 块式（非模型流式） | ❌ | 声音克隆（参考音频编码一次复用）；⚠️ 权重 CC-BY-NC 非商用 |
 | `chatTTS` | ChatTTS | CUDA / CPU | ✅ | ❌ | 中文对话风格 |
 
 ---

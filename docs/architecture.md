@@ -213,15 +213,18 @@ accept ──► 领取 unit ──► 创建 SessionState
 | STT | `lightning-whisper-mlx` | Apple Silicon |
 | STT | `mlx-audio-whisper` | Apple Silicon（mlx-audio） |
 | STT | `paraformer` | FunASR |
+| STT | `fun-asr-nano` | FunASR Nano（中英日 + 方言） |
+| STT | `openai` | OpenAI 兼容端点（远程转写） |
 | STT | `none` | 跳过 STT，音频直接进多模态 LLM |
 | LLM | `transformers` | 本地 Transformers 模型 |
 | LLM | `mlx-lm` | Apple Silicon 默认 |
 | LLM | `responses-api` / `chat-completions` | OpenAI 兼容 API（托管或自托管） |
 | TTS | `qwen3`（默认） | Qwen3-TTS（GGML/CUDA/mlx-audio） |
-| TTS | `kokoro` / `pocket` / `chatTTS` / `facebook-mms` | 各种开源 TTS |
+| TTS | `openai` | OpenAI 兼容端点（远程合成） |
+| TTS | `kokoro` / `pocket` / `chatTTS` / `facebook-mms` / `omnivoice` / `supertonic` | 各种开源 TTS |
 
-> 社区 PR 正在扩展：SenseVoice（FunASR）、Qwen3-ASR、OpenAI 兼容 STT/TTS 端点、
-> Qwen3-TTS 声音克隆等。
+> 完整矩阵与参数前缀见 [backend-registry.md](backend-registry.md) §4；OpenAI 兼容端点用法见
+> [openai-compatible-stt.md](openai-compatible-stt.md) / [openai-compatible-tts.md](openai-compatible-tts.md)。
 
 ### 5.4 配置解析策略
 

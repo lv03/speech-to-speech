@@ -14,13 +14,15 @@
 |---|---|---|
 | `base_stt_handler.py` | 213 | **基类**：推测性回合的过期输入/输出过滤（本模块灵魂） |
 | `parakeet_tdt_handler.py` | 648 | **默认后端**：NVIDIA Parakeet TDT（MPS 走 MLX，CUDA/CPU 走 nano-parakeet） |
-| `whisper_stt_handler.py` | 147 | Transformers Whisper（含 torch.compile 优化） |
-| `faster_whisper_handler.py` | 68 | faster-whisper（CTranslate2） |
-| `lightning_whisper_mlx_handler.py` | 108 | Lightning Whisper MLX（Apple Silicon） |
-| `mlx_audio_whisper_handler.py` | 174 | mlx-audio Whisper（Apple Silicon） |
-| `paraformer_handler.py` | 76 | FunASR Paraformer（中文向） |
+| `whisper_stt_handler.py` | 282 | Transformers Whisper（含 torch.compile 优化） |
+| `faster_whisper_handler.py` | 148 | faster-whisper（CTranslate2） |
+| `lightning_whisper_mlx_handler.py` | 113 | Lightning Whisper MLX（Apple Silicon） |
+| `mlx_audio_whisper_handler.py` | 182 | mlx-audio Whisper（Apple Silicon） |
+| `paraformer_handler.py` | 207 | FunASR Paraformer（中文向，SEACO 变体，支持热词） |
+| `fun_asr_nano_handler.py` | 166 | FunASR Nano（中英日 + 方言，热词） |
+| `openai_compatible_handler.py` | 339 | OpenAI 兼容端点（`--stt openai`，远程转写） |
 | `smart_progressive_streaming.py` | 343 | 智能渐进式流式转写（句子感知窗口滑动） |
-| `transcription_notifier.py` | 86 | STT 与 LLM 之间的桥接：发射协议无关转写事件 |
+| `transcription_notifier.py` | 106 | STT 与 LLM 之间的桥接：发射协议无关转写事件 |
 | `README.md` | — | 语言支持矩阵 |
 
 **定位**：管线第二站。输入是 VAD 的 `VADAudio`（progressive 或 final 模式），
@@ -265,10 +267,12 @@ Transcription → ① TranscriptionCompletedEvent(transcript, language, turn_id.
 |---|---|---|---|
 | `parakeet-tdt`（默认） | ✅ **完整实现** | SmartProgressiveStreaming 增量式：句子固定 + 只重转写活跃窗口，final 复用固定句子 | ✅ 高质量 |
 | `paraformer` | ✅ **朴素实现** | 每个 progressive 块直接全量 `model.generate`，产出 `PartialTranscription`（无句子固定/复用） | ✅ 可用（计算量线性增长） |
-| `whisper`（Transformers） | ❌ **忽略 mode（bug）** | 无 mode 分支，progressive 块被直接转写并 yield `Transcription`（final 级别） | ❌ 会误触发回合终结 |
-| `faster-whisper` | ❌ **忽略 mode（bug）** | 同上 | ❌ 会误触发回合终结 |
-| `lightning-whisper-mlx` | ❌ **忽略 mode（bug）** | 同上 | ❌ 会误触发回合终结 |
-| `mlx-audio-whisper` | ❌ **忽略 mode（bug）** | 同上 | ❌ 会误触发回合终结 |
+| `fun-asr-nano` | ✅ **朴素实现** | 同 paraformer：每个 progressive 块直接全量推理，产出 `PartialTranscription` | ✅ 可用（计算量线性增长） |
+| `whisper`（Transformers） | ✅ **朴素实现** | 每个 progressive 块直接全量推理，产出 `PartialTranscription`（无句子固定/复用） | ✅ 可用（计算量线性增长） |
+| `faster-whisper` | ✅ **朴素实现** | 同上 | ✅ 可用（计算量线性增长） |
+| `lightning-whisper-mlx` | ✅ **朴素实现** | 同上 | ✅ 可用（计算量线性增长） |
+| `mlx-audio-whisper` | ✅ **朴素实现** | 同上 | ✅ 可用（计算量线性增长） |
+| `openai` | ⚠️ **尽力而为** | 每个 pipeline 至多一个 in-flight progressive 请求，新更新丢弃；final 独立提交不等待 | ⚠️ 可能丢更新（文档见 [openai-compatible-stt.md](openai-compatible-stt.md)） |
 
 ### 代码依据
 
@@ -281,25 +285,27 @@ else:
     yield Transcription(...)          # 最终转写
 ```
 
-**whisper 系**（无 mode 分支，一律当最终转写）：
+**whisper 系 + fun-asr-nano + paraformer**（朴素实现，区分 mode）：
 
 ```python
 def process(self, vad_audio):
-    pred_ids = self.model.generate(...)   # 不管 mode 直接转写
-    yield Transcription(...)              # 一律 yield Transcription
+    pred_text = self.model.generate(...)
+    if vad_audio.mode == "progressive":
+        yield PartialTranscription(text=pred_text, turn_id=..., turn_revision=...)  # 实时字幕
+        return
+    yield Transcription(text=pred_text, language_code=..., ...)                      # 最终转写
 ```
 
 ### 影响与现状
 
 1. **parakeet-tdt** 是唯一"高质量增量式"实现——渐进式成果（固定句子）被最终转写复用，
    用户说完话瞬间结果就绪（见第 5 节）。
-2. **paraformer** 是"朴素渐进式"——能出实时字幕，但每次全量重算，final 时还要再全量跑一次。
-3. **whisper 系 4 个后端**：开启 live transcription 时，VAD 照常释放 progressive 块，
-   但这些 handler 会把每个 progressive 块**误当最终转写**产出 `Transcription`，导致
-   **过早回合终结**（premature turn finalization）——这是 issue **#412**
-   「Whisper-family STT handlers ignore mode」描述的问题；PR **#451**（截至 2026-08 仍 open）
-   正在修复：让它们跳过 progressive 块、只处理 final。修复后这些后端将**只有最终转写、
-   无实时字幕**。
+2. **paraformer / fun-asr-nano / whisper 系** 是"朴素渐进式"——都能出实时字幕，
+   但每次全量重算，final 时还要再全量跑一次（早期的"忽略 mode"问题 #412/#451 已修复，
+   现在全部正确区分 progressive/final）。
+3. **openai 后端**的 progressive 是"尽力而为"——每个 pipeline 至多一个 in-flight
+   progressive 请求，运行期间新更新被丢弃；final 请求独立提交，不等待 in-flight
+   progressive（见 [openai-compatible-stt.md](openai-compatible-stt.md)）。
 4. **Apple Silicon 前提**：`num_pipelines > 1` 时 live transcription 会被自动禁用
    （MLX 全局锁竞争，见 `s2s_pipeline.run_pipeline_command`），与 STT 后端无关。
 
@@ -325,11 +331,13 @@ def process(self, vad_audio):
 | 后端 | 引擎 | 平台 | 实时转写 | 语言检测 | 备注 |
 |---|---|---|---|---|---|
 | `parakeet-tdt`（默认） | mlx-audio / nano-parakeet | MPS / CUDA / CPU | ✅ 完整增量式（见 6.1） | lingua-py（25 语） | 欧洲语言 |
-| `whisper` | Transformers | CUDA / CPU | ⚠️ 忽略 mode（#412，见 6.1） | token（12 语） | 支持 torch.compile |
-| `faster-whisper` | CTranslate2 | CUDA / CPU | ⚠️ 忽略 mode（#412） | 不报告 | 最快 |
-| `whisper-mlx` | LightningWhisperMLX | Apple Silicon | ⚠️ 忽略 mode（#412） | 结果字段（12 语） | |
-| `mlx-audio-whisper` | mlx-audio | Apple Silicon | ⚠️ 忽略 mode（#412） | 结果字段（12 语） | 全局 MLX 锁 |
+| `whisper` | Transformers | CUDA / CPU | ✅ 朴素全量式（见 6.1） | token（12 语） | 支持 torch.compile |
+| `faster-whisper` | CTranslate2 | CUDA / CPU | ✅ 朴素全量式 | 不报告 | 最快 |
+| `whisper-mlx` | LightningWhisperMLX | Apple Silicon | ✅ 朴素全量式 | 结果字段（12 语） | |
+| `mlx-audio-whisper` | mlx-audio | Apple Silicon | ✅ 朴素全量式 | 结果字段（12 语） | 全局 MLX 锁 |
 | `paraformer` | FunASR | CUDA / CPU / MPS | ✅ 朴素全量式（见 6.1） | 模型相关 | 中文向；**支持热词**（命令行 `--paraformer_stt_gen_hotword` / `--paraformer_stt_gen_postprocess_hotwords` 或文件 `*_hotword_file`，见 3.6） |
+| `fun-asr-nano` | FunASR Nano | 建议 GPU（MPS 可跑） | ✅ 朴素全量式 | 模型相关 | 中英日 + 方言口音；**支持热词**（`--fun_asr_nano_stt_gen_hotword` 等，见 [startup-guide.md](startup-guide.md) §2） |
+| `openai` | 远程 OpenAI 兼容端点 | 全平台 | ⚠️ 尽力而为（见 6.1） | 端点决定 | 上传内存 WAV，JSON/文本响应；见 [openai-compatible-stt.md](openai-compatible-stt.md) |
 | `none` | — | — | — | — | 音频直接进多模态 LLM |
 
 ---

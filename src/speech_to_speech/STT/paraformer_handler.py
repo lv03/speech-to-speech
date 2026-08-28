@@ -53,6 +53,7 @@ class ParaformerSTTHandler(BaseSTTHandler):
         logger.info("Loading Paraformer STT model: %s", model_name)
         if len(model_name.split("/")) > 1:
             model_name = model_name.split("/")[-1]
+        self.language = model_name.split("-")[1] if "-" in model_name else "zh"
         self.device = device
         self.gen_kwargs = dict(gen_kwargs)
         self._prepare_hotwords()
@@ -99,12 +100,15 @@ class ParaformerSTTHandler(BaseSTTHandler):
                 )
 
         # Text-level corrections: file overrides inline JSON when both absent;
-        # inline JSON wins if already present.
+        # inline JSON wins if already present. Popped from gen_kwargs so the
+        # mapping is applied here (process) instead of being forwarded to
+        # funasr's generate(), which ignores it.
         postprocess_file = self.gen_kwargs.pop("postprocess_hotword_file", None)
-        raw = self.gen_kwargs.get("postprocess_hotwords")
+        raw = self.gen_kwargs.pop("postprocess_hotwords", None)
         if postprocess_file and not raw:
             raw = self._read_postprocess_hotwords(postprocess_file)
         if not raw:
+            self._postprocess_hotwords = {}
             return
         if isinstance(raw, str):
             try:
@@ -113,19 +117,21 @@ class ParaformerSTTHandler(BaseSTTHandler):
                 logger.warning(
                     "Ignoring invalid postprocess_hotwords JSON: %r", raw,
                 )
+                self._postprocess_hotwords = {}
                 return
         if not isinstance(raw, dict):
             logger.warning(
                 "Ignoring postprocess_hotwords: expected a JSON object mapping "
                 "wrong text to target text, got %r", raw,
             )
+            self._postprocess_hotwords = {}
             return
-        self.gen_kwargs["postprocess_hotwords"] = {
+        self._postprocess_hotwords = {
             _space_each(str(wrong)): _space_each(str(right))
             for wrong, right in raw.items()
         }
         logger.info(
-            "Paraformer text-level hotwords: %s", self.gen_kwargs["postprocess_hotwords"],
+            "Paraformer text-level hotwords: %s", self._postprocess_hotwords,
         )
 
     @staticmethod
@@ -179,11 +185,26 @@ class ParaformerSTTHandler(BaseSTTHandler):
         for _ in range(n_steps):
             _ = self._shared.run(lambda m: m.generate(dummy_input))[0]["text"].strip().replace(" ", "")
 
+    def _apply_text_hotwords(self, text: str) -> str:
+        """Apply text-level hotword corrections to raw ASR output.
+
+        Runs on the SEACO-spaced text *before* space-stripping: keys/values
+        were normalized to per-character spacing in ``_prepare_hotwords`` so
+        exact-substring replacement matches the model's ``"皮 酒 病"`` output.
+        """
+        for wrong, right in getattr(self, "_postprocess_hotwords", {}).items():
+            if wrong in text:
+                text = text.replace(wrong, right)
+        return text
+
     def process(self, vad_audio: STTIn) -> Iterator[STTOut]:
         logger.debug("infering paraformer...")
 
-        pred_text = self._shared.run(lambda m: m.generate(vad_audio.audio, **self.gen_kwargs))[0]["text"].strip().replace(" ", "")
-        torch.mps.empty_cache()
+        raw_text = self._shared.run(lambda m: m.generate(vad_audio.audio, **self.gen_kwargs))[0]["text"].strip()
+        pred_text = self._apply_text_hotwords(raw_text).replace(" ", "")
+        # Same idea as ChatTTSHandler: MPS cache clear only on Apple Silicon.
+        if self.device == "mps":
+            torch.mps.empty_cache()
 
         logger.debug("finished paraformer inference")
         console.print(f"[yellow]USER: {pred_text}")
@@ -197,6 +218,7 @@ class ParaformerSTTHandler(BaseSTTHandler):
         else:
             yield Transcription(
                 text=pred_text,
+                language_code=self.language,
                 turn_id=vad_audio.turn_id,
                 turn_revision=vad_audio.turn_revision,
                 speech_stopped_at_s=vad_audio.created_at_s,

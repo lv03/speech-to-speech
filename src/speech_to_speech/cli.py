@@ -16,6 +16,10 @@ from speech_to_speech.api.openai_realtime.audio_client import (
 )
 from speech_to_speech.security.voiceprint import SAMPLE_RATE, Voiceprint, VoiceprintProfile
 from speech_to_speech.security.wake_word import DEFAULT_WAKE_WORD, crop_last_speech_burst
+from speech_to_speech.pipeline.transcript_logging import (
+    set_log_transcripts,
+    warn_if_log_transcripts_enabled,
+)
 
 Command = Literal["serve", "talk", "local", "voiceprint"]
 
@@ -122,6 +126,12 @@ def parse_talk_arguments(argv: Sequence[str]) -> RealtimeAudioClientConfig:
     )
     parser.add_argument("--send-rate", type=int, default=defaults.send_rate)
     parser.add_argument("--recv-rate", type=int, default=defaults.recv_rate)
+    parser.add_argument(
+        "--playback-buffer-ms",
+        type=float,
+        default=defaults.playback_buffer_ms,
+        help="Audio to buffer before playback starts, in milliseconds.",
+    )
     parser.add_argument("--chunk-size", type=int, default=defaults.chunk_size)
     parser.add_argument("--input-device", type=int, default=defaults.input_device)
     parser.add_argument("--output-device", type=int, default=defaults.output_device)
@@ -142,6 +152,14 @@ def parse_talk_arguments(argv: Sequence[str]) -> RealtimeAudioClientConfig:
         default=defaults.block_mic_during_playback,
     )
     parser.add_argument(
+        "--log-transcripts",
+        "--log_transcripts",
+        dest="log_transcripts",
+        action="store_true",
+        default=defaults.log_transcripts,
+        help="Write full Realtime transcript and tool error details to application logs.",
+    )
+    parser.add_argument(
         "--connection-retry-timeout",
         type=float,
         default=defaults.connection_retry_timeout_s,
@@ -159,6 +177,7 @@ def parse_talk_arguments(argv: Sequence[str]) -> RealtimeAudioClientConfig:
         api_key=namespace.api_key,
         send_rate=namespace.send_rate,
         recv_rate=namespace.recv_rate,
+        playback_buffer_ms=namespace.playback_buffer_ms,
         chunk_size=namespace.chunk_size,
         input_device=namespace.input_device,
         output_device=namespace.output_device,
@@ -166,6 +185,7 @@ def parse_talk_arguments(argv: Sequence[str]) -> RealtimeAudioClientConfig:
         voice=namespace.voice,
         print_json=namespace.print_json,
         block_mic_during_playback=namespace.block_mic_during_playback,
+        log_transcripts=namespace.log_transcripts,
         connection_retry_timeout_s=namespace.connection_retry_timeout,
         tools=tools,
         tool_executor=tool_executor,
@@ -262,7 +282,10 @@ def run_voiceprint_command(command_args: list[str]) -> None:
 def main() -> None:
     command, command_args = parse_command()
     if command == "talk":
-        run_realtime_audio_client(parse_talk_arguments(command_args))
+        config = parse_talk_arguments(command_args)
+        set_log_transcripts(config.log_transcripts)
+        warn_if_log_transcripts_enabled()
+        run_realtime_audio_client(config)
         return
     if command == "voiceprint":
         run_voiceprint_command(command_args)

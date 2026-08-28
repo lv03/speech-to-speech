@@ -12,17 +12,17 @@
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `language_model.py` | 1013 | **本地模型基类** `BaseLanguageModelHandler` + 文本/VLM 实现（transformers & mlx-lm） |
-| `base_openai_compatible_language_model.py` | 830 | **API 基类** `BaseOpenAICompatibleHandler`（Responses & Chat Completions 共享编排） |
-| `chat_completions_language_model.py` | 351 | Chat Completions 后端实现 |
-| `responses_api_language_model.py` | 192 | Responses API 后端实现 |
-| `chat.py` | 838 | **对话历史** `Chat` 类（有界缓存/压缩/回滚/工具配对） |
-| `lm_output_processor.py` | 148 | 输出分流：有序事件（文本/工具）与 TTS 输入同队列保序输出（#453 重构） |
+| `language_model.py` | 1198 | **本地模型基类** `BaseLanguageModelHandler` + 文本/VLM 实现（transformers & mlx-lm） |
+| `base_openai_compatible_language_model.py` | 1122 | **API 基类** `BaseOpenAICompatibleHandler`（Responses & Chat Completions 共享编排） |
+| `chat_completions_language_model.py` | 369 | Chat Completions 后端实现 |
+| `responses_api_language_model.py` | 214 | Responses API 后端实现 |
+| `chat.py` | 1153 | **对话历史** `Chat` 类（有界缓存/压缩/回滚/工具配对） |
+| `lm_output_processor.py` | 226 | 输出分流：有序事件（文本/工具）与 TTS 输入同队列保序输出（#453 重构） |
 | `compaction_prompt.py` | 181 | 历史摘要压缩 prompt 构建 |
 | `tool_call/` | 574 | 工具调用：代码块提取、函数签名、prompt 构建 |
 | `voice_prompt.py` / `text_prompt.py` | 92 | 语音/文本两种 system prompt 模板 |
 | `audio_input_notifier.py` | 63 | 音频输入通知 |
-| `utils.py` | 100 | `remove_unspeechable`、`sent_tokenize`、`resolve_auto_language`、`response_wants_audio` |
+| `utils.py` | 365 | `remove_unspeechable`、`sent_tokenize`（ASCII→nltk，非 ASCII→SaT）、`sent_tokenize_preserving_markdown_code`、`remove_markdown`、`resolve_auto_language`、`image_url_to_pil`（`response_wants_audio` 在 `utils/utils.py`） |
 
 **定位**：管线第三站。输入是 `GenerateResponseRequest`（携带 runtime_config + 会话 Chat），
 输出流式 `LLMResponseChunk`（按句子分批）+ `TokenUsage` + `EndOfResponse`。
@@ -110,10 +110,18 @@ LanguageModel VisionLM          ResponsesApi  ChatCompletions
 
 ```
 token/TextDelta → remove_unspeechable(去 TTS 不友好符号)
-  → sent_tokenize 切句 → 攒满 stream_batch_sentences(默认3) 才 yield 一个 chunk
+  → sent_tokenize_preserving_markdown_code(printable_text, sent_tokenize)
+      ├─ 保护未闭合代码围栏/已配对的强调符号 (*italic* 等) 不被切开
+      ├─ 完成句才入句批
+  → 句批内 remove_markdown(去 **粗体**/`代码` 等 markdown 标记)  → 攒满 stream_batch_sentences(默认3) 才 yield 一个 chunk
   → 下游 TTS 拿到完整句子, 合成更自然
   → 流式返回: 用户说话可打断 (interruptible)
 ```
+
+> markdown 保留分句（`sent_tokenize_preserving_markdown_code` + `remove_markdown`）是随上游
+> 合并引入的能力：流式 token 切句时不再把 `*italic*` 这类跨 chunk 的 markdown 结构切碎，
+> 完成句产出前再剥掉标记，TTS 读出来的是干净文本。分句器本身仍用本地 `sent_tokenize`
+> （纯 ASCII 文本走 nltk，含中文等非 ASCII 走 SaT 多语言分句，见 utils.py）。
 
 ### 4.2 文本模式（wants_audio=False）
 
@@ -266,10 +274,12 @@ tool_prompt.py:    build_tool_system_prompt(functions, text_only) + build_block_
 | `responses-api` | gpt-5.4-mini | base_url/api_key/stream/stream_batch_sentences |
 | `chat-completions` | 同上 | 同上 |
 
-API 后端特殊处理：`_build_extra_body` 按提供商禁用推理（vLLM/Qwen 走
-`chat_template_kwargs.enable_thinking=false`，GLM 走 `reasoning_effort='none'`；
-官方 OpenAI 服务器拒绝未知 extra_body 键所以跳过）；本地 base_url（localhost/loopback）
-自动用 `api_key="none"`。
+API 后端特殊处理：`_build_extra_body`（类方法）按提供商禁用推理——非空 `reasoning_effort`
+优先（原样放入 extra_body），否则 vLLM/Qwen 走 `chat_template_kwargs.enable_thinking=false`，
+GLM 等忽略该键的后端要求 `reasoning_effort='none'`；官方 OpenAI 服务器拒绝未知 extra_body
+键所以跳过；本地 base_url（localhost/loopback）自动用 `api_key="none"`。
+Responses API 后端额外覆写：禁用思考只在 `reasoning_effort is None` 时生效，且推理参数
+走原生 `reasoning: {effort: ...}` 字段，不塞进 Chat-Completions 形状的 extra_body。
 
 ---
 

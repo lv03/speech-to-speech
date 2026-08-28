@@ -11,6 +11,7 @@ This document summarizes the Speech-to-Text (STT) implementations in the `STT/` 
 - `parakeet-tdt` → `STT/parakeet_tdt_handler.py`
 - `paraformer` → `STT/paraformer_handler.py`
 - `fun-asr-nano` → `STT/fun_asr_nano_handler.py`
+- `openai` → `STT/openai_compatible_handler.py`
 
 ## Language Support by Handler
 
@@ -106,6 +107,16 @@ This document summarizes the Speech-to-Text (STT) implementations in the `STT/` 
   - Requires `funasr>=1.4.0` (installed via `pip install speech-to-speech[paraformer]`)
   - GPU recommended; the PyTorch CPU path runs ~3.6x realtime
   - No reliable character-level timestamps (upstream issue #106)
+
+### 7) OpenAI-compatible endpoint (`--stt openai`)
+
+- Handler: `OpenAICompatibleSTTHandler`
+- Endpoint: `POST /v1/audio/transcriptions`
+- Upload: mono PCM16 WAV at 16 kHz
+- Supports JSON (`{"text": "..."}`) and plain-text responses
+- Keeps at most one best-effort progressive request in flight per pipeline while
+  final requests are submitted independently; stale-turn filtering still applies
+- See [`docs/openai-compatible-stt.md`](../../../docs/openai-compatible-stt.md)
 
 ## Language Abbreviations (ISO-style codes seen in STT handlers)
 
