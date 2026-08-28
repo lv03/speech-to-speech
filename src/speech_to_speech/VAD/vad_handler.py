@@ -18,6 +18,7 @@ from speech_to_speech.pipeline.handler_types import VADIn, VADOut
 from speech_to_speech.pipeline.messages import VADAudio
 from speech_to_speech.pipeline.queue_types import TextEventItem
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
+from speech_to_speech.security.speaker_gate import GateStatus, TargetSpeakerGate
 from speech_to_speech.utils.utils import int2float
 from speech_to_speech.VAD.vad_iterator import VADIterator
 
@@ -80,6 +81,7 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         smart_turn_max_wait_ms: int = 2000,
         smart_turn_incomplete_delay_ms: int = 600,
         smart_turn_cpu_count: int = 1,
+        target_speaker_gate: TargetSpeakerGate | None = None,
     ) -> None:
         self.should_listen = should_listen
         self.sample_rate = sample_rate
@@ -119,6 +121,8 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
             unanswered_reopen_ms,
             self.smart_turn_max_wait_ms if smart_turn else 0,
         )
+        self.target_speaker_gate = target_speaker_gate
+        self._speaker_gate_segment_active = False
         self.model, _ = torch.hub.load(
             "snakers4/silero-vad:master",
             "silero_vad",
@@ -458,6 +462,36 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         if gap_ms > self._short_segment_merge_window_ms():
             self._discard_pending_short_segment("merge window elapsed")
 
+    # ── target-speaker gate integration ─────────────────────────────────────
+
+    def _speaker_gate_start_if_needed(self) -> None:
+        if self.target_speaker_gate is not None and not self._speaker_gate_segment_active:
+            self.target_speaker_gate.start_segment()
+            self._speaker_gate_segment_active = True
+
+    def _speaker_gate_observe(self) -> GateStatus:
+        if self.target_speaker_gate is None:
+            return GateStatus.ACCEPTED
+        self._speaker_gate_start_if_needed()
+        audio = torch.cat(self.iterator.speech_buffer()).cpu().numpy()
+        return self.target_speaker_gate.observe(
+            audio,
+            active_speech_ms=self._current_active_speech_duration_ms(),
+        ).status
+
+    def _speaker_gate_finish(self, audio: np.ndarray) -> GateStatus:
+        if self.target_speaker_gate is None:
+            return GateStatus.ACCEPTED
+        self._speaker_gate_start_if_needed()
+        status = self.target_speaker_gate.finish(audio).status
+        self._speaker_gate_segment_active = False
+        return status
+
+    def _speaker_gate_reset_segment(self) -> None:
+        if self.target_speaker_gate is not None and self._speaker_gate_segment_active:
+            self.target_speaker_gate.reset()
+        self._speaker_gate_segment_active = False
+
     def before_emit_output(self, output: VADOut) -> None:
         if isinstance(output, VADAudio):
             self._drop_superseded_vad_audio(output)
@@ -559,6 +593,10 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
 
         # Deferred speech_started: only emit once active VAD speech reaches the valid speech threshold.
         is_triggered_now = self.iterator.triggered
+        gate_status = GateStatus.ACCEPTED
+        if self.target_speaker_gate is not None and is_triggered_now:
+            gate_status = self._speaker_gate_observe()
+
         if is_triggered_now and not self._speech_started_emitted:
             segment_samples = sum(len(t) for t in self.iterator.buffer)
             segment_duration_ms = segment_samples / self.sample_rate * 1000
@@ -571,7 +609,10 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
             )
             self._begin_pending_reopen_if_needed(effective_start_ms)
             active_speech_min_ms = self._active_speech_min_ms(effective_start_ms)
-            if effective_active_speech_duration_ms >= active_speech_min_ms:
+            if (
+                effective_active_speech_duration_ms >= active_speech_min_ms
+                and gate_status is GateStatus.ACCEPTED
+            ):
                 turn_id, turn_revision, reopened = self._ensure_turn_for_speech_start(effective_start_ms)
                 self._speech_started_emitted = True
                 self._log_speech_starts += 1
@@ -611,12 +652,14 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
 
         # Live transcription controls whether progressive STT work is emitted
         # before the final segment.
-        yield from self._process_realtime(vad_output, runtime_config)
+        yield from self._process_realtime(vad_output, runtime_config, gate_status=gate_status)
 
     def _process_realtime(
         self,
         vad_output: list[torch.Tensor] | None,
         runtime_config: RuntimeConfig | None = None,
+        *,
+        gate_status: GateStatus = GateStatus.ACCEPTED,
     ) -> Iterator[VADOut]:
         """Process with real-time progressive audio release."""
         # Check if we're currently in a speech segment.
@@ -632,7 +675,10 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                 active_speech_duration_ms = self._current_active_speech_duration_ms()
                 start_ms = max(0, self._audio_ms - int(duration_ms))
 
-                if active_speech_duration_ms >= self._active_speech_min_ms(start_ms):
+                if (
+                    active_speech_duration_ms >= self._active_speech_min_ms(start_ms)
+                    and gate_status is GateStatus.ACCEPTED
+                ):
                     self._log_progressive_yields += 1
                     logger.debug(
                         "VAD: yielding progressive audio (segment=%.0fms, active=%.0fms, interval=%.2fs)",
@@ -667,6 +713,7 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                     self._cancel_pending_reopen()
                 self._speech_started_emitted = False
                 self._discard_expired_pending_short_segment()
+                self._speaker_gate_reset_segment()
                 return
 
             array = torch.cat(vad_output).cpu().numpy()
@@ -716,7 +763,15 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                 if not self._speech_started_emitted:
                     self._cancel_pending_reopen()
                 self._speech_started_emitted = False
+                self._speaker_gate_reset_segment()
             else:
+                finish_status = self._speaker_gate_finish(array)
+                if finish_status is GateStatus.REJECTED:
+                    logger.info("VAD: target speaker gate rejected segment; suppressing speech events and audio")
+                    self._cancel_pending_reopen()
+                    self._speech_started_emitted = False
+                    self.last_process_time = 0.0
+                    return
                 if stitched_short_segment:
                     logger.info(
                         "VAD: stitched short segment(s) into segment=%.0fms active=%.0fms",
@@ -837,7 +892,14 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         self._pending_reopen_candidate = None
         self.speculative_turns.reset()
         self.should_listen.set()
+        if self.target_speaker_gate is not None:
+            self.target_speaker_gate.reset()
+        self._speaker_gate_segment_active = False
         logger.debug("VAD session state reset")
+
+    def cleanup(self) -> None:
+        if self.target_speaker_gate is not None:
+            self.target_speaker_gate.close()
 
     @property
     def min_time_to_debug(self) -> float:

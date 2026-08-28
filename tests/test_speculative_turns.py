@@ -398,6 +398,8 @@ def _vad_handler_for_iterator(iterator: _StaticVADIterator) -> VADHandler:
     handler._pending_reopen_candidate = None
     handler.short_segment_merge_ms = 0
     handler._pending_short_segment = None
+    handler.target_speaker_gate = None
+    handler._speaker_gate_segment_active = False
     return handler
 
 
