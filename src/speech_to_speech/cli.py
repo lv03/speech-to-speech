@@ -14,12 +14,17 @@ from speech_to_speech.api.openai_realtime.audio_client import (
     load_realtime_tool_module,
     run_realtime_audio_client,
 )
-from speech_to_speech.security.voiceprint import SAMPLE_RATE, Voiceprint, VoiceprintProfile
-from speech_to_speech.security.wake_word import DEFAULT_WAKE_WORD, crop_last_speech_burst
 from speech_to_speech.pipeline.transcript_logging import (
     set_log_transcripts,
     warn_if_log_transcripts_enabled,
 )
+from speech_to_speech.security.voiceprint import (
+    CONVERSATION_ENROLLMENT_PROTOCOL,
+    SAMPLE_RATE,
+    Voiceprint,
+    VoiceprintProfile,
+)
+from speech_to_speech.security.wake_word import DEFAULT_WAKE_WORD
 
 Command = Literal["serve", "talk", "local", "voiceprint"]
 
@@ -198,6 +203,15 @@ def _default_voiceprint_path(name: str | None) -> Path:
     return directory / f"{name or 'default'}.npz"
 
 
+_VOICEPRINT_ENROLLMENT_PROMPTS = (
+    "今天天气不错，我正在测试自己的声音。",
+    "请只让系统响应我说出的语音指令。",
+    "这段录音用于建立本地声纹识别档案。",
+    "我会用正常的速度和音量继续说话。",
+    "现在完成最后一段自然语音注册录音。",
+)
+
+
 def _record_voiceprint_take(duration_s: float = 2.5) -> np.ndarray:
     """Record one microphone take at 16 kHz mono and return float32 samples."""
     import sounddevice as sd
@@ -224,8 +238,13 @@ def run_voiceprint_command(command_args: list[str]) -> None:
     subparsers = parser.add_subparsers(dest="action", metavar="ACTION", required=True)
     enroll_parser = subparsers.add_parser("enroll", help="Record microphone takes and save a voiceprint profile.")
     enroll_parser.add_argument("--name", default="default", help="Profile name (used in the default output path).")
-    enroll_parser.add_argument("--takes", type=int, default=3, help="Number of enrollment takes. Default is 3.")
-    enroll_parser.add_argument("--wake-word", default=DEFAULT_WAKE_WORD, help="Wake word to record. Default is 噜噜噜噜.")
+    enroll_parser.add_argument("--takes", type=int, default=5, help="Number of enrollment takes. Default is 5.")
+    enroll_parser.add_argument("--take-duration", type=float, default=4.0, help="Seconds per take, between 2 and 10. Default is 4.0.")
+    enroll_parser.add_argument(
+        "--wake-word",
+        default=DEFAULT_WAKE_WORD,
+        help="Wake word used by the security gate (stored as profile metadata). Default is 噜噜噜噜.",
+    )
     enroll_parser.add_argument("--output", type=Path, default=None, help="Output .npz path.")
     verify_parser = subparsers.add_parser("verify", help="Record one take and score it against a profile.")
     verify_parser.add_argument("--profile", type=Path, default=None, help="Profile path. Defaults to the default profile.")
@@ -238,16 +257,22 @@ def run_voiceprint_command(command_args: list[str]) -> None:
     if namespace.action == "enroll":
         if namespace.takes < 1:
             parser.error("--takes must be at least 1")
+        if not 2.0 <= namespace.take_duration <= 10.0:
+            parser.error("--take-duration must be between 2.0 and 10.0 seconds")
         output = namespace.output or _default_voiceprint_path(namespace.name)
-        print(f"声纹注册：将录 {namespace.takes} 遍唤醒词「{namespace.wake_word}」")
+        print(f"声纹注册：将录 {namespace.takes} 段自然说话（每段 {namespace.take_duration:.0f} 秒）")
         extractor = Voiceprint()
         takes: list[np.ndarray] = []
         for index in range(1, namespace.takes + 1):
-            print(f"\n第 {index}/{namespace.takes} 次：请在倒计时结束后说出「{namespace.wake_word}」")
-            # Crop each take with the same energy trim the live gate uses, so
-            # enrollment and verification embed the same kind of audio.
-            takes.append(crop_last_speech_burst(_record_voiceprint_take()))
-        profile = extractor.enroll(takes, wake_word=namespace.wake_word)
+            prompt = _VOICEPRINT_ENROLLMENT_PROMPTS[(index - 1) % len(_VOICEPRINT_ENROLLMENT_PROMPTS)]
+            print(f"\n第 {index}/{namespace.takes} 次：请在倒计时结束后自然朗读下面这句话")
+            print(f"  「{prompt}」")
+            takes.append(_record_voiceprint_take(namespace.take_duration))
+        profile = extractor.enroll(
+            takes,
+            wake_word=namespace.wake_word,
+            enrollment_protocol=CONVERSATION_ENROLLMENT_PROTOCOL,
+        )
         profile.save(output)
         print(f"\n注册完成，已保存到 {output}")
         return
@@ -262,14 +287,18 @@ def run_voiceprint_command(command_args: list[str]) -> None:
         print(f"  模型: {profile.model_name}")
         print(f"  唤醒词: {profile.wake_word}")
         print(f"  注册遍数: {profile.takes}")
+        print(f"  累计语音时长: {profile.total_duration_s:.1f}s")
+        print(f"  档案版本: {profile.schema_version}")
+        print(f"  注册协议: {profile.enrollment_protocol}")
+        print(f"  支持持续声纹门控: {'是' if profile.supports_conversation_gate else '否（需重新注册）'}")
         print(f"  创建时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(profile.created_at))}")
         return
 
     if namespace.action == "verify":
         profile = VoiceprintProfile.load(profile_path)
         threshold = namespace.threshold if namespace.threshold is not None else 0.75
-        print(f"声纹验证：请说出「{profile.wake_word}」")
-        audio = crop_last_speech_burst(_record_voiceprint_take())
+        print("声纹验证：请在倒计时结束后自然说话")
+        audio = _record_voiceprint_take(4.0)
         embedding = Voiceprint(model_name=profile.model_name).embed(audio)
         score = profile.score(embedding)
         verdict = "通过 ✅" if score >= threshold else "拒绝 ❌"
