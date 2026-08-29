@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "iic/speech_eres2netv2_sv_zh-cn_16k-common"
 SAMPLE_RATE = 16000
-DEFAULT_WAKE_WORD = "噜噜噜噜"
+DEFAULT_WAKE_WORD = "你好，噜噜"
 
 PROFILE_SCHEMA_VERSION = 2
 CONVERSATION_ENROLLMENT_PROTOCOL = "conversation_v1"

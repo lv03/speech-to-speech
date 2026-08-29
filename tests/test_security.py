@@ -16,7 +16,6 @@ from speech_to_speech.security.voiceprint import (
     LEGACY_ENROLLMENT_PROTOCOL,
     PROFILE_SCHEMA_VERSION,
     Voiceprint,
-    VoiceprintMatch,
     VoiceprintProfile,
     VoiceprintVerifier,
 )
@@ -50,60 +49,20 @@ class _FakeDetector:
         self.reset_calls += 1
 
 
-class _FakeVoiceprint:
-    def __init__(self, **kwargs):
-        pass
-
-    @property
-    def model(self) -> object:
-        return object()
-
-    def embed(self, audio: np.ndarray) -> np.ndarray:
-        return np.ones(192, dtype=np.float32)
-
-
-class _FakeProfile:
-    def __init__(self, score: float):
-        self._score = score
-        self.model_name = "fake"
-        self.embedding = np.ones(192, dtype=np.float32)
-
-    def score(self, embedding: np.ndarray) -> float:
-        return self._score
-
-    def save(self, path) -> None:  # noqa: ANN001
-        pass
-
-
-class _FakeProfileType:
-    score_value = 0.9
-
-    @staticmethod
-    def load(path):  # noqa: ANN001
-        return _FakeProfile(_FakeProfileType.score_value)
-
-
 def _make_gate(
     monkeypatch: pytest.MonkeyPatch,
     *,
     detector: _FakeDetector | None = None,
-    profile_score: float | None = None,
     timeout_s: float = 60.0,
 ) -> tuple[gate_module.SecurityGateHandler, _FakeDetector]:
     detector = detector or _FakeDetector()
     monkeypatch.setattr(gate_module, "WakeWordDetector", lambda **kwargs: detector)
-    monkeypatch.setattr(gate_module, "Voiceprint", _FakeVoiceprint)
-    if profile_score is not None:
-        _FakeProfileType.score_value = profile_score
-        monkeypatch.setattr(gate_module, "VoiceprintProfile", _FakeProfileType)
 
     gate = gate_module.SecurityGateHandler(
         threading.Event(),
         queue_in=None,  # type: ignore[arg-type]
         queue_out=None,  # type: ignore[arg-type]
         setup_kwargs={
-            "voiceprint_enrollment": "profile.npz" if profile_score is not None else None,
-            "voiceprint_threshold": 0.75,
             "security_timeout_s": timeout_s,
         },
     )
@@ -120,25 +79,6 @@ def test_gate_unlocks_on_wake_word_and_forwards_after(monkeypatch):
     # The chunk that carries the wake word is swallowed too...
     assert list(gate.process(_chunk())) == []
     # ...everything after it flows downstream.
-    chunk = _chunk()
-    assert list(gate.process(chunk)) == [chunk]
-
-
-def test_gate_voiceprint_rejected_stays_locked(monkeypatch):
-    gate, _detector = _make_gate(
-        monkeypatch, detector=_FakeDetector(fire_on_call=41), profile_score=0.1
-    )
-    for _ in range(41):  # ~1.3 s of audio, detection fires on the last chunk
-        list(gate.process(_chunk()))
-    assert list(gate.process(_chunk())) == []
-
-
-def test_gate_voiceprint_accepted_unlocks(monkeypatch):
-    gate, _detector = _make_gate(
-        monkeypatch, detector=_FakeDetector(fire_on_call=41), profile_score=0.9
-    )
-    for _ in range(41):
-        list(gate.process(_chunk()))
     chunk = _chunk()
     assert list(gate.process(chunk)) == [chunk]
 
@@ -207,31 +147,6 @@ def test_voiceprint_verifier_serializes_model_calls():
     assert peak == 1
 
 
-def test_security_gate_uses_injected_verifier(monkeypatch):
-    detector = _FakeDetector(detections=1)
-    monkeypatch.setattr(gate_module, "WakeWordDetector", lambda **_kwargs: detector)
-
-    class FakeVerifier:
-        def preload(self) -> None:
-            pass
-
-        def verify(self, _audio: np.ndarray) -> VoiceprintMatch:
-            return VoiceprintMatch(0.9, np.ones(192, dtype=np.float32))
-
-        def adapt(self, _embedding: np.ndarray, *, weight: float = 0.15) -> None:
-            assert weight == pytest.approx(0.15)
-
-    gate = gate_module.SecurityGateHandler(
-        threading.Event(),
-        queue_in=None,  # type: ignore[arg-type]
-        queue_out=None,  # type: ignore[arg-type]
-        setup_kwargs={"voiceprint_verifier": FakeVerifier(), "voiceprint_threshold": 0.75},
-    )
-
-    assert list(gate.process(_chunk())) == []
-    assert list(gate.process(_chunk())) == [_chunk()]
-
-
 def test_voiceprint_profile_roundtrip_and_score(tmp_path: Path):
     profile = VoiceprintProfile(embedding=np.array([1.0, 0.0, 0.0], dtype=np.float32), takes=3)
     path = profile.save(tmp_path / "p.npz")
@@ -239,7 +154,7 @@ def test_voiceprint_profile_roundtrip_and_score(tmp_path: Path):
     assert loaded.score(np.array([1.0, 0.0, 0.0], dtype=np.float32)) == pytest.approx(1.0)
     assert loaded.score(np.array([0.0, 1.0, 0.0], dtype=np.float32)) == pytest.approx(0.0)
     assert loaded.takes == 3
-    assert loaded.wake_word == "噜噜噜噜"
+    assert loaded.wake_word == "你好，噜噜"
 
 
 def test_voiceprint_profile_load_missing_raises(tmp_path: Path):

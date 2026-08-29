@@ -298,12 +298,13 @@ python scripts/benchmark_tts.py \
 
 Lock the pipeline behind a wake word and a speaker voiceprint: while locked, the
 assistant stays completely silent (audio is swallowed and text/response triggers
-are dropped), and only the enrolled speaker saying the wake word unlocks it.
-With `--enable_voiceprint`, every subsequent speech segment is also verified
-before it can emit a speech event, reach STT, or trigger the LLM, so non-target
-speakers talking alone are silently ignored. On unlock the assistant audibly
-confirms ("我在，请说。" by default), and the gate re-locks after the microphone
-has been quiet for `--security_timeout_s` or when the session ends.
+are dropped), and saying the wake word unlocks it (the wake word itself is not
+voiceprint-verified). With `--enable_voiceprint`, every speech segment is
+verified before it can emit a speech event, reach STT, or trigger the LLM, so
+non-target speakers talking alone are silently ignored. The two flags are
+independent. On unlock the assistant audibly confirms ("我在，请说。" by default),
+and the gate re-locks after the microphone has been quiet for
+`--security_timeout_s` or when the session ends.
 
 ```bash
 # 1. Enroll the speaker's voice (record natural speech for continuous gating)
@@ -311,7 +312,7 @@ speech-to-speech voiceprint enroll
 
 # 2. Serve with the gate enabled
 speech-to-speech serve \
-    --enable_wake_word --wake_word 噜噜噜噜 \
+    --enable_wake_word --wake_word 你好，噜噜 \
     --enable_voiceprint \
     --voiceprint_threshold 0.60 --security_timeout_s 60
 ```

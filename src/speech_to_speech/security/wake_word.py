@@ -7,9 +7,9 @@ as space-separated pinyin initials/finals followed by ``@显示文本``, e.g.::
     x iǎo ài t óng x ué @小爱同学
 
 Tones matter: the model distinguishes ``ū`` (first tone) from ``ù`` (fourth
-tone). The default wake word ``噜噜噜噜`` registers several tone variants
-because first-tone ``lū`` is rare in the training data and is not recognised
-reliably, while ``lù`` is.
+tone). The default wake word ``你好，噜噜`` registers several tone variants
+for the final ``噜`` because first-tone ``lū`` is rare in the training data and
+is not recognised reliably, while ``lù`` is.
 
 On detection, ``process`` returns the wake word's audio segment (cropped from a
 rolling buffer using the decoder's token timestamps) so the caller can run
@@ -29,17 +29,17 @@ logger = logging.getLogger(__name__)
 
 KWS_MODEL_ID = "pkufool/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
 SAMPLE_RATE = 16000
-DEFAULT_WAKE_WORD = "噜噜噜噜"
+DEFAULT_WAKE_WORD = "你好，噜噜"
 
-# All tone variants of "lu lu lu lu". Registering every variant makes the
-# detector fire however the speaker pronounces the word; the model only
+# All tone variants of the trailing "lu lu". Registering every variant makes
+# the detector fire however the speaker pronounces the word; the model only
 # reliably matches the tones it saw in training (lù here).
 DEFAULT_WAKE_WORD_VARIANTS = (
-    "l ū l ū l ū l ū",
-    "l ù l ù l ù l ù",
-    "l u l u l u l u",
-    "l ú l ú l ú l ú",
-    "l ǔ l ǔ l ǔ l ǔ",
+    "n ǐ h ǎo l u l u",
+    "n ǐ h ǎo l ū l ū",
+    "n ǐ h ǎo l ú l ú",
+    "n ǐ h ǎo l ǔ l ǔ",
+    "n ǐ h ǎo l ù l ù",
 )
 
 # Beam-search budget and trigger sensitivity for the KWS decoder. Capping the

@@ -121,7 +121,7 @@ function collect(): SettingsPayload {
     ttsBackend: ttsBackend.value,
     ttsVoice: ttsVoice.value.trim(),
     wakeWordEnabled: wakeWordEnabled.checked,
-    wakeWord: wakeWord.value.trim() || '噜噜噜噜',
+    wakeWord: wakeWord.value.trim() || '你好，噜噜',
     enableVoiceprint: voiceprintEnabled.checked,
     voiceprintThreshold: Number(voiceprintThreshold.value) || 0.75,
     orbSkin: orbSkin.value,

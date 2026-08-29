@@ -50,7 +50,7 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   gatewayPort: 3101,
   enableVoice: false,
   wakeWordEnabled: false,
-  wakeWord: '噜噜噜噜',
+  wakeWord: '你好，噜噜',
   orbSkin: '',
   wakeShortcut: 'CommandOrControl+Shift+O',
   autoHideSeconds: 0,

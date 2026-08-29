@@ -1,13 +1,12 @@
-# 安全门卫：唤醒词 + 持续声纹门控（Security Gate）
+# 安全门卫：唤醒词解锁 + 持续声纹门控（Security Gate）
 
-系统默认「上锁」：只有**已注册说话人说出唤醒词并通过声纹验证**才会解锁。解锁后仍然
-启用持续声纹门控——每一段语音在发出 `speech_started`、进入 STT 或触发 LLM 之前，都必须
-先确认这段语音里包含已注册用户。非目标说话人单独讲话会被静默丢弃，既不打断助手，也不
-产生转写或响应。
+系统默认「上锁」：说出唤醒词即可解锁（唤醒词本身**不验证声纹**）。解锁后启用持续声纹
+门控——每一段语音在发出 `speech_started`、进入 STT 或触发 LLM 之前，都必须先确认这段语音
+里包含已注册用户。非目标说话人单独讲话会被静默丢弃，既不打断助手，也不产生转写或响应。
 
 ```
 上锁时:
-浏览器 → WS /v1/realtime → [唤醒词 + 声纹验证] → 吞掉音频（不进入 VAD/STT/LLM）
+浏览器 → WS /v1/realtime → [唤醒词检测] → 吞掉音频（不进入 VAD/STT/LLM）
 
 解锁后:
 浏览器 → WS /v1/realtime → VAD 累积语音 → [滑动窗口持续声纹门控]
@@ -23,7 +22,7 @@
 | 声纹 | funasr（已随 `[paraformer]` 安装） | `iic/speech_eres2netv2_sv_zh-cn_16k-common`（ModelScope，~100MB） | **服务启动时预热**（构建流水线阶段） |
 | 分句 SaT | wtpsplit | `sat-3l-sm` | **服务启动时预热**（避免重启后第一句对话变慢） |
 
-唤醒词验证与持续对话门控**共享同一份声纹验证器**，避免重复加载模型。声纹推理在每
+唤醒词检测不加载声纹模型；持续声纹门控加载一份 ERes2NetV2 验证器。声纹推理在每
 pipeline 的单 worker 线程上执行，音频接收不因模型推理而中断。
 
 ## 2. 注册声纹（CLI，麦克风）
@@ -55,7 +54,7 @@ speech-to-speech voiceprint info              # 查看档案元信息与是否�
 ```bash
 speech-to-speech serve \
   --enable_wake_word \
-  --wake_word 噜噜噜噜 \
+  --wake_word 你好，噜噜 \
   --enable_voiceprint \
   --voiceprint_enrollment ~/.cache/speech_to_speech/voiceprint/default.npz \
   --voiceprint_threshold 0.60 \
@@ -65,15 +64,16 @@ speech-to-speech serve \
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--enable_wake_word` | off | 总开关；不开启时行为与原来完全一致 |
-| `--wake_word` | `噜噜噜噜` | 唤醒词显示文本 |
-| `--enable_voiceprint` | off | 唤醒词与后续每一段语音都验证声纹；要求 `--enable_wake_word` 且档案为自然语音注册 |
+| `--enable_wake_word` | off | 唤醒词解锁（纯检测，不验证声纹）；不开启时麦克风直通 VAD |
+| `--wake_word` | `你好，噜噜` | 唤醒词显示文本 |
+| `--enable_voiceprint` | off | 持续声纹门控；与 `--enable_wake_word` 相互独立，要求档案为自然语音注册 |
 | `--voiceprint_enrollment` | `~/.cache/speech_to_speech/voiceprint/default.npz` | 声纹档案路径 |
 | `--voiceprint_threshold` | `0.75` | cosine 相似度阈值（0,1]，越高越严格；上线值应从自有 target/non-target/overlap 录音中校准 |
 | `--security_timeout_s` | `60` | 麦克风安静这么多秒自动重新上锁（任何可闻声音都会重置计时） |
 | `--unlock_acknowledgment` | 一句"确认你在听"的提示语 | 解锁后注入给 LLM 的确认提示；设为空字符串则解锁后保持静默 |
 
-只开启 `--enable_wake_word` 不开启声纹 = 纯唤醒词模式（任何人说对唤醒词即可用）。
+`--enable_wake_word` 与 `--enable_voiceprint` 相互独立：可以只开唤醒词、只开声纹门控，或两者都开。
+开启声纹门控后，解锁（若配置了唤醒词）之后每段语音仍会做声纹过滤。
 
 ## 4. 行为细节
 
@@ -86,8 +86,7 @@ speech-to-speech serve \
 - **混说限制**：声纹不分离音轨。你与别人同时说话时，只要某窗口检测到你就放行，但转写仍
   可能包含对方重叠的词。需要「转写中只保留你」时应另外引入 target-speaker extraction。
 - **唤醒词不泄漏**：唤醒词音频不会进入 STT。
-- **声纹自适应仅限唤醒词**：只有干净唤醒词验证通过才以 15% 权重并入档案；普通对话窗口
-  （可能含他人）绝不更新档案，避免污染模板。
+- **声纹档案不随对话自适应**：普通对话窗口（可能含他人）绝不更新档案，避免污染模板。
 - **重新上锁**：① 客户端会话结束；② 麦克风连续安静超过 `--security_timeout_s`。
 
 ## 5. 已知限制

@@ -640,7 +640,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('gateway:list-tasks', () => gatewayFetch('/tasks'))
   ipcMain.handle('voiceprint:status', () => voiceprintStatusPayload())
   ipcMain.handle('voiceprint:enroll', () => {
-    const wakeWord = settingsStore?.get().wakeWord || '噜噜噜噜'
+    const wakeWord = settingsStore?.get().wakeWord || '你好，噜噜'
     return runVoiceprintCommand([
       '-m', 'speech_to_speech.cli', 'voiceprint', 'enroll',
       '--wake-word', wakeWord,

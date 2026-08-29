@@ -31,11 +31,11 @@ from speech_to_speech.backend_registry import (
     BackendSelection,
     BackendSpec,
 )
-from speech_to_speech.pipeline_graph import PipelineGraph
 from speech_to_speech.pipeline.transcript_logging import (
     set_log_transcripts,
     warn_if_log_transcripts_enabled,
 )
+from speech_to_speech.pipeline_graph import PipelineGraph
 from speech_to_speech.utils.thread_manager import ThreadManager
 
 # Ensure the nltk Punkt resource used as the sent_tokenize fallback is present.
@@ -321,8 +321,6 @@ def prepare_module_args(module_kwargs: ModuleArguments, llm_backend: BackendSele
             f"The LLM proxy requires a backend with proxy support; choose one of: {supported}. "
             f"Got {llm_backend.name!r}."
         )
-    if module_kwargs.enable_voiceprint and not module_kwargs.enable_wake_word:
-        raise ValueError("--enable_voiceprint requires --enable_wake_word (the voiceprint is verified on the wake word).")
     if platform == "darwin":
         check_mac_settings(module_kwargs)
 

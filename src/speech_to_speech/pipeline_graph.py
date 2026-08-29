@@ -190,8 +190,6 @@ class PipelineGraph:
                 queue_out=gate_queue,
                 setup_kwargs={
                     "wake_word": module_kwargs.wake_word,
-                    "voiceprint_verifier": voiceprint_verifier,
-                    "voiceprint_threshold": module_kwargs.voiceprint_threshold,
                     "security_timeout_s": module_kwargs.security_timeout_s,
                     "unlock_acknowledgment": module_kwargs.unlock_acknowledgment,
                 },

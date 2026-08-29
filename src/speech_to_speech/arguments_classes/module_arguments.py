@@ -115,23 +115,23 @@ class ModuleArguments:
         default=False,
         metadata={
             "help": "Lock the pipeline behind a wake word: audio is swallowed (and the assistant stays "
-            "silent) until the wake word is heard. With --enable_voiceprint the speaker must also match "
-            "the enrolled voiceprint. Off by default."
+            "silent) until the wake word is heard. The wake word itself is not voiceprint-verified; "
+            "speaker filtering is handled by --enable_voiceprint after unlock. Off by default."
         },
     )
     wake_word: str = field(
-        default="噜噜噜噜",
+        default="你好，噜噜",
         metadata={
             "help": "The wake word as displayed text. Detection uses pinyin tone variants of this word "
-            "(see speech_to_speech.security.wake_word for how variants are registered). Default is '噜噜噜噜'."
+            "(see speech_to_speech.security.wake_word for how variants are registered). Default is '你好，噜噜'."
         },
     )
     enable_voiceprint: bool = field(
         default=False,
         metadata={
-            "help": "Verify the enrolled speaker on the wake word and every subsequent speech segment "
-            "before emitting speech events or sending audio to STT. Requires --enable_wake_word and a "
-            "conversation profile created with `speech-to-speech voiceprint enroll`. Off by default."
+            "help": "Verify every speech segment before emitting speech events or sending audio to STT. "
+            "Independent of --enable_wake_word; requires a conversation profile created with "
+            "`speech-to-speech voiceprint enroll`. Off by default."
         },
     )
     voiceprint_enrollment: Optional[str] = field(

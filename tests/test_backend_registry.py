@@ -302,7 +302,7 @@ def test_new_stt_backend_gets_transcription_notifier_by_default(monkeypatch):
     assert any(isinstance(handler, DummyNotifier) for handler in handlers)
 
 
-def test_pipeline_shares_voiceprint_verifier_between_wake_and_vad(monkeypatch, tmp_path):
+def test_pipeline_wires_voiceprint_gate_to_vad_only(monkeypatch, tmp_path):
     class SharedVerifier:
         def preload(self) -> None:
             pass
@@ -400,7 +400,7 @@ def test_pipeline_shares_voiceprint_verifier_between_wake_and_vad(monkeypatch, t
     )
 
     assert loaded == [(str(profile_path), True)]
-    assert security_kwargs["voiceprint_verifier"] is shared
+    assert "voiceprint_verifier" not in security_kwargs
     assert vad_kwargs["target_speaker_gate"].verifier is shared
 
 

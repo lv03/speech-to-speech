@@ -88,7 +88,7 @@ export class EmbeddedVoice {
     this.python = options.python || findPython(this.root)
     this.port = options.port ?? Number(process.env.VOICE_PORT || 8765)
     this.wakeWordEnabled = options.wakeWordEnabled ?? false
-    this.wakeWord = options.wakeWord || '噜噜噜噜'
+    this.wakeWord = options.wakeWord || '你好，噜噜'
     this.gatewayUrl = options.gatewayUrl || process.env.GATEWAY_URL || 'http://127.0.0.1:3101'
     this.startupTimeoutMs = options.startupTimeoutMs ?? 300_000
     this.printJson = options.printJson ?? true

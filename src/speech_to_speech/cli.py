@@ -243,7 +243,7 @@ def run_voiceprint_command(command_args: list[str]) -> None:
     enroll_parser.add_argument(
         "--wake-word",
         default=DEFAULT_WAKE_WORD,
-        help="Wake word used by the security gate (stored as profile metadata). Default is 噜噜噜噜.",
+        help="Wake word used by the security gate (stored as profile metadata). Default is 你好，噜噜.",
     )
     enroll_parser.add_argument("--output", type=Path, default=None, help="Output .npz path.")
     verify_parser = subparsers.add_parser("verify", help="Record one take and score it against a profile.")
