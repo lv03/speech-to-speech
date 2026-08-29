@@ -228,6 +228,7 @@ def create_app(
             logger.error(f"WebRTC call setup failed (pipeline {unit.index}): {type(e).__name__}: {e}")
             # No transport or drain task exists yet, so undoing the claim
             # directly is the whole release.
+            unit.release_session()
             unit.session = None
             return Response(content="WebRTC session setup failed", status_code=500, media_type="text/plain")
 

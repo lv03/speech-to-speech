@@ -87,3 +87,17 @@ class PipelineUnit(BaseModel):
             if ack is not None:
                 return ack
         return None
+
+    def attach_session(self, transport: Any | None = None) -> Any:
+        from speech_to_speech.api.openai_realtime.session_lifecycle import SessionState
+
+        if self.session is not None:
+            raise RuntimeError(f"Pipeline unit {self.index} already has a session")
+        self.session = SessionState(transport=transport)
+        return self.session
+
+    def release_session(self) -> Any | None:
+        session = self.session
+        if session is not None:
+            session.mark_released()
+        return session

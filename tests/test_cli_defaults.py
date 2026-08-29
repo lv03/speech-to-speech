@@ -132,6 +132,35 @@ def test_mac_optimal_settings_preserves_explicit_component_device():
     assert args.tts_backend.config["device"] == "cpu"
 
 
+def test_pipeline_json_presets_select_backends_and_apply_mac_defaults(tmp_path):
+    pipeline_json = tmp_path / "pipeline.json"
+    pipeline_json.write_text(
+        """
+        {
+          "mac_optimal_settings": true,
+          "stt": "whisper",
+          "llm_backend": "mlx-lm",
+          "tts": "openai",
+          "model_name": "custom/json-model",
+          "port": 9911
+        }
+        """.strip()
+    )
+
+    args = parse_arguments([str(pipeline_json)])
+
+    assert args.module_kwargs.mac_optimal_settings is True
+    assert args.module_kwargs.stt == "whisper"
+    assert args.module_kwargs.llm_backend == "mlx-lm"
+    assert args.module_kwargs.tts == "openai"
+    assert args.realtime_server_kwargs.port == 9911
+    assert args.stt_backend.name == "whisper"
+    assert args.llm_backend.name == "mlx-lm"
+    assert args.llm_backend.config["device"] == "mps"
+    assert args.llm_backend.config["model_name"] == "custom/json-model"
+    assert args.tts_backend.name == "openai"
+
+
 @pytest.mark.parametrize("flag", ["--local_mac_optimal_settings", "--mac_optimal_settings"])
 def test_noncanonical_mac_optimal_settings_flags_are_rejected(flag):
     with pytest.raises(ValueError, match=flag):

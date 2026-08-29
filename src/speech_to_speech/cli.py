@@ -229,8 +229,7 @@ def _record_voiceprint_take(duration_s: float = 2.5) -> np.ndarray:
     return audio
 
 
-def run_voiceprint_command(command_args: list[str]) -> None:
-    """Handle the ``speech-to-speech voiceprint`` subcommand family."""
+def _voiceprint_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="speech-to-speech voiceprint",
         description="Enroll or verify a speaker voiceprint (3D-Speaker ERes2NetV2).",
@@ -252,30 +251,82 @@ def run_voiceprint_command(command_args: list[str]) -> None:
     info_parser = subparsers.add_parser("info", help="Show a stored profile's metadata.")
     info_parser.add_argument("--profile", type=Path, default=None, help="Profile path. Defaults to the default profile.")
     info_parser.add_argument("--json", action="store_true", help="Output machine-readable JSON instead of text.")
+    return parser
 
+
+def _run_voiceprint_enroll(namespace: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    if namespace.takes < 1:
+        parser.error("--takes must be at least 1")
+    if not 2.0 <= namespace.take_duration <= 10.0:
+        parser.error("--take-duration must be between 2.0 and 10.0 seconds")
+    output = namespace.output or _default_voiceprint_path(namespace.name)
+    print(f"声纹注册：将录 {namespace.takes} 段自然说话（每段 {namespace.take_duration:.0f} 秒）")
+    extractor = Voiceprint()
+    takes: list[np.ndarray] = []
+    for index in range(1, namespace.takes + 1):
+        prompt = _VOICEPRINT_ENROLLMENT_PROMPTS[(index - 1) % len(_VOICEPRINT_ENROLLMENT_PROMPTS)]
+        print(f"\n第 {index}/{namespace.takes} 次：请在倒计时结束后自然朗读下面这句话")
+        print(f"  「{prompt}」")
+        takes.append(_record_voiceprint_take(namespace.take_duration))
+    profile = extractor.enroll(
+        takes,
+        wake_word=namespace.wake_word,
+        enrollment_protocol=CONVERSATION_ENROLLMENT_PROTOCOL,
+    )
+    profile.save(output)
+    print(f"\n注册完成，已保存到 {output}")
+
+
+def _print_voiceprint_info(profile: VoiceprintProfile, profile_path: Path, as_json: bool) -> None:
+    if as_json:
+        import json
+
+        print(
+            json.dumps(
+                {
+                    "enrolled": True,
+                    "path": str(profile_path),
+                    "model": profile.model_name,
+                    "wake_word": profile.wake_word,
+                    "takes": profile.takes,
+                    "total_duration_s": profile.total_duration_s,
+                    "schema_version": profile.schema_version,
+                    "enrollment_protocol": profile.enrollment_protocol,
+                    "supports_continuous_gating": profile.supports_conversation_gate,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
+    print(f"档案: {profile_path}")
+    print(f"  模型: {profile.model_name}")
+    print(f"  唤醒词: {profile.wake_word}")
+    print(f"  注册遍数: {profile.takes}")
+    print(f"  累计语音时长: {profile.total_duration_s:.1f}s")
+    print(f"  档案版本: {profile.schema_version}")
+    print(f"  注册协议: {profile.enrollment_protocol}")
+    print(f"  支持持续声纹门控: {'是' if profile.supports_conversation_gate else '否（需重新注册）'}")
+    print(f"  创建时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(profile.created_at))}")
+
+
+def _run_voiceprint_verify(namespace: argparse.Namespace, profile_path: Path) -> None:
+    profile = VoiceprintProfile.load(profile_path)
+    threshold = namespace.threshold if namespace.threshold is not None else 0.75
+    print("声纹验证：请在倒计时结束后自然说话")
+    audio = _record_voiceprint_take(4.0)
+    embedding = Voiceprint(model_name=profile.model_name).embed(audio)
+    score = profile.score(embedding)
+    verdict = "通过 ✅" if score >= threshold else "拒绝 ❌"
+    print(f"\n相似度: {score:.4f}（阈值 {threshold:.2f}）→ {verdict}")
+
+
+def run_voiceprint_command(command_args: list[str]) -> None:
+    """Handle the ``speech-to-speech voiceprint`` subcommand family."""
+    parser = _voiceprint_parser()
     namespace = parser.parse_args(command_args)
 
     if namespace.action == "enroll":
-        if namespace.takes < 1:
-            parser.error("--takes must be at least 1")
-        if not 2.0 <= namespace.take_duration <= 10.0:
-            parser.error("--take-duration must be between 2.0 and 10.0 seconds")
-        output = namespace.output or _default_voiceprint_path(namespace.name)
-        print(f"声纹注册：将录 {namespace.takes} 段自然说话（每段 {namespace.take_duration:.0f} 秒）")
-        extractor = Voiceprint()
-        takes: list[np.ndarray] = []
-        for index in range(1, namespace.takes + 1):
-            prompt = _VOICEPRINT_ENROLLMENT_PROMPTS[(index - 1) % len(_VOICEPRINT_ENROLLMENT_PROMPTS)]
-            print(f"\n第 {index}/{namespace.takes} 次：请在倒计时结束后自然朗读下面这句话")
-            print(f"  「{prompt}」")
-            takes.append(_record_voiceprint_take(namespace.take_duration))
-        profile = extractor.enroll(
-            takes,
-            wake_word=namespace.wake_word,
-            enrollment_protocol=CONVERSATION_ENROLLMENT_PROTOCOL,
-        )
-        profile.save(output)
-        print(f"\n注册完成，已保存到 {output}")
+        _run_voiceprint_enroll(namespace, parser)
         return
 
     profile_path = namespace.profile or _default_voiceprint_path(None)
@@ -283,47 +334,15 @@ def run_voiceprint_command(command_args: list[str]) -> None:
         parser.error(f"声纹档案不存在: {profile_path}（先用 `speech-to-speech voiceprint enroll` 注册）")
 
     if namespace.action == "info":
-        profile = VoiceprintProfile.load(profile_path)
-        if getattr(namespace, "json", False):
-            import json
-
-            print(
-                json.dumps(
-                    {
-                        "enrolled": True,
-                        "path": str(profile_path),
-                        "model": profile.model_name,
-                        "wake_word": profile.wake_word,
-                        "takes": profile.takes,
-                        "total_duration_s": profile.total_duration_s,
-                        "schema_version": profile.schema_version,
-                        "enrollment_protocol": profile.enrollment_protocol,
-                        "supports_continuous_gating": profile.supports_conversation_gate,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            return
-        print(f"档案: {profile_path}")
-        print(f"  模型: {profile.model_name}")
-        print(f"  唤醒词: {profile.wake_word}")
-        print(f"  注册遍数: {profile.takes}")
-        print(f"  累计语音时长: {profile.total_duration_s:.1f}s")
-        print(f"  档案版本: {profile.schema_version}")
-        print(f"  注册协议: {profile.enrollment_protocol}")
-        print(f"  支持持续声纹门控: {'是' if profile.supports_conversation_gate else '否（需重新注册）'}")
-        print(f"  创建时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(profile.created_at))}")
+        _print_voiceprint_info(
+            VoiceprintProfile.load(profile_path),
+            profile_path,
+            bool(getattr(namespace, "json", False)),
+        )
         return
 
     if namespace.action == "verify":
-        profile = VoiceprintProfile.load(profile_path)
-        threshold = namespace.threshold if namespace.threshold is not None else 0.75
-        print("声纹验证：请在倒计时结束后自然说话")
-        audio = _record_voiceprint_take(4.0)
-        embedding = Voiceprint(model_name=profile.model_name).embed(audio)
-        score = profile.score(embedding)
-        verdict = "通过 ✅" if score >= threshold else "拒绝 ❌"
-        print(f"\n相似度: {score:.4f}（阈值 {threshold:.2f}）→ {verdict}")
+        _run_voiceprint_verify(namespace, Path(profile_path))
         return
 
     parser.error(f"unknown action {namespace.action!r}")

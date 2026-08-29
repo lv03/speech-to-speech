@@ -73,6 +73,51 @@ class SessionState:
     @property
     def is_released(self) -> bool:
         return self._released_at is not None
+
+    @property
+    def is_drained(self) -> bool:
+        return self._drained.is_set()
+
+    @property
+    def is_quarantined(self) -> bool:
+        return self._quarantined_at is not None
+
+    def mark_released(self) -> None:
+        self._released_at = time.monotonic()
+
+    def mark_drained(self) -> None:
+        self._drained.set()
+
+    def mark_quarantined(self) -> None:
+        self._quarantined_at = time.monotonic()
+
+    def draining_for_s(self, now: float) -> float:
+        if self._released_at is None:
+            raise ValueError("Session has not been released")
+        return now - self._released_at
+
+    def stuck_for_s(self, now: float) -> float:
+        if self._quarantined_at is None:
+            raise ValueError("Session has not been quarantined")
+        return now - self._quarantined_at
+
+    def pool_view(self, index: int, now: float) -> dict[str, Any]:
+        if not self.is_released:
+            return {"index": index, "state": "active", "session_id": self.session_id}
+        if self.is_quarantined:
+            return {
+                "index": index,
+                "state": "stuck",
+                "session_id": self.session_id,
+                "draining_for_s": round(self.draining_for_s(now), 2),
+                "stuck_for_s": round(self.stuck_for_s(now), 2),
+            }
+        return {
+            "index": index,
+            "state": "draining",
+            "session_id": self.session_id,
+            "draining_for_s": round(self.draining_for_s(now), 2),
+        }
 MAX_AUDIO_BATCH_BYTES = 6400
 # How long the release path waits for SESSION_END to propagate through the
 # handler chain back to output_queue before warning that the unit is stuck.
@@ -345,7 +390,7 @@ async def _release_unit_after_drain(unit: PipelineUnit, session: Any, session_id
     elapsed = 0.0
     warned = False
     try:
-        while not session._drained.is_set():
+        while not session.is_drained:
             await asyncio.sleep(0.05)
             elapsed += 0.05
             if not warned and elapsed >= SESSION_END_DRAIN_TIMEOUT_S:
@@ -354,8 +399,8 @@ async def _release_unit_after_drain(unit: PipelineUnit, session: Any, session_id
                     f"unit will remain unavailable until handlers finish (session {session_id})"
                 )
                 warned = True
-            if session._quarantined_at is None and elapsed >= SESSION_END_QUARANTINE_TIMEOUT_S:
-                session._quarantined_at = time.monotonic()
+            if not session.is_quarantined and elapsed >= SESSION_END_QUARANTINE_TIMEOUT_S:
+                session.mark_quarantined()
                 _safe_unregister(unit, session_id)
                 logger.error(
                     f"Pipeline {unit.index}: SESSION_END still not drained after {elapsed:.0f}s — "
@@ -369,7 +414,7 @@ async def _release_unit_after_drain(unit: PipelineUnit, session: Any, session_id
             _safe_unregister(unit, session_id)
         finally:
             unit.session = None
-        recovered = " after quarantine" if session._quarantined_at is not None else ""
+        recovered = " after quarantine" if session.is_quarantined else ""
         logger.info(f"Pipeline {unit.index} released{recovered} (session {session_id} ended)")
 
 
@@ -386,11 +431,10 @@ def _release_session(unit: PipelineUnit, session_id: str) -> None:
     SESSION_END, and spawns the drain-and-release task — the unit stays
     claimed until SESSION_END propagates back to output_queue.
     """
-    old_session = unit.session
+    old_session = unit.release_session()
     if old_session is None:
         # Already released (e.g. duplicate close callbacks racing).
         return
-    old_session._released_at = time.monotonic()
     # The send loop can be parked on output from an unclaimed internal
     # prefetch. Invalidate that response while its connection state is still
     # registered, and drop the per-session held item so SESSION_END can drain.
@@ -556,7 +600,7 @@ def claim_unit(pool: list[PipelineUnit], transport: SessionTransport | None) -> 
     """
     for unit in pool:
         if unit.session is None:
-            unit.session = SessionState(transport=transport)
+            unit.attach_session(transport)
             return unit
     return None
 
@@ -782,7 +826,7 @@ async def send_loop_for(unit: PipelineUnit, stop_event: ThreadingEvent) -> None:
                 if is_control_message(audio_chunk, SESSION_END.kind):
                     chunk_session_id = getattr(audio_chunk, "session_id", None)
                     if session is not None and chunk_session_id in (None, session.session_id):
-                        session._drained.set()
+                        session.mark_drained()
                         logger.debug(f"Pipeline {unit.index}: SESSION_END drained")
                     continue
 
@@ -859,20 +903,4 @@ def pool_view(unit: PipelineUnit, now: float) -> dict[str, Any]:
     s = unit.session
     if s is None:
         return {"index": unit.index, "state": "idle", "session_id": None}
-    if s._released_at is None:
-        return {"index": unit.index, "state": "active", "session_id": s.session_id}
-    if s._quarantined_at is not None:
-        return {
-            "index": unit.index,
-            "state": "stuck",
-            "session_id": s.session_id,
-            "draining_for_s": round(now - s._released_at, 2),
-            "stuck_for_s": round(now - s._quarantined_at, 2),
-        }
-    return {
-        "index": unit.index,
-        "state": "draining",
-        "session_id": s.session_id,
-        "draining_for_s": round(now - s._released_at, 2),
-    }
-
+    return s.pool_view(unit.index, now)

@@ -265,6 +265,41 @@ def test_startup_wires_the_gate_and_warns_before_processing(monkeypatch):
     assert events == ["logger", "warning", "prepare", "build", "start", "wait"]
 
 
+def test_startup_disables_live_transcription_for_multi_pipeline_macos(monkeypatch):
+    from speech_to_speech import s2s_pipeline
+
+    args = SimpleNamespace(
+        module_kwargs=SimpleNamespace(
+            log_level="info",
+            log_transcripts=False,
+            num_pipelines=2,
+            enable_live_transcription=True,
+        )
+    )
+    manager = SimpleNamespace(start=lambda: None, wait=lambda: None, stop=lambda: None)
+    seen = {}
+
+    def record_prepare(parsed_args):
+        seen.setdefault("prepare", parsed_args.module_kwargs.enable_live_transcription)
+
+    def record_build(parsed_args, _stop_event):
+        seen.setdefault("build", parsed_args.module_kwargs.enable_live_transcription)
+        return manager
+
+    monkeypatch.setattr(s2s_pipeline, "parse_arguments", lambda *_args, **_kwargs: args)
+    monkeypatch.setattr(s2s_pipeline, "setup_logger", lambda _level: None)
+    monkeypatch.setattr(s2s_pipeline, "warn_if_log_transcripts_enabled", lambda: None)
+    monkeypatch.setattr(s2s_pipeline, "prepare_all_args", record_prepare)
+    monkeypatch.setattr(s2s_pipeline, "build_pipeline", record_build)
+    monkeypatch.setattr(s2s_pipeline.signal, "signal", lambda *_args: None)
+    monkeypatch.setattr(s2s_pipeline, "platform", "darwin")
+
+    s2s_pipeline.run_pipeline_command("serve", [])
+
+    assert seen["prepare"] is True
+    assert seen["build"] is False
+
+
 def test_cli_exposes_the_flag_defaulting_to_off():
     from speech_to_speech.arguments_classes.module_arguments import ModuleArguments
 

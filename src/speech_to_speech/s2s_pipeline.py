@@ -90,6 +90,15 @@ class ParsedArguments:
     tts_backend: BackendSelection
 
 
+@dataclass(frozen=True)
+class BackendPreselection:
+    mac_preset_enabled: bool
+    pipeline_json: dict[str, Any] | None
+    stt_name: str
+    llm_name: str
+    tts_name: str
+
+
 def build_llm_proxy_config(
     module_kwargs: ModuleArguments,
     llm_backend: BackendSelection,
@@ -154,104 +163,136 @@ def _parse_selected_cli_configs(
     return tuple(parsed)
 
 
-def parse_arguments(
-    argv: Sequence[str] | None = None,
-    *,
-    command: Literal["serve", "local"] = "serve",
-) -> ParsedArguments:
-    module_defaults = ModuleArguments()
-    assert module_defaults.stt is not None
-    assert module_defaults.llm_backend is not None
-    assert module_defaults.tts is not None
+def _resolve_backend_names(
+    pipeline_args: list[str],
+    module_defaults: ModuleArguments,
+    command: Literal["serve", "local"],
+) -> BackendPreselection:
+    """Resolve selected backend names before the full dataclass parse."""
 
-    pipeline_args = list(sys.argv[1:] if argv is None else argv)
-    _is_json = len(pipeline_args) == 1 and pipeline_args[0].endswith(".json")
-    pipeline_json: dict[str, Any] | None = None
-    if _is_json:
+    if len(pipeline_args) == 1 and pipeline_args[0].endswith(".json"):
         with open(pipeline_args[0]) as _f:
             pipeline_json = json.load(_f)
-        _mac_preset_enabled = bool(pipeline_json.get("mac_optimal_settings", False))
-        _llm_name = pipeline_json.get("llm_backend") or (
-            "mlx-lm" if _mac_preset_enabled else module_defaults.llm_backend
+        mac_preset_enabled = bool(pipeline_json.get("mac_optimal_settings", False))
+        llm_name = pipeline_json.get("llm_backend") or (
+            "mlx-lm" if mac_preset_enabled else module_defaults.llm_backend
         )
-        if _mac_preset_enabled:
-            pipeline_json = {**_mac_preset_defaults(_llm_name), **pipeline_json}
-        _stt_name = pipeline_json.get("stt") or module_defaults.stt
-        _tts_name = pipeline_json.get("tts") or module_defaults.tts
-    else:
-        _pre = argparse.ArgumentParser(prog=f"speech-to-speech {command}", add_help=False)
-        _pre.add_argument("--mac-optimal-settings", action="store_true")
-        _pre.add_argument("--stt", choices=tuple(STT_BACKENDS))
-        _pre.add_argument("--llm_backend", "--llm-backend", choices=tuple(LLM_BACKENDS))
-        _pre.add_argument("--tts", choices=tuple(TTS_BACKENDS))
-        _pre_args = _pre.parse_known_args(pipeline_args)[0]
-        _mac_preset_enabled = _pre_args.mac_optimal_settings
-        _stt_name = _pre_args.stt or module_defaults.stt
-        _llm_name = _pre_args.llm_backend or ("mlx-lm" if _mac_preset_enabled else module_defaults.llm_backend)
-        _tts_name = _pre_args.tts or module_defaults.tts
+        if mac_preset_enabled:
+            pipeline_json = {**_mac_preset_defaults(llm_name), **pipeline_json}
+        return BackendPreselection(
+            mac_preset_enabled=mac_preset_enabled,
+            pipeline_json=pipeline_json,
+            stt_name=pipeline_json.get("stt") or module_defaults.stt,
+            llm_name=llm_name,
+            tts_name=pipeline_json.get("tts") or module_defaults.tts,
+        )
 
+    pre = argparse.ArgumentParser(prog=f"speech-to-speech {command}", add_help=False)
+    pre.add_argument("--mac-optimal-settings", action="store_true")
+    pre.add_argument("--stt", choices=tuple(STT_BACKENDS))
+    pre.add_argument("--llm_backend", "--llm-backend", choices=tuple(LLM_BACKENDS))
+    pre.add_argument("--tts", choices=tuple(TTS_BACKENDS))
+    pre_args = pre.parse_known_args(pipeline_args)[0]
+    mac_preset_enabled = pre_args.mac_optimal_settings
+    stt_name = pre_args.stt or module_defaults.stt
+    llm_name = pre_args.llm_backend or ("mlx-lm" if mac_preset_enabled else module_defaults.llm_backend)
+    tts_name = pre_args.tts or module_defaults.tts
+    return BackendPreselection(
+        mac_preset_enabled=mac_preset_enabled,
+        pipeline_json=None,
+        stt_name=stt_name,
+        llm_name=llm_name,
+        tts_name=tts_name,
+    )
+
+
+def _select_backend_specs(preselection: BackendPreselection) -> list[BackendSpec]:
     selected_specs = []
     for registry, name in (
-        (STT_BACKENDS, _stt_name),
-        (LLM_BACKENDS, _llm_name),
-        (TTS_BACKENDS, _tts_name),
+        (STT_BACKENDS, preselection.stt_name),
+        (LLM_BACKENDS, preselection.llm_name),
+        (TTS_BACKENDS, preselection.tts_name),
     ):
         try:
             selected_specs.append(registry[name])
         except KeyError as exc:
             choices = ", ".join(registry)
             raise ValueError(f"Unsupported backend {name!r}; choose one of: {choices}.") from exc
+    return selected_specs
 
-    logger.debug(
-        "Backend pre-parse: stt=%s, llm=%s, tts=%s",
-        _stt_name,
-        _llm_name,
-        _tts_name,
-    )
 
-    server_arguments_class = RealtimeServerArguments if command == "serve" else LocalRealtimeServerArguments
-    argument_classes: list[type[Any]] = [
+def _argument_classes_for_command(command: Literal["serve", "local"], selected_specs: Sequence[BackendSpec]) -> list[type[Any]]:
+    classes: list[type[Any]] = [
         ModuleArguments,
-        server_arguments_class,
+        RealtimeServerArguments if command == "serve" else LocalRealtimeServerArguments,
     ]
     if command == "local":
-        argument_classes.append(LocalAudioArguments)
-    argument_classes.extend(
+        classes.append(LocalAudioArguments)
+    classes.extend(
         [
             VADHandlerArguments,
             *(spec.config_type for spec in selected_specs),
         ]
     )
-    parser = HfArgumentParser(tuple(argument_classes), prog=f"speech-to-speech {command}")  # type: ignore[arg-type]
+    return classes
+
+
+def _build_argument_parser(
+    command: Literal["serve", "local"],
+    selected_specs: Sequence[BackendSpec],
+    preselection: BackendPreselection,
+) -> HfArgumentParser:
+    parser = HfArgumentParser(
+        tuple(_argument_classes_for_command(command, selected_specs)),
+        prog=f"speech-to-speech {command}",
+    )  # type: ignore[arg-type]
     mac_action = parser._option_string_actions.pop("--mac_optimal_settings")
     mac_action.option_strings = [option for option in mac_action.option_strings if option != "--mac_optimal_settings"]
-    if _mac_preset_enabled:
-        parser.set_defaults(**_mac_preset_defaults(_llm_name))
+    if preselection.mac_preset_enabled:
+        parser.set_defaults(**_mac_preset_defaults(preselection.llm_name))
+    return parser
 
-    if _is_json:
-        assert pipeline_json is not None
-        parsed = parser.parse_dict(pipeline_json, allow_extra_keys=True)
-    else:
-        parsed = _parse_selected_cli_configs(parser, pipeline_args, selected_specs)
 
-    # Build a {type: instance} lookup so field assignment is order-independent.
+def _parse_pipeline_dataclasses(
+    parser: HfArgumentParser,
+    pipeline_args: list[str],
+    selected_specs: Sequence[BackendSpec],
+    preselection: BackendPreselection,
+) -> tuple[Any, ...]:
+    if preselection.pipeline_json is not None:
+        return tuple(parser.parse_dict(preselection.pipeline_json, allow_extra_keys=True))
+    return _parse_selected_cli_configs(parser, pipeline_args, selected_specs)
+
+
+def _server_args_from_parsed(
+    command: Literal["serve", "local"],
+    by_type: dict[type, Any],
+) -> RealtimeServerArguments:
+    if command == "serve":
+        return by_type[RealtimeServerArguments]
+    return RealtimeServerArguments(
+        host="127.0.0.1",
+        port=by_type[LocalRealtimeServerArguments].port,
+    )
+
+
+def _assemble_parsed_arguments(
+    command: Literal["serve", "local"],
+    parsed: tuple[Any, ...],
+    selected_specs: Sequence[BackendSpec],
+    preselection: BackendPreselection,
+) -> ParsedArguments:
     by_type: dict[type, Any] = {type(obj): obj for obj in parsed}
     logger.debug("Parsed %d argument classes: %s", len(by_type), [t.__name__ for t in by_type])
-    if command == "serve":
-        realtime_server_kwargs = by_type[RealtimeServerArguments]
-    else:
-        realtime_server_kwargs = RealtimeServerArguments(
-            host="127.0.0.1",
-            port=by_type[LocalRealtimeServerArguments].port,
-        )
 
     module_kwargs = by_type[ModuleArguments]
-    module_kwargs.stt = _stt_name
-    module_kwargs.llm_backend = _llm_name
-    module_kwargs.tts = _tts_name
-    args = ParsedArguments(
+    module_kwargs.stt = preselection.stt_name
+    module_kwargs.llm_backend = preselection.llm_name
+    module_kwargs.tts = preselection.tts_name
+
+    return ParsedArguments(
         module_kwargs=module_kwargs,
-        realtime_server_kwargs=realtime_server_kwargs,
+        realtime_server_kwargs=_server_args_from_parsed(command, by_type),
         local_audio_kwargs=by_type.get(LocalAudioArguments, LocalAudioArguments()),
         vad_handler_kwargs=by_type[VADHandlerArguments],
         stt_backend=BackendSelection(
@@ -264,7 +305,42 @@ def parse_arguments(
             selected_specs[2], selected_specs[2].normalize(by_type[selected_specs[2].config_type])
         ),
     )
-    return args
+
+
+def parse_arguments(
+    argv: Sequence[str] | None = None,
+    *,
+    command: Literal["serve", "local"] = "serve",
+) -> ParsedArguments:
+    module_defaults = ModuleArguments()
+    assert module_defaults.stt is not None
+    assert module_defaults.llm_backend is not None
+    assert module_defaults.tts is not None
+
+    pipeline_args = list(sys.argv[1:] if argv is None else argv)
+    preselection = _resolve_backend_names(
+        pipeline_args,
+        module_defaults,
+        command,
+    )
+
+    selected_specs = _select_backend_specs(preselection)
+
+    logger.debug(
+        "Backend pre-parse: stt=%s, llm=%s, tts=%s",
+        preselection.stt_name,
+        preselection.llm_name,
+        preselection.tts_name,
+    )
+
+    parser = _build_argument_parser(command, selected_specs, preselection)
+    parsed = _parse_pipeline_dataclasses(parser, pipeline_args, selected_specs, preselection)
+    return _assemble_parsed_arguments(
+        command,
+        parsed,
+        selected_specs,
+        preselection,
+    )
 
 
 def setup_logger(log_level: str) -> None:
@@ -453,20 +529,20 @@ def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadMana
     return ThreadManager(handlers)
 
 
-def run_pipeline_command(command: Literal["serve", "local"], argv: Sequence[str]) -> None:
-    """Run the server alone or compose it with the loopback audio client."""
-
-    args = parse_arguments(argv, command=command)
-
+def _configure_startup(args: ParsedArguments) -> None:
     setup_logger(args.module_kwargs.log_level)
     # Set the transcript gate and warn before any conversation is processed, so an operator
     # sees the notice ahead of the first turn rather than after content is already logged.
     set_log_transcripts(args.module_kwargs.log_transcripts)
     warn_if_log_transcripts_enabled()
 
+
+def _validate_pipeline_count(args: ParsedArguments) -> None:
     if args.module_kwargs.num_pipelines < 1:
         raise ValueError(f"--num_pipelines must be >= 1, got {args.module_kwargs.num_pipelines}")
 
+
+def _apply_runtime_adjustments(args: ParsedArguments) -> None:
     prepare_all_args(args)
     # On Apple Silicon, all MLX inference serializes through a global lock (utils/mlx_lock.py).
     # The progressive STT path uses a short timeout and drops work under contention, producing
@@ -481,13 +557,18 @@ def run_pipeline_command(command: Literal["serve", "local"], argv: Sequence[str]
         )
         args.module_kwargs.enable_live_transcription = False
 
-    stop_event = Event()
-    pipeline_manager = (
-        build_local_pipeline(args, stop_event) if command == "local" else build_pipeline(args, stop_event)
-    )
 
-    # Set up graceful shutdown handler
-    shutdown_requested = [False]  # Use list for nonlocal mutation
+
+def _build_command_manager(
+    command: Literal["serve", "local"],
+    args: ParsedArguments,
+    stop_event: Event,
+) -> ThreadManager:
+    return build_local_pipeline(args, stop_event) if command == "local" else build_pipeline(args, stop_event)
+
+
+def _install_shutdown_handlers(pipeline_manager: ThreadManager) -> list[bool]:
+    shutdown_requested = [False]
 
     def signal_handler(_sig: int, _frame: Optional[FrameType]) -> None:
         if not shutdown_requested[0]:
@@ -498,7 +579,10 @@ def run_pipeline_command(command: Literal["serve", "local"], argv: Sequence[str]
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+    return shutdown_requested
 
+
+def _run_manager_until_stopped(pipeline_manager: ThreadManager, shutdown_requested: list[bool]) -> None:
     try:
         pipeline_manager.start()
         pipeline_manager.wait()
@@ -507,6 +591,20 @@ def run_pipeline_command(command: Literal["serve", "local"], argv: Sequence[str]
             console.print("\n[yellow]Shutting down gracefully...[/yellow]")
             pipeline_manager.stop()
             console.print("[green]✓ Pipeline stopped successfully[/green]")
+
+
+def run_pipeline_command(command: Literal["serve", "local"], argv: Sequence[str]) -> None:
+    """Run the server alone or compose it with the loopback audio client."""
+
+    args = parse_arguments(argv, command=command)
+    _configure_startup(args)
+    _validate_pipeline_count(args)
+    _apply_runtime_adjustments(args)
+
+    stop_event = Event()
+    pipeline_manager = _build_command_manager(command, args, stop_event)
+    shutdown_requested = _install_shutdown_handlers(pipeline_manager)
+    _run_manager_until_stopped(pipeline_manager, shutdown_requested)
 
 
 def main() -> None:
