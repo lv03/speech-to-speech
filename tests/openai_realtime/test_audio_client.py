@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 import signal
@@ -592,6 +593,25 @@ def test_audio_client_keeps_tool_event_off_live_transcript_line(capsys):
         handle_server_event(event, playback=playback, renderer=renderer, print_json=False)
 
     assert capsys.readouterr().out == "ASSISTANT: Checking.\nTOOL: lookup call_id=call_1 arguments={}\n"
+
+
+def test_audio_client_print_json_skips_audio_deltas(capsys):
+    playback = PlaybackBuffer(16000)
+    renderer = _FriendlyEventRenderer()
+    event = SimpleNamespace(
+        type="response.output_audio.delta",
+        response_id="response_1",
+        item_id="item_1",
+        output_index=0,
+        content_index=0,
+        delta=base64.b64encode(b"\x01\x02").decode("ascii"),
+    )
+
+    handle_server_event(event, playback=playback, renderer=renderer, print_json=True)
+
+    output = capsys.readouterr().out
+    assert output == ""
+    assert playback.buffered_bytes == 2
 
 
 async def test_audio_client_executes_tools_from_completed_response_output():

@@ -353,6 +353,34 @@ class _FriendlyEventRenderer:
         }
 
 
+def _format_print_json_event(event: Any) -> str:
+    if event.type == "response.output_audio.delta":
+        delta = getattr(event, "delta", "") or ""
+        try:
+            audio_bytes = len(base64.b64decode(delta))
+        except Exception:
+            audio_bytes = None
+        response_id = getattr(event, "response_id", None)
+        item_id = getattr(event, "item_id", None)
+        output_index = getattr(event, "output_index", None)
+        content_index = getattr(event, "content_index", None)
+        parts = [
+            "EVENT: response.output_audio.delta",
+            f"response_id={response_id!r}",
+            f"item_id={item_id!r}",
+            f"output_index={output_index!r}",
+            f"content_index={content_index!r}",
+        ]
+        if audio_bytes is not None:
+            parts.append(f"audio_bytes={audio_bytes}")
+        return " ".join(parts)
+
+    try:
+        return f"EVENT: {event.model_dump_json()}"
+    except Exception:
+        return f"EVENT: {event}"
+
+
 def handle_server_event(
     event: Any,
     *,
@@ -362,12 +390,9 @@ def handle_server_event(
 ) -> None:
     """Apply one Realtime lifecycle event to local playback and console state."""
 
-    if print_json:
+    if print_json and event.type != "response.output_audio.delta":
         renderer.finish_live_assistant_text()
-        try:
-            print(f"EVENT: {event.model_dump_json()}", flush=True)
-        except Exception:
-            print(f"EVENT: {event}", flush=True)
+        print(_format_print_json_event(event), flush=True)
 
     if event.type == "session.created":
         renderer.finish_live_assistant_text()

@@ -19,12 +19,14 @@ from typing import Any
 
 import httpx
 
+from speech_to_speech.api.openai_realtime.audio_client import ToolResult
+
 logger = logging.getLogger(__name__)
 
 GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://127.0.0.1:3101").rstrip("/")
 
-#: 提交任务后是否让 LLM 立即生成一句确认（默认 True，与工具闭环一致）
-CREATE_RESPONSE = True
+#: 后台任务提交和取消都不需要再触发一轮助手回复；结果查询会单独显式返回。
+CREATE_RESPONSE = False
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -86,8 +88,8 @@ async def _request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
     return resp.json()
 
 
-async def execute_tool(name: str, arguments: dict[str, Any]) -> str:
-    """执行 Agent Gateway 工具，返回 JSON 字符串结果。"""
+async def execute_tool(name: str, arguments: dict[str, Any]) -> str | ToolResult:
+    """执行 Agent Gateway 工具，返回 JSON 字符串或 ToolResult。"""
     if name == "spawn_agent_task":
         prompt = str(arguments.get("prompt", "")).strip()
         if not prompt:
@@ -97,32 +99,50 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> str:
         if kind:
             body["kind"] = kind
         task = await _request("POST", "/tasks", json=body)
-        return json.dumps({
-            "task_id": task.get("id"),
-            "status": task.get("status"),
-            "hint": "任务已提交后台执行，稍后可用 get_agent_task_status 查询结果",
-        }, ensure_ascii=False)
+        return ToolResult(
+            json.dumps(
+                {
+                    "task_id": task.get("id"),
+                    "status": task.get("status"),
+                    "hint": "任务已提交后台执行，稍后可用 get_agent_task_status 查询结果",
+                },
+                ensure_ascii=False,
+            ),
+            create_response=False,
+        )
 
     if name == "get_agent_task_status":
         task_id = str(arguments.get("task_id", "")).strip()
         if not task_id:
             raise ValueError("task_id 不能为空")
         task = await _request("GET", f"/tasks/{task_id}")
-        return json.dumps({
-            "status": task.get("status"),
-            "result": task.get("result") or None,
-            "error": task.get("error") or None,
-            "tool_calls": task.get("tool_calls") or [],
-        }, ensure_ascii=False)
+        return ToolResult(
+            json.dumps(
+                {
+                    "status": task.get("status"),
+                    "result": task.get("result") or None,
+                    "error": task.get("error") or None,
+                    "tool_calls": task.get("tool_calls") or [],
+                },
+                ensure_ascii=False,
+            ),
+            create_response=True,
+        )
 
     if name == "cancel_agent_task":
         task_id = str(arguments.get("task_id", "")).strip()
         if not task_id:
             raise ValueError("task_id 不能为空")
         task = await _request("DELETE", f"/tasks/{task_id}")
-        return json.dumps({
-            "status": task.get("status"),
-            "hint": "已请求取消任务",
-        }, ensure_ascii=False)
+        return ToolResult(
+            json.dumps(
+                {
+                    "status": task.get("status"),
+                    "hint": "已请求取消任务",
+                },
+                ensure_ascii=False,
+            ),
+            create_response=False,
+        )
 
     raise ValueError(f"未知工具：{name}")

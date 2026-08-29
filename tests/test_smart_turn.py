@@ -89,6 +89,50 @@ def test_silero_load_pins_cached_master_ref(monkeypatch) -> None:
         smart_turn=False,
     )
 
+    assert load_calls == []
+
+
+def test_silero_load_is_deferred_until_first_audio_chunk(monkeypatch) -> None:
+    class FakeSileroModel:
+        def reset_states(self) -> None:
+            pass
+
+    load_calls = []
+
+    def fake_load(repo, model, **kwargs):
+        load_calls.append((repo, model, kwargs))
+        return FakeSileroModel(), None
+
+    class FakeIterator:
+        def __init__(self, _model, **_kwargs) -> None:
+            self.triggered = False
+            self.buffer = []
+
+        def __call__(self, _chunk):
+            return None
+
+        def speech_buffer(self):
+            return []
+
+        def reset_states(self) -> None:
+            pass
+
+    monkeypatch.setattr(torch.hub, "load", fake_load)
+    monkeypatch.setattr("speech_to_speech.VAD.vad_handler.VADIterator", FakeIterator)
+    handler = object.__new__(VADHandler)
+    should_listen = Event()
+
+    handler.setup(
+        should_listen,
+        speculative_turns=SpeculativeTurnTracker(),
+        smart_turn=False,
+    )
+
+    assert load_calls == []
+    should_listen.set()
+
+    list(handler.process(np.zeros(512, dtype=np.int16).tobytes()))
+
     assert load_calls == [
         (
             "snakers4/silero-vad:master",

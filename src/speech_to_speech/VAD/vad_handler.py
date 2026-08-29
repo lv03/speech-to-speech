@@ -123,19 +123,18 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         )
         self.target_speaker_gate = target_speaker_gate
         self._speaker_gate_segment_active = False
-        self.model, _ = torch.hub.load(
-            "snakers4/silero-vad:master",
-            "silero_vad",
-            trust_repo=True,
-            skip_validation=True,
-        )
-        self.iterator = VADIterator(
-            self.model,
-            threshold=thresh,
-            sampling_rate=sample_rate,
-            min_silence_duration_ms=min_silence_ms,
-            speech_pad_ms=speech_pad_ms,
-        )
+        self._vad_model_repo = "snakers4/silero-vad:master"
+        self._vad_model_name = "silero_vad"
+        self._vad_model_kwargs = {
+            "trust_repo": True,
+            "skip_validation": True,
+        }
+        self.model = None
+        self.iterator = None
+        self._vad_threshold = thresh
+        self._vad_sample_rate = sample_rate
+        self._vad_min_silence_ms = min_silence_ms
+        self._vad_speech_pad_ms = speech_pad_ms
         self.audio_enhancement = audio_enhancement
         if audio_enhancement:
             if not HAS_DF:
@@ -169,6 +168,24 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         self._pending_reopen_candidate: tuple[str, int, int] | None = None
         self._pending_short_segment: _PendingShortSegment | None = None
 
+    def _ensure_iterator(self) -> VADIterator:
+        if self.iterator is None:
+            logger.info("Loading Silero VAD model")
+            self.model, _ = torch.hub.load(
+                self._vad_model_repo,
+                self._vad_model_name,
+                **self._vad_model_kwargs,
+            )
+            self.iterator = VADIterator(
+                self.model,
+                threshold=self._vad_threshold,
+                sampling_rate=self._vad_sample_rate,
+                min_silence_duration_ms=self._vad_min_silence_ms,
+                speech_pad_ms=self._vad_speech_pad_ms,
+            )
+            logger.info("Silero VAD model loaded")
+        return self.iterator
+
     @property
     def _audio_ms(self) -> int:
         """Cumulative audio received so far, in milliseconds."""
@@ -197,12 +214,20 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
             return
 
         self._last_turn_detection = dict(td)
+        if "threshold" in td:
+            self._vad_threshold = td["threshold"]
+        if "silence_duration_ms" in td:
+            self._vad_min_silence_ms = td["silence_duration_ms"]
+
+        iterator = self.iterator
+        if iterator is None:
+            return
 
         if "threshold" in td:
-            self.iterator.threshold = td["threshold"]
+            iterator.threshold = td["threshold"]
             logger.info(f"VAD threshold updated to {td['threshold']}")
         if "silence_duration_ms" in td:
-            self.iterator.min_silence_samples = self.sample_rate * td["silence_duration_ms"] / 1000
+            iterator.min_silence_samples = self.sample_rate * td["silence_duration_ms"] / 1000
             logger.info(f"VAD silence duration updated to {td['silence_duration_ms']}ms")
 
     def _start_new_turn(self) -> tuple[str, int]:
@@ -218,17 +243,22 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         return self._current_turn_id, self._current_turn_revision
 
     def _speech_buffer_duration_ms(self) -> float:
-        if not hasattr(self.iterator, "speech_buffer"):
+        iterator = self.iterator
+        if iterator is None or not hasattr(iterator, "speech_buffer"):
             return 0.0
-        buffer_samples = sum(len(t) for t in self.iterator.speech_buffer())
+        buffer_samples = sum(len(t) for t in iterator.speech_buffer())
         return buffer_samples / self.sample_rate * 1000
 
     def _current_active_speech_duration_ms(self) -> float:
-        active_speech_samples = getattr(self.iterator, "active_speech_samples", 0)
+        iterator = self.iterator
+        active_speech_samples = getattr(iterator, "active_speech_samples", 0) if iterator is not None else 0
         return active_speech_samples / self.sample_rate * 1000
 
     def _last_utterance_active_speech_duration_ms(self) -> float:
-        active_speech_samples = getattr(self.iterator, "last_utterance_active_speech_samples", 0)
+        iterator = self.iterator
+        active_speech_samples = (
+            getattr(iterator, "last_utterance_active_speech_samples", 0) if iterator is not None else 0
+        )
         return active_speech_samples / self.sample_rate * 1000
 
     @staticmethod
@@ -473,7 +503,8 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         if self.target_speaker_gate is None:
             return GateStatus.ACCEPTED
         self._speaker_gate_start_if_needed()
-        audio = torch.cat(self.iterator.speech_buffer()).cpu().numpy()
+        iterator = self._ensure_iterator()
+        audio = torch.cat(iterator.speech_buffer()).cpu().numpy()
         return self.target_speaker_gate.observe(
             audio,
             active_speech_ms=self._current_active_speech_duration_ms(),
@@ -589,16 +620,17 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         self._total_samples += len(audio_int16)
         audio_float32 = int2float(audio_int16)
 
-        vad_output = self.iterator(torch.from_numpy(audio_float32))
+        iterator = self._ensure_iterator()
+        vad_output = iterator(torch.from_numpy(audio_float32))
 
         # Deferred speech_started: only emit once active VAD speech reaches the valid speech threshold.
-        is_triggered_now = self.iterator.triggered
+        is_triggered_now = iterator.triggered
         gate_status = GateStatus.ACCEPTED
         if self.target_speaker_gate is not None and is_triggered_now:
             gate_status = self._speaker_gate_observe()
 
         if is_triggered_now and not self._speech_started_emitted:
-            segment_samples = sum(len(t) for t in self.iterator.buffer)
+            segment_samples = sum(len(t) for t in iterator.buffer)
             segment_duration_ms = segment_samples / self.sample_rate * 1000
             active_speech_duration_ms = self._current_active_speech_duration_ms()
             speech_buffer_duration_ms = self._speech_buffer_duration_ms()
@@ -663,14 +695,15 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
     ) -> Iterator[VADOut]:
         """Process with real-time progressive audio release."""
         # Check if we're currently in a speech segment.
-        if self.enable_realtime_transcription and hasattr(self.iterator, "buffer") and len(self.iterator.buffer) > 0:
+        iterator = self.iterator
+        if self.enable_realtime_transcription and iterator is not None and hasattr(iterator, "buffer") and len(iterator.buffer) > 0:
             current_time = time.time()
             duration_ms = self._speech_buffer_duration_ms()
             progressive_pause = self._progressive_processing_pause(duration_ms)
 
             # Yield accumulated audio periodically while speaking
             if (current_time - self.last_process_time) >= progressive_pause:
-                array = torch.cat(self.iterator.speech_buffer()).cpu().numpy()
+                array = torch.cat(iterator.speech_buffer()).cpu().numpy()
                 duration_ms = len(array) / self.sample_rate * 1000
                 active_speech_duration_ms = self._current_active_speech_duration_ms()
                 start_ms = max(0, self._audio_ms - int(duration_ms))
@@ -876,9 +909,11 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         return enhanced.numpy().squeeze()
 
     def on_session_end(self):
-        self.iterator.reset_states()
+        if self.iterator is not None:
+            self.iterator.reset_states()
         self._pending_short_segment = None
-        self.iterator.buffer = []
+        if self.iterator is not None:
+            self.iterator.buffer = []
         self.last_process_time = 0.0
         self._total_samples = 0
         self._speech_started_emitted = False

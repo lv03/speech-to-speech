@@ -70,7 +70,7 @@ speech-to-speech serve \
 | `--voiceprint_enrollment` | `~/.cache/speech_to_speech/voiceprint/default.npz` | 声纹档案路径 |
 | `--voiceprint_threshold` | `0.75` | cosine 相似度阈值（0,1]，越高越严格；上线值应从自有 target/non-target/overlap 录音中校准 |
 | `--security_timeout_s` | `60` | 麦克风安静这么多秒自动重新上锁（任何可闻声音都会重置计时） |
-| `--unlock_acknowledgment` | 一句"确认你在听"的提示语 | 解锁后注入给 LLM 的确认提示；设为空字符串则解锁后保持静默 |
+| `--unlock_acknowledgment` | `我在，请说。` | 解锁后注入给 LLM 的确认提示；设为空字符串则解锁后保持静默 |
 
 `--enable_wake_word` 与 `--enable_voiceprint` 相互独立：可以只开唤醒词、只开声纹门控，或两者都开。
 开启声纹门控后，解锁（若配置了唤醒词）之后每段语音仍会做声纹过滤。

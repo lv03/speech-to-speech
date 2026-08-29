@@ -157,10 +157,10 @@ class ModuleArguments:
         },
     )
     unlock_acknowledgment: str = field(
-        default="（系统：你刚被唤醒。）请用一句简短的话确认你在听，例如：我在，请说。",
+        default="我在，请说。",
         metadata={
             "help": "Prompt injected after the security gate unlocks so the assistant audibly confirms "
             "the speaker may talk. Set to an empty string to stay silent after unlocking. "
-            "Default asks for a one-line '我在，请说。' style reply."
+            "Default is the fixed short reply '我在，请说。'."
         },
     )

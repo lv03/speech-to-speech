@@ -305,7 +305,7 @@ def test_new_stt_backend_gets_transcription_notifier_by_default(monkeypatch):
 def test_pipeline_wires_voiceprint_gate_to_vad_only(monkeypatch, tmp_path):
     class SharedVerifier:
         def preload(self) -> None:
-            pass
+            raise AssertionError("voiceprint preload should not run during pipeline construction")
 
     shared = SharedVerifier()
     loaded: list[tuple[str, bool]] = []

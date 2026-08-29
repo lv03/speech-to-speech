@@ -174,7 +174,6 @@ class PipelineGraph:
                 Path.home() / ".cache" / "speech_to_speech" / "voiceprint" / "default.npz"
             )
             voiceprint_verifier = VoiceprintVerifier.load(enrollment, require_conversation=True)
-            voiceprint_verifier.preload()
             target_speaker_gate = TargetSpeakerGate(
                 voiceprint_verifier,
                 threshold=module_kwargs.voiceprint_threshold,

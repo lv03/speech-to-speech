@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from speech_to_speech.api.openai_realtime.audio_client import ToolResult
 from speech_to_speech.tools import agent_gateway
 
 
@@ -63,7 +64,9 @@ async def test_spawn_agent_task() -> None:
     assert url == "http://gateway.test/tasks"
     assert kwargs["json"] == {"prompt": "写个函数", "kind": "pi"}
 
-    parsed = json.loads(result)
+    assert isinstance(result, ToolResult)
+    assert result.create_response is False
+    parsed = json.loads(result.output)
     assert parsed["task_id"] == "abc123"
     assert parsed["status"] == "queued"
 
@@ -72,7 +75,9 @@ async def test_spawn_defaults_kind() -> None:
     FakeClient.response_data = {"id": "x1", "status": "queued"}
     result = await agent_gateway.execute_tool("spawn_agent_task", {"prompt": "hello"})
     assert FakeClient.last_request[2]["json"] == {"prompt": "hello", "kind": "pi"}
-    assert json.loads(result)["task_id"] == "x1"
+    assert isinstance(result, ToolResult)
+    assert result.create_response is False
+    assert json.loads(result.output)["task_id"] == "x1"
 
 
 async def test_get_agent_task_status() -> None:
@@ -83,7 +88,9 @@ async def test_get_agent_task_status() -> None:
     assert method == "GET"
     assert url == "http://gateway.test/tasks/abc"
 
-    parsed = json.loads(result)
+    assert isinstance(result, ToolResult)
+    assert result.create_response is True
+    parsed = json.loads(result.output)
     assert parsed["status"] == "completed"
     assert parsed["result"] == "完成了"
 
@@ -92,7 +99,9 @@ async def test_cancel_agent_task() -> None:
     FakeClient.response_data = {"status": "cancelled"}
     result = await agent_gateway.execute_tool("cancel_agent_task", {"task_id": "abc"})
     assert FakeClient.last_request[0] == "DELETE"
-    assert json.loads(result)["status"] == "cancelled"
+    assert isinstance(result, ToolResult)
+    assert result.create_response is False
+    assert json.loads(result.output)["status"] == "cancelled"
 
 
 async def test_unknown_tool() -> None:
