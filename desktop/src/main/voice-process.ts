@@ -18,6 +18,8 @@ export interface VoiceOptions {
   wakeWordEnabled?: boolean
   /** 唤醒词文本 */
   wakeWord?: string
+  /** 唤醒词静默后重新上锁的秒数 */
+  securityTimeoutS?: number
   /** Gateway URL（透传给语音引擎的工具模块） */
   gatewayUrl?: string
   /** 就绪探测超时（ms） */
@@ -68,6 +70,7 @@ export class EmbeddedVoice {
   private readonly port: number
   private readonly wakeWordEnabled: boolean
   private readonly wakeWord: string
+  private readonly securityTimeoutS: number
   private readonly gatewayUrl: string
   private readonly startupTimeoutMs: number
   private readonly printJson: boolean
@@ -92,6 +95,7 @@ export class EmbeddedVoice {
     this.port = options.port ?? Number(process.env.VOICE_PORT || 8765)
     this.wakeWordEnabled = options.wakeWordEnabled ?? false
     this.wakeWord = options.wakeWord || '你好，噜噜'
+    this.securityTimeoutS = Math.max(0, options.securityTimeoutS ?? 60)
     this.gatewayUrl = options.gatewayUrl || process.env.GATEWAY_URL || 'http://127.0.0.1:3101'
     this.startupTimeoutMs = options.startupTimeoutMs ?? 300_000
     this.printJson = options.printJson ?? true
@@ -165,6 +169,7 @@ export class EmbeddedVoice {
     }
     if (this.wakeWordEnabled) {
       args.push('--enable_wake_word', '--wake_word', this.wakeWord)
+      args.push('--security_timeout_s', String(this.securityTimeoutS))
     }
     if (this.voiceprintEnabled) {
       args.push('--enable_voiceprint')

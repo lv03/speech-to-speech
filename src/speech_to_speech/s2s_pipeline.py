@@ -416,6 +416,9 @@ def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadMana
             set_state_cb = getattr(handler, "set_state_change_callback", None)
             if callable(set_state_cb):
                 set_state_cb(_emit_security_state)
+                initial_locked = getattr(handler, "is_locked", None)
+                if initial_locked is not None:
+                    _emit_security_state(bool(initial_locked))
                 break
     client = RealtimeAudioClient(
         stop_event,

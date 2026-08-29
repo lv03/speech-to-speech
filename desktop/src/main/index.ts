@@ -8,6 +8,7 @@ import { EmbeddedGateway } from './gateway-process'
 import { EmbeddedVoice } from './voice-process'
 import { SettingsStore, type DesktopSettings } from './settings'
 import { listSkins, skinDirectories, type SkinInfo } from './skin-catalog'
+import { isVoiceActivityState, shouldDelegateOrbSleepToVoice } from '../shared/visibility-policy.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -28,12 +29,13 @@ let hideTimer: NodeJS.Timeout | null = null
 let gatewayWs: WebSocket | null = null
 const announcedTaskIds = new Set<string>()
 let pendingSpeak: string[] = []
+let voiceOwnsVisibility = false
 
 /** 影响运行中语音引擎行为的设置字段（变化时需重启引擎才生效）。 */
 const VOICE_AFFECTING_FIELDS = [
   'llmBackend', 'llmApiKey', 'llmBaseUrl', 'llmModel',
   'sttBackend', 'sttModel', 'ttsBackend', 'ttsVoice',
-  'wakeWordEnabled', 'wakeWord', 'enableVoiceprint', 'voiceprintThreshold', 'llmReasoningEffort',
+  'wakeWordEnabled', 'wakeWord', 'autoHideSeconds', 'enableVoiceprint', 'voiceprintThreshold', 'llmReasoningEffort',
 ] as const
 
 // ── 快捷键与自动休眠 ───────────────────────────────────────────────────
@@ -62,6 +64,7 @@ function clearHideTimer(): void {
 
 /** 用户活动时重置自动休眠倒计时；到点则隐藏悬浮球。 */
 function recordActivity(): void {
+  if (voiceOwnsVisibility) return
   clearHideTimer()
   const seconds = settingsStore?.get().autoHideSeconds ?? 0
   if (!seconds) return
@@ -164,6 +167,18 @@ function showOrb(): void {
   createWindow()
 }
 
+function setSecurityVisibility(locked: boolean): void {
+  if (locked) {
+    clearHideTimer()
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
+      mainWindow.hide()
+    }
+    return
+  }
+  recordActivity()
+  showOrb()
+}
+
 /** 面板展开/收起时动态调整窗口尺寸，保持窗口中心不变。 */
 function setPanelOpen(open: boolean): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
@@ -231,10 +246,19 @@ async function startGateway(): Promise<void> {
 async function startVoice(): Promise<void> {
   const settings = settingsStore?.get()
   if (!settings?.enableVoice) return
+  voiceOwnsVisibility = shouldDelegateOrbSleepToVoice({
+    enableVoice: settings.enableVoice,
+    wakeWordEnabled: settings.wakeWordEnabled,
+    autoHideSeconds: settings.autoHideSeconds,
+  })
+  if (voiceOwnsVisibility) {
+    clearHideTimer()
+  }
   pushVoiceStatus('starting')
   const v = new EmbeddedVoice({
     wakeWordEnabled: settings.wakeWordEnabled,
     wakeWord: settings.wakeWord,
+    securityTimeoutS: settings.autoHideSeconds,
     gatewayUrl: gatewayUrl() ?? 'http://127.0.0.1:3101',
     voiceprintEnabled: settings.enableVoiceprint,
     voiceprintThreshold: settings.voiceprintThreshold,
@@ -253,17 +277,14 @@ async function startVoice(): Promise<void> {
       if (state && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('voice:state', state)
       }
-    },
-    onSecurityState: (locked) => {
-      // 与安全门同步：锁定 → 悬浮球休眠（隐藏）；解锁 → 唤醒（显示）。
-      if (locked) {
-        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
-          mainWindow.hide()
+      if (state && isVoiceActivityState(state)) {
+        if (!voiceOwnsVisibility) {
+          showOrb()
         }
-      } else {
-        showOrb()
+        recordActivity()
       }
     },
+    onSecurityState: (locked) => setSecurityVisibility(locked),
   })
   voice = v
   try {
@@ -278,6 +299,8 @@ async function startVoice(): Promise<void> {
     }
   } catch (error) {
     voice = null
+    voiceOwnsVisibility = false
+    recordActivity()
     pushVoiceStatus('error')
     console.error('[desktop] 语音引擎启动失败：', error)
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -440,6 +463,8 @@ async function toggleVoice(): Promise<{ running: boolean; starting: boolean }> {
     if (voice.running) {
       await voice.stop()
       voice = null
+      voiceOwnsVisibility = false
+      recordActivity()
       return { running: false, starting: false }
     }
     // 模型加载中，避免重复启动第二个引擎
@@ -682,12 +707,16 @@ app.whenReady().then(async () => {
           } else if (voice) {
             await voice.stop()
             voice = null
+            voiceOwnsVisibility = false
+            recordActivity()
           }
         } else if (voiceChanged && voice) {
           pushVoiceStatus('starting')
           const v = voice
           voice = null
+          voiceOwnsVisibility = false
           await v.stop()
+          recordActivity()
           void startVoice().catch((error) => {
             console.error('[desktop] 语音引擎重启失败：', error)
           })

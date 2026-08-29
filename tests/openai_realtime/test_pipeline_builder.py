@@ -80,3 +80,26 @@ def test_local_resolves_backend_specific_playback_buffer_defaults(monkeypatch):
 
         assert isinstance(client, RealtimeAudioClient)
         assert client.config.playback_buffer_ms == expected_buffer_ms
+
+
+def test_local_emits_initial_security_state_for_desktop_sync(monkeypatch, capsys):
+    class FakeSecurityGate:
+        def __init__(self):
+            self.is_locked = True
+            self.callbacks = []
+
+        def set_state_change_callback(self, callback):
+            self.callbacks.append(callback)
+
+    gate = FakeSecurityGate()
+    unit = SimpleNamespace(handlers=[gate])
+    monkeypatch.setattr("speech_to_speech.pipeline_graph.PipelineGraph.instantiate", lambda self, **_kwargs: unit)
+
+    args = _default_args()
+    args.module_kwargs.enable_wake_word = True
+    args.local_audio_kwargs.local_audio_print_json = True
+
+    build_local_pipeline(args, Event())
+
+    assert gate.callbacks, "expected the local pipeline to register a security-state callback"
+    assert 'EVENT: {"type": "security.locked"}' in capsys.readouterr().out

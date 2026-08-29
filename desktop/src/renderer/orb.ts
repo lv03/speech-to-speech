@@ -1,4 +1,5 @@
 import { SpriteRenderer } from './sprite-renderer'
+import { isVoiceActivityState } from '../shared/visibility-policy.js'
 import type { OrbState, SkinManifest } from './sprite-orb'
 
 interface TaskView {
@@ -251,6 +252,7 @@ function toggleVoice(): void {
 
 // 语音引擎就绪 / 错误事件
 window.desktop.onVoiceReady(() => {
+  window.desktop.reportActivity()
   btnMic.classList.add('active')
   btnMic.classList.remove('loading')
   btnMic.disabled = false
@@ -294,6 +296,9 @@ btnQuit.addEventListener('click', () => window.desktop.quit())
 
 window.desktop.onVoiceState((state) => {
   voiceState = (state as OrbState) || 'idle'
+  if (isVoiceActivityState(voiceState)) {
+    window.desktop.reportActivity()
+  }
   updateOrbState()
 })
 

@@ -84,8 +84,8 @@ class SecurityGateHandler(BaseHandler[VADIn, VADIn]):
         The callback receives ``True`` when locked and ``False`` when unlocked.
         Used by the packaged ``local`` command to surface the gate state to the
         desktop app (which mirrors it as the orb's sleep/awake state). Only
-        transitions are reported; the initial locked state at startup is not
-        emitted, so the desktop keeps its default visible-orb presentation.
+        transitions are reported here; callers that need an initial snapshot
+        can read ``is_locked`` separately and emit it themselves.
         """
         self._state_change_callback = callback
 
