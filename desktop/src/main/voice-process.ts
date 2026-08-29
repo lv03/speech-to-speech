@@ -219,7 +219,7 @@ export class EmbeddedVoice {
     this.child = spawn(this.python, this.buildArgs(), {
       cwd: this.root,
       env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
     })
 
     this.child.stdout?.on('data', (chunk) => {
@@ -277,6 +277,12 @@ export class EmbeddedVoice {
         rejectPromise(new Error(`语音引擎提前退出（${code ?? 'unknown'}）`))
       })
     })
+  }
+
+  /** 播报一句文本（复用语音引擎已加载的 TTS 模型，不再另起 announcer 进程）。 */
+  speak(text: string): void {
+    if (!this.ready || !this.child?.stdin) return
+    this.child.stdin.write(JSON.stringify({ type: 'speak', text }) + '\n')
   }
 
   async stop(): Promise<void> {

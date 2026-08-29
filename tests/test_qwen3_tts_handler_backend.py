@@ -257,7 +257,8 @@ def test_setup_defaults_to_custom_voice_profile_off_darwin(monkeypatch):
     assert handler.ref_audio is None
     assert handler.speaker == "Aiden"
     assert handler.language == "auto"
-    assert handler.non_streaming_mode is True
+    assert handler.non_streaming_mode is None
+    assert handler._faster_non_streaming_mode() is True
 
 
 @pytest.mark.parametrize(
@@ -310,7 +311,7 @@ def test_setup_preserves_explicit_chunk_size_on_darwin(monkeypatch):
     assert handler.streaming_chunk_size == 4
 
 
-def test_setup_logs_when_non_streaming_mode_set_on_darwin(monkeypatch, caplog):
+def test_setup_mlx_non_streaming_mode_maps_to_batch_decode(monkeypatch, caplog):
     def _setup_mlx(self, model_name):
         return None
 
@@ -320,14 +321,90 @@ def test_setup_logs_when_non_streaming_mode_set_on_darwin(monkeypatch, caplog):
 
     handler = object.__new__(Qwen3TTSHandler)
 
-    with caplog.at_level("DEBUG"):
+    with caplog.at_level("INFO"):
         handler.setup(
             Event(),
             model_name="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
             non_streaming_mode=True,
         )
 
-    assert "mlx-audio does not expose non_streaming_mode yet" in caplog.text
+    assert handler._mlx_stream_enabled() is False
+    assert "non-streaming decode" in caplog.text
+
+
+def test_setup_mlx_streams_by_default(monkeypatch, caplog):
+    def _setup_mlx(self, model_name):
+        return None
+
+    monkeypatch.setattr(qwen3_tts_module, "platform", "darwin")
+    monkeypatch.setattr(Qwen3TTSHandler, "_setup_mlx", _setup_mlx)
+    monkeypatch.setattr(Qwen3TTSHandler, "warmup", lambda self: None)
+
+    handler = object.__new__(Qwen3TTSHandler)
+
+    with caplog.at_level("INFO"):
+        handler.setup(
+            Event(),
+            model_name="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        )
+
+    assert handler._mlx_stream_enabled() is True
+    assert "streaming decode" in caplog.text
+
+
+def test_setup_mlx_streaming_is_opt_in(monkeypatch, caplog):
+    def _setup_mlx(self, model_name):
+        return None
+
+    monkeypatch.setattr(qwen3_tts_module, "platform", "darwin")
+    monkeypatch.setattr(Qwen3TTSHandler, "_setup_mlx", _setup_mlx)
+    monkeypatch.setattr(Qwen3TTSHandler, "warmup", lambda self: None)
+
+    handler = object.__new__(Qwen3TTSHandler)
+
+    handler.setup(
+        Event(),
+        model_name="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        non_streaming_mode=False,
+    )
+
+    assert handler._mlx_stream_enabled() is True
+
+
+def test_mlx_stream_kwargs_stream_by_default():
+    handler = object.__new__(Qwen3TTSHandler)
+    handler.non_streaming_mode = None
+    handler.streaming_chunk_size = 4
+    handler.gen_kwargs = {}
+
+    kwargs = handler._mlx_stream_kwargs(max_tokens=360)
+    assert kwargs["stream"] is True
+    assert kwargs["streaming_interval"] == 4 / 12.5
+
+
+def test_mlx_stream_kwargs_non_streaming_when_true():
+    handler = object.__new__(Qwen3TTSHandler)
+    handler.non_streaming_mode = True
+    handler.streaming_chunk_size = 4
+    handler.gen_kwargs = {}
+
+    assert handler._mlx_stream_kwargs(max_tokens=360) == {
+        "max_tokens": 360,
+        "verbose": False,
+        "stream": False,
+    }
+
+
+def test_mlx_stream_kwargs_include_interval_when_streaming():
+    handler = object.__new__(Qwen3TTSHandler)
+    handler.non_streaming_mode = False
+    handler.streaming_chunk_size = 4
+    handler.gen_kwargs = {}
+
+    kwargs = handler._mlx_stream_kwargs(max_tokens=360)
+    assert kwargs["max_tokens"] == 360
+    assert kwargs["stream"] is True
+    assert kwargs["streaming_interval"] == 4 / 12.5
 
 
 def test_setup_rejects_invalid_mlx_quantization(monkeypatch):
@@ -800,7 +877,8 @@ def test_process_voice_clone_passes_none_non_streaming_mode_when_unset(monkeypat
     outputs = list(handler.process(TTSInput(text="Hello there.")))
 
     assert len(outputs) == 1
-    assert captured["non_streaming_mode"] is None
+    # None (unset) is normalized to faster-qwen3's historical default True.
+    assert captured["non_streaming_mode"] is True
 
 
 def test_process_voice_clone_uses_precomputed_ggml_references_without_audio(monkeypatch):
@@ -874,7 +952,7 @@ def test_process_custom_voice_passes_non_streaming_mode_to_faster_backend(monkey
     outputs = list(handler.process(TTSInput(text="Hello there.")))
 
     assert len(outputs) == 1
-    assert captured["non_streaming_mode"] is override
+    assert captured["non_streaming_mode"] is (True if override is None else override)
 
 
 @pytest.mark.parametrize("override", [None, False, True])
@@ -909,7 +987,7 @@ def test_process_voice_design_passes_non_streaming_mode_to_faster_backend(monkey
     outputs = list(handler.process(TTSInput(text="Hello there.")))
 
     assert len(outputs) == 1
-    assert captured["non_streaming_mode"] is override
+    assert captured["non_streaming_mode"] is (True if override is None else override)
 
 
 def test_estimate_max_new_tokens_scales_with_utterance_length():
@@ -1049,3 +1127,69 @@ def test_process_voice_clone_scales_max_tokens_for_mlx_backend(monkeypatch):
     assert len(outputs) == 1
     assert captured["max_tokens"] == handler._estimate_max_new_tokens(long_text)
     assert captured["max_tokens"] > 360
+
+
+def test_synthesize_routes_to_custom_voice_without_touching_queue():
+    handler = object.__new__(Qwen3TTSHandler)
+    handler.backend = "mlx"
+    handler.queue_in = Queue()
+    handler.ref_audio = None
+    handler.ref_spk = None
+    handler.model = SimpleNamespace(config=SimpleNamespace(tts_model_type="custom_voice"))
+
+    produced = []
+
+    def _fake_process_custom_voice(text):
+        produced.append(text)
+        yield np.zeros(512, dtype=np.int16)
+
+    handler._process_custom_voice = _fake_process_custom_voice
+
+    outputs = list(handler.synthesize("Hello there."))
+
+    assert produced == ["Hello there."]
+    assert len(outputs) == 1
+    assert outputs[0].dtype == np.int16
+
+
+def test_synthesize_routes_to_voice_clone_when_reference_present():
+    handler = object.__new__(Qwen3TTSHandler)
+    handler.backend = "mlx"
+    handler.queue_in = Queue()
+    handler.ref_audio = "TTS/ref_audio.wav"
+    handler.ref_spk = None
+    handler.model = SimpleNamespace(config=SimpleNamespace(tts_model_type="base"))
+
+    produced = []
+
+    def _fake_process_voice_clone(text):
+        produced.append(text)
+        yield np.zeros(512, dtype=np.int16)
+
+    handler._process_voice_clone = _fake_process_voice_clone
+
+    outputs = list(handler.synthesize("Hello there."))
+
+    assert produced == ["Hello there."]
+    assert len(outputs) == 1
+
+
+def test_synthesize_defaults_empty_text_to_hello():
+    handler = object.__new__(Qwen3TTSHandler)
+    handler.backend = "mlx"
+    handler.queue_in = Queue()
+    handler.ref_audio = None
+    handler.ref_spk = None
+    handler.model = SimpleNamespace(config=SimpleNamespace(tts_model_type="custom_voice"))
+
+    produced = []
+
+    def _fake_process_custom_voice(text):
+        produced.append(text)
+        yield np.zeros(512, dtype=np.int16)
+
+    handler._process_custom_voice = _fake_process_custom_voice
+
+    list(handler.synthesize("   "))
+
+    assert produced == ["Hello."]

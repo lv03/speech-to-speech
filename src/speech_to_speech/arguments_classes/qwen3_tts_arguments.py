@@ -101,9 +101,9 @@ class Qwen3TTSHandlerArguments:
         metadata={"help": "Disable CUDA-graph streaming path and use parity mode for stability. Default is False."},
     )
     qwen3_tts_non_streaming_mode: Optional[bool] = field(
-        default=True,
+        default=None,
         metadata={
-            "help": "Optional override for Qwen3-TTS text prefill behavior. Default is true, which pre-fills the full target text before decode on faster-qwen3-tts. Currently ignored on Apple Silicon because mlx-audio does not expose this yet."
+            "help": "Optional override for Qwen3-TTS non-streaming behavior. Default is None (backend default). On Apple Silicon, mlx-audio streams by default for low time-to-first-audio; set 'true' to opt into batch decode (correct but slow to first audio). On faster-qwen3-tts, true pre-fills the full target text before decode."
         },
     )
     qwen3_tts_mlx_quantization: Optional[str] = field(

@@ -127,7 +127,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         instruct: Optional[str] = None,
         xvec_only: bool = False,
         parity_mode: bool = False,
-        non_streaming_mode: bool | None = True,
+        non_streaming_mode: bool | None = None,
         mlx_quantization: Optional[str] = None,
         streaming_chunk_size: int | None = None,
         max_new_tokens: int = DEFAULT_QWEN3_TTS_MAX_NEW_TOKENS,
@@ -171,10 +171,14 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
             self.device = "mps"
             self.model_name = self._resolve_mlx_model_name(model_name)
             logger.info(f"Loading Qwen3-TTS model: {self.model_name} via mlx-audio on Apple Silicon")
-            if self.non_streaming_mode is not None:
-                logger.debug(
-                    "qwen3_tts_non_streaming_mode=%s is ignored on Apple Silicon because "
-                    "mlx-audio does not expose non_streaming_mode yet.",
+            if self.non_streaming_mode is True:
+                logger.info(
+                    "Qwen3-TTS mlx non-streaming decode enabled (non_streaming_mode=True): "
+                    "correct but time-to-first-audio equals full synthesis time."
+                )
+            else:
+                logger.info(
+                    "Qwen3-TTS mlx streaming decode enabled (non_streaming_mode=%s).",
                     self.non_streaming_mode,
                 )
             model_quantization = self._model_name_quantization_suffix(self.model_name)
@@ -879,6 +883,31 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         except Exception as exc:
             log_exception(logger, "Error during Qwen3-TTS generation", exc)
 
+    def synthesize(self, text: str) -> Iterator[bytes | np.ndarray]:
+        """Synthesize exact text directly, bypassing the pipeline queue and turn tracking.
+
+        The conversational pipeline cannot speak arbitrary text (TTS is driven
+        by the LLM), so the packaged ``local`` command uses this to speak
+        verbatim announcements (e.g. task completions). It reuses the same
+        already-loaded model and the shared MLX lock, so it serializes with
+        conversational TTS instead of loading a second model.
+
+        Yields int16 16 kHz audio chunks, matching the pipeline output rate.
+        """
+        text = (text or "").strip() or "Hello."
+        model_type = self._model_type()
+        if self._has_voice_clone_reference():
+            yield from self._process_voice_clone(text)
+        elif model_type == "custom_voice":
+            yield from self._process_custom_voice(text)
+        elif model_type == "voice_design":
+            yield from self._process_voice_design(text)
+        else:
+            raise ValueError(
+                "Qwen3-TTS Base model requires a voice-clone reference. "
+                "Provide qwen3_tts_ref_audio or qwen3_tts_ref_spk, or use a CustomVoice/VoiceDesign model."
+            )
+
     def _log_first_audio_latency(self, tts_input: TTSInput) -> None:
         if tts_input.speech_stopped_at_s is None:
             return
@@ -892,17 +921,35 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
             tts_input.turn_revision,
         )
 
+    def _mlx_stream_enabled(self) -> bool:
+        """Whether Apple Silicon uses mlx-audio's incremental streaming decode.
+
+        Streaming is the default: it keeps time-to-first-audio low (the first
+        ~0.3s chunk arrives shortly after generation starts) instead of waiting
+        for the whole utterance to synthesize. The announcer that previously
+        contended with the pipeline on MPS is gone, so incremental decode is
+        safe again. Set ``non_streaming_mode=True`` to opt into batch decode
+        (correct, but TTFA becomes the full synthesis time).
+        """
+        return getattr(self, "non_streaming_mode", None) is not True
+
+    def _faster_non_streaming_mode(self) -> bool | None:
+        """faster-qwen3 historically defaulted non_streaming_mode to True."""
+        return True if self.non_streaming_mode is None else self.non_streaming_mode
+
     def _mlx_streaming_interval(self) -> float:
         return max(1, self.streaming_chunk_size) / MLX_STREAMING_TOKENS_PER_SECOND
 
     def _mlx_stream_kwargs(self, max_tokens: int) -> dict[str, Any]:
-        return {
+        kwargs: dict[str, Any] = {
             "max_tokens": max_tokens,
             "verbose": False,
-            "stream": True,
-            "streaming_interval": self._mlx_streaming_interval(),
+            "stream": self._mlx_stream_enabled(),
             **self.gen_kwargs,
         }
+        if kwargs.get("stream"):
+            kwargs.setdefault("streaming_interval", self._mlx_streaming_interval())
+        return kwargs
 
     def _inference_lock(self):
         """Lock guarding the shared model for the (non-MLX) faster backend.
@@ -963,7 +1010,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
                     chunk_size=self.streaming_chunk_size,
                     max_new_tokens=utterance_max_new_tokens,
                     parity_mode=self.parity_mode,
-                    non_streaming_mode=self.non_streaming_mode,
+                    non_streaming_mode=self._faster_non_streaming_mode(),
                 ),
                 label="voice_clone_parity" if self.parity_mode else "voice_clone",
             )
@@ -998,7 +1045,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
                     instruct=self.instruct,
                     chunk_size=self.streaming_chunk_size,
                     max_new_tokens=utterance_max_new_tokens,
-                    non_streaming_mode=self.non_streaming_mode,
+                    non_streaming_mode=self._faster_non_streaming_mode(),
                 ),
                 label="custom_voice",
             )
@@ -1024,7 +1071,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
                     language=self.language,
                     chunk_size=self.streaming_chunk_size,
                     max_new_tokens=utterance_max_new_tokens,
-                    non_streaming_mode=self.non_streaming_mode,
+                    non_streaming_mode=self._faster_non_streaming_mode(),
                 ),
                 label="voice_design",
             )

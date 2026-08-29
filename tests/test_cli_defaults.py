@@ -52,7 +52,7 @@ def test_release_defaults_match_responses_api_parakeet_qwen3_profile():
     assert qwen3_args.qwen3_tts_speaker == "Aiden"
     assert qwen3_args.qwen3_tts_language == "auto"
     assert qwen3_args.qwen3_tts_backend == "ggml"
-    assert qwen3_args.qwen3_tts_non_streaming_mode is True
+    assert qwen3_args.qwen3_tts_non_streaming_mode is None
     assert qwen3_args.qwen3_tts_ref_audio is None
     assert qwen3_args.qwen3_tts_ref_spk is None
     assert qwen3_args.qwen3_tts_ref_rvq is None
@@ -68,6 +68,7 @@ def test_voiceprint_defaults_remain_opt_in():
     assert args.enable_wake_word is False
     assert args.enable_voiceprint is False
     assert args.voiceprint_threshold == pytest.approx(0.75)
+    assert args.unlock_acknowledgment == "我在，请说。"
 
 
 def test_server_defaults_to_loopback():

@@ -417,7 +417,21 @@ def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadMana
             tool_response_create=tool_response_create,
         ),
     )
-    return ThreadManager([*server_manager.handlers, client])
+    handlers: list[Any] = [*server_manager.handlers, client]
+    # Exact-text TTS entry for the desktop app (task announcements). It reuses
+    # the already-loaded Qwen3-TTS model instead of spawning a second model in
+    # a separate process (which contended with the pipeline on MPS). Only
+    # enabled when stdin is a pipe (desktop-spawned), so an interactive
+    # ``speech-to-speech local`` terminal run is unaffected.
+    tts_handler = next(
+        (handler for handler in server_manager.handlers if callable(getattr(handler, "synthesize", None))),
+        None,
+    )
+    if tts_handler is not None and sys.stdin is not None and not sys.stdin.isatty():
+        from speech_to_speech.local_speaker import LocalSpeakServer
+
+        handlers.append(LocalSpeakServer(stop_event, tts_handler))
+    return ThreadManager(handlers)
 
 
 def run_pipeline_command(command: Literal["serve", "local"], argv: Sequence[str]) -> None:

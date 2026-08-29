@@ -15,10 +15,17 @@ complete three-way pipeline is proven stable, not merely the MLX core runtime.
 """
 
 import logging
+import os
+import tempfile
 import types
 from threading import Lock, RLock, current_thread, get_ident
 from time import perf_counter
 from typing import Literal
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-Unix fallback (mlx-audio is Darwin-only)
+    fcntl = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +38,38 @@ _lock_owner_thread: str | None = None
 _lock_owner_handler: str | None = None
 _lock_acquired_at: float | None = None
 _lock_depth = 0
+
+# Cross-process lock. The in-process RLock above only serializes threads inside
+# one process. The desktop app runs a second Qwen3-TTS model in a separate
+# ``speech-to-speech announce`` process, and concurrent Metal/MLX inference from
+# two processes corrupts output (the in-process lock cannot see that). A
+# filesystem lock makes the MLX critical section process-wide so the announcer
+# and the voice engine take turns instead of contending on MPS.
+_MLX_PROCESS_LOCK_PATH = os.environ.get(
+    "SPEECH_TO_SPEECH_MLX_LOCK_PATH",
+    os.path.join(tempfile.gettempdir(), "speech_to_speech_mlx.lock"),
+)
+_mlx_process_lock_file: object | None = None
+
+
+def _process_lock_handle() -> object:
+    global _mlx_process_lock_file
+    if _mlx_process_lock_file is None:
+        # Append mode avoids truncating the lock file while other processes hold it.
+        _mlx_process_lock_file = open(_MLX_PROCESS_LOCK_PATH, "a")  # noqa: SIM115
+    return _mlx_process_lock_file
+
+
+def _acquire_process_lock() -> None:
+    if fcntl is None:
+        return
+    fcntl.flock(_process_lock_handle().fileno(), fcntl.LOCK_EX)  # type: ignore[union-attr]
+
+
+def _release_process_lock() -> None:
+    if fcntl is None:
+        return
+    fcntl.flock(_process_lock_handle().fileno(), fcntl.LOCK_UN)  # type: ignore[union-attr]
 
 
 def _owner_snapshot(now: float | None = None) -> str:
@@ -104,6 +143,8 @@ def acquire_mlx_lock(timeout: float | None = None, handler_name: str = "Unknown"
 
     if acquired:
         depth = _record_lock_acquired(handler_name)
+        if depth == 1:
+            _acquire_process_lock()
         if wait_s >= 0.25:
             logger.info(
                 "%s: MLX lock acquired after %.2fs (previous_owner=%s, depth=%d)",
@@ -143,6 +184,8 @@ def release_mlx_lock(handler_name: str = "Unknown") -> None:
     """
     try:
         depth, hold_s = _record_lock_released(handler_name)
+        if depth == 0 and hold_s is not None:
+            _release_process_lock()
         _mlx_lock.release()
         if hold_s is not None and depth == 0 and hold_s >= 0.25:
             logger.info("%s: MLX lock released after holding %.2fs", handler_name, hold_s)

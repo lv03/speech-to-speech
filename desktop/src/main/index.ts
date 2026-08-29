@@ -4,7 +4,6 @@ import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { EmbeddedAnnouncer } from './announcer-process'
 import { EmbeddedGateway } from './gateway-process'
 import { EmbeddedVoice } from './voice-process'
 import { SettingsStore, type DesktopSettings } from './settings'
@@ -26,7 +25,6 @@ let voice: EmbeddedVoice | null = null
 let settingsStore: SettingsStore | null = null
 let skinsCache: SkinInfo[] = []
 let hideTimer: NodeJS.Timeout | null = null
-let announcer: EmbeddedAnnouncer | null = null
 let gatewayWs: WebSocket | null = null
 const announcedTaskIds = new Set<string>()
 let pendingSpeak: string[] = []
@@ -262,6 +260,9 @@ async function startVoice(): Promise<void> {
     await v.start()
     pushVoiceStatus('running')
     console.log('[desktop] voice engine ready')
+    // 引擎就绪后，补发引擎未就绪期间堆积的任务播报。
+    for (const text of pendingSpeak) v.speak(text)
+    pendingSpeak = []
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('voice:ready', true)
     }
@@ -388,11 +389,10 @@ async function announceTaskCompletion(task: Record<string, unknown>): Promise<vo
     return
   }
   notify('speech-to-speech', body)
-  if (announcer?.running) {
-    announcer.speak(body)
+  if (voice?.running) {
+    voice.speak(body)
   } else {
     pendingSpeak.push(body)
-    ensureAnnouncer()
   }
 }
 
@@ -423,28 +423,6 @@ function subscribeGatewayEvents(): void {
       if (gatewayUrl()) subscribeGatewayEvents()
     }, 3000)
   }
-}
-
-/** 懒加载 Qwen3 语音播报守护进程（首次任务完成时才加载，避免与语音引擎并发抢内存）。 */
-function ensureAnnouncer(): void {
-  if (announcer) return
-  const settings = settingsStore?.get()
-  const a = new EmbeddedAnnouncer({
-    speaker: settings?.ttsVoice || '',
-    onLog: (line) => pushVoiceLog(line),
-  })
-  announcer = a
-  void a.start()
-    .then(() => {
-      console.log('[desktop] announcer ready')
-      for (const text of pendingSpeak) a.speak(text)
-      pendingSpeak = []
-    })
-    .catch((error) => {
-      console.error('[desktop] 语音播报服务启动失败：', error)
-      announcer = null
-      pendingSpeak = []
-    })
 }
 
 async function toggleVoice(): Promise<{ running: boolean; starting: boolean }> {
@@ -750,23 +728,18 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
-  console.log('[desktop] before-quit fired (gateway=%s voice=%s announcer=%s)', !!gateway, !!voice, !!announcer)
+  console.log('[desktop] before-quit fired (gateway=%s voice=%s)', !!gateway, !!voice)
 })
 
 app.on('will-quit', (event) => {
-  console.log('[desktop] will-quit fired (gateway=%s voice=%s announcer=%s)', !!gateway, !!voice, !!announcer)
+  console.log('[desktop] will-quit fired (gateway=%s voice=%s)', !!gateway, !!voice)
   globalShortcut.unregisterAll()
   clearHideTimer()
   gatewayWs?.close()
   gatewayWs = null
-  if (!gateway && !voice && !announcer) return
+  if (!gateway && !voice) return
   event.preventDefault()
   const stops: Promise<void>[] = []
-  if (announcer) {
-    const a = announcer
-    announcer = null
-    stops.push(a.stop())
-  }
   if (voice) {
     const v = voice
     voice = null
