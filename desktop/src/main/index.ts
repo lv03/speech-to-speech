@@ -254,6 +254,16 @@ async function startVoice(): Promise<void> {
         mainWindow.webContents.send('voice:state', state)
       }
     },
+    onSecurityState: (locked) => {
+      // 与安全门同步：锁定 → 悬浮球休眠（隐藏）；解锁 → 唤醒（显示）。
+      if (locked) {
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
+          mainWindow.hide()
+        }
+      } else {
+        showOrb()
+      }
+    },
   })
   voice = v
   try {

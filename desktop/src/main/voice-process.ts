@@ -26,6 +26,8 @@ export interface VoiceOptions {
   printJson?: boolean
   /** 收到一个 Realtime 事件时回调 */
   onEvent?: (event: Record<string, unknown>) => void
+  /** 唤醒词安全门锁定/解锁状态回调（true=锁定） */
+  onSecurityState?: (locked: boolean) => void
   /** 收到一行普通日志（启动进度/错误）时回调 */
   onLog?: (line: string) => void
   /** 是否启用声纹验证 */
@@ -70,6 +72,7 @@ export class EmbeddedVoice {
   private readonly startupTimeoutMs: number
   private readonly printJson: boolean
   private readonly onEvent: ((event: Record<string, unknown>) => void) | undefined
+  private readonly onSecurityState: ((locked: boolean) => void) | undefined
   private readonly onLog: ((line: string) => void) | undefined
   private readonly voiceprintEnabled: boolean
   private readonly voiceprintThreshold: number
@@ -93,6 +96,7 @@ export class EmbeddedVoice {
     this.startupTimeoutMs = options.startupTimeoutMs ?? 300_000
     this.printJson = options.printJson ?? true
     this.onEvent = options.onEvent
+    this.onSecurityState = options.onSecurityState
     this.onLog = options.onLog
     this.voiceprintEnabled = options.voiceprintEnabled ?? false
     this.voiceprintThreshold = options.voiceprintThreshold ?? 0.75
@@ -183,7 +187,13 @@ export class EmbeddedVoice {
       if (!trimmed) continue
       if (trimmed.startsWith('EVENT: ')) {
         try {
-          this.onEvent?.(JSON.parse(trimmed.slice('EVENT: '.length)) as Record<string, unknown>)
+          const event = JSON.parse(trimmed.slice('EVENT: '.length)) as Record<string, unknown>
+          const eventType = String(event.type ?? '')
+          if (eventType === 'security.locked' || eventType === 'security.unlocked') {
+            this.onSecurityState?.(eventType === 'security.locked')
+          } else {
+            this.onEvent?.(event)
+          }
         } catch {
           // 非 JSON 行忽略
         }

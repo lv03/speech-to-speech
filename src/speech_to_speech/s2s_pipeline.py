@@ -382,6 +382,12 @@ def build_pipeline(
     return ThreadManager(handlers)
 
 
+def _emit_security_state(locked: bool) -> None:
+    """Print the wake-word security gate state as an EVENT line for the parent."""
+    event_type = "security.locked" if locked else "security.unlocked"
+    print(f"EVENT: {json.dumps({'type': event_type})}", flush=True)
+
+
 def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadManager:
     """Compose the canonical server and audio client over a forced loopback URL."""
 
@@ -401,6 +407,16 @@ def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadMana
     if local_audio.local_audio_tool_module:
         tools, tool_executor, tool_response_create = load_realtime_tool_module(local_audio.local_audio_tool_module)
     server_manager = build_pipeline(args, stop_event, host="127.0.0.1")
+    # Surface the wake-word security gate's locked/unlocked state to stdout as
+    # EVENT lines so the desktop app can mirror it (sleep the orb while locked,
+    # wake it on unlock). The gate lives inside the server pipeline; emitting
+    # JSONL keeps the parent process from reaching into the handler chain.
+    if local_audio.local_audio_print_json:
+        for handler in server_manager.handlers:
+            set_state_cb = getattr(handler, "set_state_change_callback", None)
+            if callable(set_state_cb):
+                set_state_cb(_emit_security_state)
+                break
     client = RealtimeAudioClient(
         stop_event,
         RealtimeAudioClientConfig(

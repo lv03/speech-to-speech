@@ -115,6 +115,21 @@ def test_gate_relocks_after_session_end(monkeypatch):
     assert list(gate.process(_chunk())) == []
 
 
+def test_gate_state_change_callback_fires_on_transitions(monkeypatch):
+    gate, _detector = _make_gate(monkeypatch, detector=_FakeDetector(detections=1))
+    transitions: list[bool] = []
+    gate.set_state_change_callback(transitions.append)
+
+    # 初始锁定态不触发回调（桌面端保持默认可见悬浮球）
+    assert transitions == []
+
+    list(gate.process(_chunk()))  # 唤醒词解锁
+    assert transitions == [False]
+
+    gate.on_session_end()  # 会话结束重新上锁
+    assert transitions == [False, True]
+
+
 def test_voiceprint_verifier_serializes_model_calls():
     active = 0
     peak = 0

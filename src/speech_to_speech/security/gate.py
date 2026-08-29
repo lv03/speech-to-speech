@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import numpy as np
 
@@ -39,6 +39,7 @@ class SecurityGateHandler(BaseHandler[VADIn, VADIn]):
         security_timeout_s: float = 60.0,
         unlock_acknowledgment: str = "",
         num_threads: int = 2,
+        state_change_callback: Callable[[bool], None] | None = None,
     ) -> None:
         self._wake_word = wake_word
         self._timeout_s = max(0.0, security_timeout_s)
@@ -46,6 +47,7 @@ class SecurityGateHandler(BaseHandler[VADIn, VADIn]):
         # asks the LLM for a short audible acknowledgment so the user knows
         # they may talk.
         self.unlock_acknowledgment = unlock_acknowledgment
+        self._state_change_callback = state_change_callback
 
         self._locked = True
         detector_kwargs: dict[str, Any] = {"wake_word": wake_word, "num_threads": num_threads}
@@ -67,12 +69,34 @@ class SecurityGateHandler(BaseHandler[VADIn, VADIn]):
         self._locked = False
         self._idle_since = time.monotonic()
         logger.info("Security gate: unlocked (wake word %r)", self._wake_word)
+        self._notify_state_change()
 
     def _relock(self, reason: str) -> None:
         self._locked = True
         self._idle_since = None
         self._detector.reset()
         logger.info("Security gate: locked again (%s)", reason)
+        self._notify_state_change()
+
+    def set_state_change_callback(self, callback: Callable[[bool], None]) -> None:
+        """Register a listener invoked on every locked/unlocked transition.
+
+        The callback receives ``True`` when locked and ``False`` when unlocked.
+        Used by the packaged ``local`` command to surface the gate state to the
+        desktop app (which mirrors it as the orb's sleep/awake state). Only
+        transitions are reported; the initial locked state at startup is not
+        emitted, so the desktop keeps its default visible-orb presentation.
+        """
+        self._state_change_callback = callback
+
+    def _notify_state_change(self) -> None:
+        callback = getattr(self, "_state_change_callback", None)
+        if callback is None:
+            return
+        try:
+            callback(self._locked)
+        except Exception:
+            logger.exception("Security gate state-change callback failed")
 
     # ── handler behaviour ───────────────────────────────────────────────────
 
