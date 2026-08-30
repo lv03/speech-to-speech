@@ -35,7 +35,7 @@ let voiceOwnsVisibility = false
 const VOICE_AFFECTING_FIELDS = [
   'llmBackend', 'llmApiKey', 'llmBaseUrl', 'llmModel',
   'sttBackend', 'sttModel', 'ttsBackend', 'ttsVoice',
-  'wakeWordEnabled', 'wakeWord', 'autoHideSeconds', 'enableVoiceprint', 'voiceprintThreshold', 'llmReasoningEffort',
+  'sttHotwords', 'wakeWordEnabled', 'wakeWord', 'autoHideSeconds', 'enableVoiceprint', 'voiceprintThreshold', 'llmReasoningEffort',
 ] as const
 
 // ── 快捷键与自动休眠 ───────────────────────────────────────────────────
@@ -268,6 +268,7 @@ async function startVoice(): Promise<void> {
     llmModel: settings.llmModel,
     sttBackend: settings.sttBackend,
     sttModel: settings.sttModel,
+    sttHotwords: settings.sttHotwords,
     ttsBackend: settings.ttsBackend,
     ttsVoice: settings.ttsVoice,
     llmReasoningEffort: settings.llmReasoningEffort,

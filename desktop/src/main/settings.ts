@@ -1,6 +1,7 @@
 import { app } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { normalizeSttHotwords } from '../shared/stt-hotwords.js'
 
 export interface DesktopSettings {
   /** 后端 coding agent 类型 */
@@ -35,6 +36,8 @@ export interface DesktopSettings {
   sttBackend: string
   /** STT 模型名（空 = 后端默认） */
   sttModel: string
+  /** STT 热词（空格分隔） */
+  sttHotwords: string
   /** TTS 后端 */
   ttsBackend: string
   /** TTS 音色（空 = 后端默认） */
@@ -62,6 +65,7 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   llmModel: '',
   sttBackend: 'parakeet-tdt',
   sttModel: '',
+  sttHotwords: '',
   ttsBackend: 'qwen3',
   ttsVoice: '',
   language: 'auto',
@@ -127,6 +131,7 @@ export class SettingsStore {
     if (typeof raw.language === 'string' && raw.language.trim()) out.language = raw.language.trim()
     if (typeof raw.sttBackend === 'string' && raw.sttBackend.trim()) out.sttBackend = raw.sttBackend.trim()
     if (typeof raw.sttModel === 'string') out.sttModel = raw.sttModel.trim()
+    if (typeof raw.sttHotwords === 'string') out.sttHotwords = normalizeSttHotwords(raw.sttHotwords)
     if (typeof raw.ttsBackend === 'string' && raw.ttsBackend.trim()) out.ttsBackend = raw.ttsBackend.trim()
     if (typeof raw.ttsVoice === 'string') out.ttsVoice = raw.ttsVoice.trim()
     if (typeof raw.llmReasoningEffort === 'string' && ['none', 'low', 'medium', 'high'].includes(raw.llmReasoningEffort)) {

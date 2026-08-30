@@ -15,6 +15,7 @@ interface SettingsPayload {
   llmModel: string
   sttBackend: string
   sttModel: string
+  sttHotwords: string
   ttsBackend: string
   ttsVoice: string
   language: string
@@ -32,6 +33,7 @@ const llmBaseUrl = document.getElementById('llm-base-url') as HTMLInputElement
 const llmReasoningEffort = document.getElementById('llm-reasoning-effort') as HTMLSelectElement
 const sttBackend = document.getElementById('stt-backend') as HTMLSelectElement
 const sttModel = document.getElementById('stt-model') as HTMLInputElement
+const sttHotwords = document.getElementById('stt-hotwords') as HTMLInputElement
 const ttsBackend = document.getElementById('tts-backend') as HTMLSelectElement
 const ttsVoice = document.getElementById('tts-voice') as HTMLInputElement
 const wakeWordEnabled = document.getElementById('wake-word-enabled') as HTMLInputElement
@@ -94,6 +96,7 @@ function render(settings: SettingsPayload): void {
   updateLlmFields()
   sttBackend.value = settings.sttBackend
   sttModel.value = settings.sttModel
+  sttHotwords.value = settings.sttHotwords
   ttsBackend.value = settings.ttsBackend
   ttsVoice.value = settings.ttsVoice
   wakeWordEnabled.checked = settings.wakeWordEnabled
@@ -118,6 +121,7 @@ function collect(): SettingsPayload {
     llmReasoningEffort: (['none', 'low', 'medium', 'high'].includes(llmReasoningEffort.value) ? llmReasoningEffort.value : 'none') as 'none' | 'low' | 'medium' | 'high',
     sttBackend: sttBackend.value,
     sttModel: sttModel.value.trim(),
+    sttHotwords: sttHotwords.value.trim(),
     ttsBackend: ttsBackend.value,
     ttsVoice: ttsVoice.value.trim(),
     wakeWordEnabled: wakeWordEnabled.checked,

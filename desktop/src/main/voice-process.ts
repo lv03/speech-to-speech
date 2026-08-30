@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { findPython } from './gateway-process'
+import { getSttHotwordFlag, normalizeSttHotwords } from '../shared/stt-hotwords.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DEFAULT_ROOT = resolve(__dirname, '../../..')
@@ -48,6 +49,8 @@ export interface VoiceOptions {
   sttBackend?: string
   /** STT 模型名 */
   sttModel?: string
+  /** STT 热词（空格分隔） */
+  sttHotwords?: string
   /** TTS 后端 */
   ttsBackend?: string
   /** TTS 音色 */
@@ -85,6 +88,7 @@ export class EmbeddedVoice {
   private readonly llmModel: string
   private readonly sttBackend: string
   private readonly sttModel: string
+  private readonly sttHotwords: string
   private readonly ttsBackend: string
   private readonly ttsVoice: string
   private readonly llmReasoningEffort: 'none' | 'low' | 'medium' | 'high'
@@ -110,6 +114,7 @@ export class EmbeddedVoice {
     this.llmModel = options.llmModel || ''
     this.sttBackend = options.sttBackend || 'parakeet-tdt'
     this.sttModel = options.sttModel || ''
+    this.sttHotwords = normalizeSttHotwords(options.sttHotwords || '')
     this.ttsBackend = options.ttsBackend || 'qwen3'
     this.ttsVoice = options.ttsVoice || ''
     this.llmReasoningEffort = options.llmReasoningEffort ?? 'none'
@@ -134,8 +139,14 @@ export class EmbeddedVoice {
         'parakeet-tdt': '--parakeet_tdt_model_name',
         'whisper': '--stt_model_name',
         'faster-whisper': '--faster_whisper_stt_model_name',
+        'paraformer': '--paraformer_stt_model_name',
+        'fun-asr-nano': '--fun_asr_nano_stt_model_name',
       }
       if (sttModelArg[this.sttBackend]) args.push(sttModelArg[this.sttBackend], this.sttModel)
+    }
+    const hotwordFlag = getSttHotwordFlag(this.sttBackend)
+    if (hotwordFlag && this.sttHotwords) {
+      args.push(hotwordFlag, this.sttHotwords)
     }
     // TTS 音色（参数名随后端而异）
     if (this.ttsVoice) {

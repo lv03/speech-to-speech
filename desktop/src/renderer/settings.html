@@ -61,6 +61,7 @@
                   <option value="whisper">whisper</option>
                   <option value="faster-whisper">faster-whisper</option>
                   <option value="paraformer">paraformer</option>
+                  <option value="fun-asr-nano">fun-asr-nano</option>
                   <option value="none">none（音频直进多模态 LLM）</option>
                 </select>
               </div>
@@ -68,6 +69,11 @@
                 <label for="stt-model">STT 模型</label>
                 <input id="stt-model" type="text" autocomplete="off" spellcheck="false" placeholder="留空用默认（如 mlx-community/parakeet-tdt-0.6b-v3）" />
               </div>
+              <div class="setting-row">
+                <label for="stt-hotwords">STT 热词</label>
+                <input id="stt-hotwords" type="text" autocomplete="off" spellcheck="false" placeholder="开放时间，脐腐病" />
+              </div>
+              <p class="setting-hint">仅 paraformer / fun-asr-nano 生效，支持空格、换行、逗号分隔。</p>
               <div class="setting-row">
                 <label for="tts-backend">TTS 后端</label>
                 <select id="tts-backend">
