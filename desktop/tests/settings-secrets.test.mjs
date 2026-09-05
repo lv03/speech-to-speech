@@ -10,7 +10,11 @@ vi.mock('electron', () => ({
   safeStorage: {
     isEncryptionAvailable: () => true,
     encryptString: (value) => Buffer.from(`encrypted:${value}`),
-    decryptString: (value) => value.toString().replace(/^encrypted:/, ''),
+    decryptString: (value) => {
+      const text = value.toString()
+      if (!text.startsWith('encrypted:')) throw new Error('invalid ciphertext')
+      return text.replace(/^encrypted:/, '')
+    },
   },
 }))
 
@@ -43,4 +47,19 @@ test('ignores renderer attempts to persist an API key in public settings', async
   expect(saved).toMatchObject({ llmModel: 'safe-model' })
   expect(saved).not.toHaveProperty('llmApiKey')
   expect(await readFile(join(directory, 'settings.json'), 'utf8')).not.toContain('renderer-secret')
+})
+
+test('does not discard a legacy key when the existing encrypted secret is corrupt', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 's2s-settings-corrupt-secret-'))
+  const settingsPath = join(directory, 'settings.json')
+  const secretsPath = join(directory, 'secrets.json')
+  await writeFile(settingsPath, JSON.stringify({ llmApiKey: 'sk-legacy-secret' }))
+  await writeFile(secretsPath, JSON.stringify({ llmApiKey: Buffer.from('corrupt').toString('base64') }))
+
+  const settings = new SettingsStore(settingsPath)
+  const secrets = new SecretStore(secretsPath)
+  settings.migrateLegacyLlmApiKey(secrets)
+
+  expect(secrets.getLlmApiKey()).toBe('sk-legacy-secret')
+  expect(await readFile(settingsPath, 'utf8')).not.toContain('sk-legacy-secret')
 })

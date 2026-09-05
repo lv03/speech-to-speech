@@ -35,7 +35,7 @@ export class SecretStore {
   }
 
   hasLlmApiKey(): boolean {
-    return Boolean(this.secrets.llmApiKey)
+    return this.getLlmApiKey().length > 0
   }
 
   getLlmApiKey(): string {
