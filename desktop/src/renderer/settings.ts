@@ -10,7 +10,7 @@ interface SettingsPayload {
   enableVoiceprint: boolean
   voiceprintThreshold: number
   llmBackend: string
-  llmApiKey: string
+  llmApiKeyPresent?: boolean
   llmBaseUrl: string
   llmModel: string
   sttBackend: string
@@ -29,6 +29,7 @@ const enableVoice = document.getElementById('enable-voice') as HTMLInputElement
 const llmBackend = document.getElementById('llm-backend') as HTMLSelectElement
 const llmModel = document.getElementById('llm-model') as HTMLInputElement
 const llmApiKey = document.getElementById('llm-api-key') as HTMLInputElement
+const clearLlmApiKey = document.getElementById('clear-llm-api-key') as HTMLButtonElement
 const llmBaseUrl = document.getElementById('llm-base-url') as HTMLInputElement
 const llmReasoningEffort = document.getElementById('llm-reasoning-effort') as HTMLSelectElement
 const sttBackend = document.getElementById('stt-backend') as HTMLSelectElement
@@ -90,7 +91,9 @@ function render(settings: SettingsPayload): void {
   enableVoice.checked = settings.enableVoice
   llmBackend.value = settings.llmBackend
   llmModel.value = settings.llmModel
-  llmApiKey.value = settings.llmApiKey
+  llmApiKey.value = ''
+  llmApiKey.placeholder = settings.llmApiKeyPresent ? '已安全保存；输入新 Key 以替换' : '留空则保留已保存的 Key'
+  clearLlmApiKey.disabled = !settings.llmApiKeyPresent
   llmBaseUrl.value = settings.llmBaseUrl
   llmReasoningEffort.value = settings.llmReasoningEffort
   updateLlmFields()
@@ -116,7 +119,6 @@ function collect(): SettingsPayload {
     enableVoice: enableVoice.checked,
     llmBackend: llmBackend.value,
     llmModel: llmModel.value.trim(),
-    llmApiKey: llmApiKey.value,
     llmBaseUrl: llmBaseUrl.value.trim(),
     llmReasoningEffort: (['none', 'low', 'medium', 'high'].includes(llmReasoningEffort.value) ? llmReasoningEffort.value : 'none') as 'none' | 'low' | 'medium' | 'high',
     sttBackend: sttBackend.value,
@@ -134,6 +136,129 @@ function collect(): SettingsPayload {
     language: language.value,
   }
 }
+
+interface KnowledgeCollection {
+  collectionId: string
+  displayName: string
+  directory: string
+  indexState: 'pending' | 'indexing' | 'ready' | 'failed'
+}
+
+interface KnowledgeSnapshot {
+  state: string
+  model: { downloadBytes: number; diskBytes: number; state: string }
+  collections: KnowledgeCollection[]
+}
+
+const knowledgeState = document.getElementById('knowledge-state')!
+const knowledgeModel = document.getElementById('knowledge-model')!
+const knowledgeCollections = document.getElementById('knowledge-collections')!
+const knowledgeAdd = document.getElementById('knowledge-add') as HTMLButtonElement
+const knowledgeCancel = document.getElementById('knowledge-cancel') as HTMLButtonElement
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '未知'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
+}
+
+function renderKnowledge(snapshot: KnowledgeSnapshot): void {
+  knowledgeState.textContent = `状态：${snapshot.state}`
+  knowledgeModel.textContent = `模型下载：${formatBytes(snapshot.model.downloadBytes)}；占用空间：${formatBytes(snapshot.model.diskBytes)}；${snapshot.model.state}`
+  knowledgeCollections.replaceChildren()
+  for (const collection of snapshot.collections) {
+    const row = document.createElement('article')
+    row.className = 'knowledge-collection'
+    const details = document.createElement('div')
+    const name = document.createElement('strong')
+    name.textContent = collection.displayName
+    const directory = document.createElement('span')
+    directory.textContent = collection.directory
+    const state = document.createElement('span')
+    state.textContent = `状态：${collection.indexState}`
+    details.append(name, directory, state)
+    const actions = document.createElement('div')
+    actions.className = 'knowledge-row-actions'
+    for (const [action, label] of [
+      ['reindex', '重新索引'],
+      ...(collection.indexState === 'failed' ? [['retry', '重试']] : []),
+      ['delete-index', '删除索引'],
+      ['remove', '移除目录'],
+    ]) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.dataset.knowledgeAction = action
+      button.dataset.collectionId = collection.collectionId
+      button.textContent = label
+      actions.append(button)
+    }
+    row.append(details, actions)
+    knowledgeCollections.append(row)
+  }
+}
+
+async function refreshKnowledge(): Promise<void> {
+  try {
+    renderKnowledge((await window.desktop.knowledgeSnapshot()) as unknown as KnowledgeSnapshot)
+  } catch {
+    knowledgeState.textContent = '状态未知'
+  }
+}
+
+knowledgeAdd.addEventListener('click', async () => {
+  knowledgeAdd.disabled = true
+  try {
+    renderKnowledge((await window.desktop.addKnowledgeCollection()) as unknown as KnowledgeSnapshot)
+  } catch (error) {
+    messageEl.textContent = `知识库操作失败：${String(error)}`
+  } finally {
+    knowledgeAdd.disabled = false
+  }
+})
+
+knowledgeCancel.addEventListener('click', async () => {
+  knowledgeCancel.disabled = true
+  try {
+    await window.desktop.cancelKnowledge()
+    await refreshKnowledge()
+  } finally {
+    knowledgeCancel.disabled = false
+  }
+})
+
+knowledgeCollections.addEventListener('click', async (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-knowledge-action]')
+  if (!button) return
+  const collectionId = button.dataset.collectionId
+  const action = button.dataset.knowledgeAction
+  if (!collectionId || !action) return
+  button.disabled = true
+  try {
+    if (action === 'remove') {
+      renderKnowledge((await window.desktop.removeKnowledgeCollection(collectionId)) as unknown as KnowledgeSnapshot)
+    } else if (action === 'delete-index') {
+      renderKnowledge((await window.desktop.deleteKnowledgeIndex(collectionId)) as unknown as KnowledgeSnapshot)
+    } else {
+      const current = (await window.desktop.knowledgeState()) as unknown as KnowledgeSnapshot
+      const confirmed = current.model.state !== 'needs_consent' || window.confirm(
+        `首次下载将使用约 ${formatBytes(current.model.downloadBytes)}，并占用约 ${formatBytes(current.model.diskBytes)} 磁盘空间。是否继续？`,
+      )
+      if (confirmed) {
+        renderKnowledge((await window.desktop.reindexKnowledgeCollection(collectionId, true)) as unknown as KnowledgeSnapshot)
+      }
+    }
+  } catch (error) {
+    messageEl.textContent = `知识库操作失败：${String(error)}`
+  } finally {
+    button.disabled = false
+  }
+})
 
 // ── 皮肤 ────────────────────────────────────────────────────────────────
 async function loadSkins(): Promise<void> {
@@ -158,6 +283,19 @@ async function loadSkins(): Promise<void> {
 }
 
 refreshSkinsBtn.addEventListener('click', () => void loadSkins())
+
+clearLlmApiKey.addEventListener('click', async () => {
+  clearLlmApiKey.disabled = true
+  try {
+    await window.desktop.clearLlmApiKey()
+    llmApiKey.value = ''
+    llmApiKey.placeholder = '留空则保留已保存的 Key'
+  } catch (error) {
+    messageEl.textContent = `清除 API Key 失败：${String(error)}`
+  } finally {
+    clearLlmApiKey.disabled = false
+  }
+})
 
 // ── 声纹 ────────────────────────────────────────────────────────────────
 async function refreshVoiceprintStatus(): Promise<void> {
@@ -281,6 +419,7 @@ document.getElementById('settings-form')!.addEventListener('submit', async (even
   event.preventDefault()
   applyButton.disabled = true
   try {
+    if (llmApiKey.value.trim()) await window.desktop.setLlmApiKey(llmApiKey.value)
     const saved = (await window.desktop.saveSettings(
       collect() as unknown as Record<string, unknown>,
     )) as unknown as SettingsPayload
@@ -299,3 +438,4 @@ document.getElementById('settings-form')!.addEventListener('submit', async (even
 void load()
 void loadSkins()
 void refreshVoiceprintStatus()
+void refreshKnowledge()

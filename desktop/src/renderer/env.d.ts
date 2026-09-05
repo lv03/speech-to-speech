@@ -10,6 +10,15 @@ declare global {
       listTasks(): Promise<unknown[]>
       getSettings(): Promise<Record<string, unknown>>
       saveSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>>
+      setLlmApiKey(value: string): Promise<{ llmApiKeyPresent: boolean }>
+      clearLlmApiKey(): Promise<{ llmApiKeyPresent: boolean }>
+      knowledgeSnapshot(): Promise<Record<string, unknown>>
+      addKnowledgeCollection(): Promise<Record<string, unknown>>
+      removeKnowledgeCollection(collectionId: string): Promise<Record<string, unknown>>
+      reindexKnowledgeCollection(collectionId: string, confirmed: boolean): Promise<Record<string, unknown>>
+      deleteKnowledgeIndex(collectionId: string): Promise<Record<string, unknown>>
+      cancelKnowledge(): Promise<void>
+      knowledgeState(): Promise<Record<string, unknown>>
       listSkins(): Promise<unknown[]>
       reportActivity(): void
       setPanelOpen(open: boolean): void

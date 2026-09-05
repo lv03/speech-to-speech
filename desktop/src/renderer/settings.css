@@ -124,6 +124,57 @@ header {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 }
 
+.knowledge-summary {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+  color: #4b5563;
+  font-size: 13px;
+}
+
+.knowledge-collections {
+  display: grid;
+  gap: 8px;
+}
+
+.knowledge-collection {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid #d8dde3;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.knowledge-collection > div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.knowledge-collection span {
+  overflow-wrap: anywhere;
+  color: #5b6470;
+  font-size: 12px;
+}
+
+.knowledge-row-actions,
+.knowledge-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.knowledge-row-actions {
+  justify-content: flex-end;
+}
+
+.knowledge-actions {
+  margin-top: 12px;
+}
+
 .setting-row {
   display: flex;
   align-items: center;

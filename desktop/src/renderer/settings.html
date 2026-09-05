@@ -37,6 +37,7 @@
         <nav class="settings-tabs" role="tablist" aria-label="设置分类">
           <button id="voice-tab" class="settings-tab active" type="button" role="tab" aria-selected="true" aria-controls="voice-settings" data-settings-tab="voice">语音前台</button>
           <button id="backend-tab" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="backend-settings" data-settings-tab="backend">后台 Agent</button>
+          <button id="knowledge-tab" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="knowledge-settings" data-settings-tab="knowledge">知识库</button>
           <button id="app-tab" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="app-settings" data-settings-tab="app">应用</button>
         </nav>
 
@@ -107,7 +108,10 @@
               </div>
               <div class="setting-row remote-only" id="llm-api-key-row">
                 <label for="llm-api-key">API Key</label>
-                <input id="llm-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="留空用环境变量 OPENAI_API_KEY" />
+                <div class="setting-inline">
+                  <input id="llm-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="留空则保留已保存的 Key" />
+                  <button id="clear-llm-api-key" type="button" title="删除已保存的 API Key">清除</button>
+                </div>
               </div>
               <div class="setting-row remote-only" id="llm-reasoning-effort-row">
                 <label for="llm-reasoning-effort">LLM 推理等级（reasoning effort）</label>
@@ -172,6 +176,21 @@
                 <input id="gateway-port" type="number" min="1" max="65535" />
               </div>
               <p class="setting-hint">Agent Gateway 通过子进程协议驱动 coding agent 执行任务，任务由语音触发（spawn_agent_task 工具）。</p>
+            </div>
+          </section>
+
+          <section id="knowledge-settings" class="settings-group" role="tabpanel" aria-labelledby="knowledge-tab" data-settings-panel="knowledge" hidden>
+            <div class="settings-card">
+              <div class="knowledge-summary">
+                <span id="knowledge-state">正在检查…</span>
+                <span id="knowledge-model">模型信息正在检查…</span>
+              </div>
+              <div id="knowledge-collections" class="knowledge-collections"></div>
+              <div class="knowledge-actions">
+                <button id="knowledge-add" type="button">添加目录</button>
+                <button id="knowledge-cancel" type="button">取消</button>
+              </div>
+              <p class="setting-hint">删除索引不会删除原文件。</p>
             </div>
           </section>
 

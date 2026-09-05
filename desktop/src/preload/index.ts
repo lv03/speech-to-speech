@@ -15,6 +15,19 @@ export interface DesktopApi {
   getSettings(): Promise<Record<string, unknown>>
   /** 保存桌面设置 */
   saveSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>>
+  /** 保存 API key；主进程只返回是否已保存。 */
+  setLlmApiKey(value: string): Promise<{ llmApiKeyPresent: boolean }>
+  /** 删除已保存的 API key。 */
+  clearLlmApiKey(): Promise<{ llmApiKeyPresent: boolean }>
+  /** 获取脱敏后的知识库状态。 */
+  knowledgeSnapshot(): Promise<Record<string, unknown>>
+  /** 在主进程中打开目录选择器并添加 collection。 */
+  addKnowledgeCollection(): Promise<Record<string, unknown>>
+  removeKnowledgeCollection(collectionId: string): Promise<Record<string, unknown>>
+  reindexKnowledgeCollection(collectionId: string, confirmed: boolean): Promise<Record<string, unknown>>
+  deleteKnowledgeIndex(collectionId: string): Promise<Record<string, unknown>>
+  cancelKnowledge(): Promise<void>
+  knowledgeState(): Promise<Record<string, unknown>>
   /** 列出可用悬浮球皮肤（pet 包） */
   listSkins(): Promise<unknown[]>
   /** 报告用户活动（重置自动休眠倒计时） */
@@ -61,6 +74,15 @@ const api: DesktopApi = {
   listTasks: () => ipcRenderer.invoke('gateway:list-tasks'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
+  setLlmApiKey: (value) => ipcRenderer.invoke('settings:set-secret', value),
+  clearLlmApiKey: () => ipcRenderer.invoke('settings:clear-secret'),
+  knowledgeSnapshot: () => ipcRenderer.invoke('knowledge:snapshot'),
+  addKnowledgeCollection: () => ipcRenderer.invoke('knowledge:add-collection'),
+  removeKnowledgeCollection: (collectionId) => ipcRenderer.invoke('knowledge:remove-collection', collectionId),
+  reindexKnowledgeCollection: (collectionId, confirmed) => ipcRenderer.invoke('knowledge:reindex', collectionId, confirmed),
+  deleteKnowledgeIndex: (collectionId) => ipcRenderer.invoke('knowledge:delete-index', collectionId),
+  cancelKnowledge: () => ipcRenderer.invoke('knowledge:cancel'),
+  knowledgeState: () => ipcRenderer.invoke('knowledge:state'),
   listSkins: () => ipcRenderer.invoke('skin:list'),
   reportActivity: () => ipcRenderer.send('app:activity'),
   setPanelOpen: (open) => ipcRenderer.send('orb:panel-open', open),

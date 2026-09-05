@@ -1,4 +1,4 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, net, Notification, protocol, Tray } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, net, Notification, protocol, Tray } from 'electron'
 import { existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
@@ -7,6 +7,10 @@ import { pathToFileURL, fileURLToPath } from 'node:url'
 import { EmbeddedGateway } from './gateway-process'
 import { EmbeddedVoice } from './voice-process'
 import { SettingsStore, type DesktopSettings } from './settings'
+import { SecretStore } from './secret-store'
+import type { CollectionRecord, KnowledgeSnapshot } from './runtime-types'
+import { QmdService } from './qmd-service'
+import { QmdIndexer } from './qmd-indexer'
 import { listSkins, skinDirectories, type SkinInfo } from './skin-catalog'
 import { isVoiceActivityState, shouldDelegateOrbSleepToVoice } from '../shared/visibility-policy.js'
 
@@ -24,6 +28,8 @@ let tray: Tray | null = null
 let gateway: EmbeddedGateway | null = null
 let voice: EmbeddedVoice | null = null
 let settingsStore: SettingsStore | null = null
+let secretStore: SecretStore | null = null
+let knowledgeService: QmdService | null = null
 let skinsCache: SkinInfo[] = []
 let hideTimer: NodeJS.Timeout | null = null
 let gatewayWs: WebSocket | null = null
@@ -33,10 +39,94 @@ let voiceOwnsVisibility = false
 
 /** 影响运行中语音引擎行为的设置字段（变化时需重启引擎才生效）。 */
 const VOICE_AFFECTING_FIELDS = [
-  'llmBackend', 'llmApiKey', 'llmBaseUrl', 'llmModel',
+  'llmBackend', 'llmBaseUrl', 'llmModel',
   'sttBackend', 'sttModel', 'ttsBackend', 'ttsVoice',
   'sttHotwords', 'wakeWordEnabled', 'wakeWord', 'autoHideSeconds', 'enableVoiceprint', 'voiceprintThreshold', 'llmReasoningEffort',
 ] as const
+
+const COLLECTION_ID = /^col_[a-f0-9]{32}$/
+
+export interface PublicKnowledgeCollection {
+  collectionId: string
+  displayName: string
+  directory: string
+  indexState: CollectionRecord['indexState']
+  lastIndexedAt: string | null
+}
+
+export interface PublicKnowledgeSnapshot {
+  state: string
+  model: { downloadBytes: number; diskBytes: number; state: string }
+  collections: PublicKnowledgeCollection[]
+}
+
+export interface KnowledgeIpcHandlers {
+  snapshot(): Promise<PublicKnowledgeSnapshot>
+  addCollection(): Promise<PublicKnowledgeSnapshot>
+  removeCollection(collectionId: unknown): Promise<PublicKnowledgeSnapshot>
+  reindex(collectionId: unknown, confirmed?: unknown): Promise<PublicKnowledgeSnapshot>
+  deleteIndex(collectionId: unknown): Promise<PublicKnowledgeSnapshot>
+  cancel(): void
+}
+
+interface KnowledgeIpcDependencies {
+  service: Pick<QmdService, 'snapshot' | 'addCollection' | 'removeCollection' | 'reindex' | 'deleteIndex'>
+  pickDirectory: () => Promise<{ canceled: boolean; filePaths: string[] }>
+  modelStatus: () => Promise<{ downloadBytes: number; diskBytes: number; state: string }>
+  cancel: () => void
+}
+
+function publicKnowledgeSnapshot(snapshot: KnowledgeSnapshot, model: { downloadBytes: number; diskBytes: number; state: string }): PublicKnowledgeSnapshot {
+  return {
+    state: snapshot.state.name,
+    model,
+    collections: snapshot.collections.map((collection) => ({
+      collectionId: collection.collectionId,
+      displayName: collection.displayName,
+      directory: collection.root,
+      indexState: collection.indexState,
+      lastIndexedAt: collection.lastIndexedAt,
+    })),
+  }
+}
+
+function assertCollectionId(value: unknown): string {
+  if (typeof value !== 'string' || !COLLECTION_ID.test(value)) throw new Error('Invalid knowledge collection')
+  return value
+}
+
+/** Main-process-only adapter for the fixed, renderer-safe knowledge IPC contract. */
+export function createKnowledgeIpcHandlers(dependencies: KnowledgeIpcDependencies): KnowledgeIpcHandlers {
+  const snapshot = async (): Promise<PublicKnowledgeSnapshot> => publicKnowledgeSnapshot(
+    await dependencies.service.snapshot(),
+    await dependencies.modelStatus(),
+  )
+  return {
+    snapshot,
+    async addCollection(): Promise<PublicKnowledgeSnapshot> {
+      const result = await dependencies.pickDirectory()
+      if (!result.canceled && result.filePaths.length === 1 && typeof result.filePaths[0] === 'string') {
+        await dependencies.service.addCollection(result.filePaths[0])
+      }
+      return snapshot()
+    },
+    async removeCollection(collectionId: unknown): Promise<PublicKnowledgeSnapshot> {
+      await dependencies.service.removeCollection(assertCollectionId(collectionId))
+      return snapshot()
+    },
+    async reindex(collectionId: unknown, confirmed?: unknown): Promise<PublicKnowledgeSnapshot> {
+      const model = await dependencies.modelStatus()
+      if (model.state === 'needs_consent' && confirmed !== true) throw new Error('Model download confirmation is required')
+      await dependencies.service.reindex(assertCollectionId(collectionId))
+      return snapshot()
+    },
+    async deleteIndex(collectionId: unknown): Promise<PublicKnowledgeSnapshot> {
+      await dependencies.service.deleteIndex(assertCollectionId(collectionId))
+      return snapshot()
+    },
+    cancel: () => dependencies.cancel(),
+  }
+}
 
 // ── 快捷键与自动休眠 ───────────────────────────────────────────────────
 
@@ -246,6 +336,9 @@ async function startGateway(): Promise<void> {
 async function startVoice(): Promise<void> {
   const settings = settingsStore?.get()
   if (!settings?.enableVoice) return
+  if (['responses-api', 'chat-completions'].includes(settings.llmBackend) && !secretStore?.isAvailable()) {
+    throw new Error('Secure credential storage is unavailable')
+  }
   voiceOwnsVisibility = shouldDelegateOrbSleepToVoice({
     enableVoice: settings.enableVoice,
     wakeWordEnabled: settings.wakeWordEnabled,
@@ -263,7 +356,7 @@ async function startVoice(): Promise<void> {
     voiceprintEnabled: settings.enableVoiceprint,
     voiceprintThreshold: settings.voiceprintThreshold,
     llmBackend: settings.llmBackend,
-    llmApiKey: settings.llmApiKey,
+    llmApiKey: secretStore?.getLlmApiKey() ?? '',
     llmBaseUrl: settings.llmBaseUrl,
     llmModel: settings.llmModel,
     sttBackend: settings.sttBackend,
@@ -359,7 +452,7 @@ async function summarizeTaskResult(text: string | undefined): Promise<string> {
   if (!remote || !settings) return summarize(s)
   const baseUrl = (settings.llmBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '')
   const url = `${baseUrl}/chat/completions`
-  const key = settings.llmApiKey || process.env.OPENAI_API_KEY || 'none'
+  const key = secretStore?.getLlmApiKey() || process.env.OPENAI_API_KEY || 'none'
   const body: Record<string, unknown> = {
     model: settings.llmModel || 'gpt-5.4-mini',
     messages: [
@@ -630,6 +723,13 @@ app.whenReady().then(async () => {
   }
 
   settingsStore = new SettingsStore()
+  secretStore = new SecretStore(join(app.getPath('userData'), 'secrets.json'))
+  if (secretStore.isAvailable()) settingsStore.migrateLegacyLlmApiKey(secretStore)
+  const qmdResourceRoot = app.isPackaged ? join(process.resourcesPath, 'qmd') : join(__dirname, '../..')
+  knowledgeService = new QmdService({
+    metadataPath: join(app.getPath('userData'), 'knowledge', 'collections.json'),
+    runner: new QmdIndexer({ resourceRoot: qmdResourceRoot, dataRoot: app.getPath('userData') }),
+  })
   refreshSkins()
   registerSkinProtocol()
 
@@ -663,9 +763,35 @@ app.whenReady().then(async () => {
   ipcMain.handle('voiceprint:verify', () => {
     return runVoiceprintCommand(['-m', 'speech_to_speech.cli', 'voiceprint', 'verify'])
   })
-  ipcMain.handle('settings:get', () => settingsStore?.get() ?? {})
-  ipcMain.handle('settings:save', async (_e, settings: Partial<DesktopSettings>) => {
-    if (settings.enableVoiceprint === true) {
+  ipcMain.handle('settings:get', () => ({
+    ...(settingsStore?.get() ?? {}),
+    llmApiKeyPresent: secretStore?.hasLlmApiKey() ?? false,
+  }))
+  ipcMain.handle('settings:set-secret', async (_e, value: unknown) => {
+    if (typeof value !== 'string') throw new Error('Invalid API key')
+    secretStore?.setLlmApiKey(value)
+    if (voice) {
+      const runningVoice = voice
+      voice = null
+      await runningVoice.stop()
+      void startVoice().catch(() => undefined)
+    }
+    return { llmApiKeyPresent: secretStore?.hasLlmApiKey() ?? false }
+  })
+  ipcMain.handle('settings:clear-secret', async () => {
+    secretStore?.clearLlmApiKey()
+    if (voice) {
+      const runningVoice = voice
+      voice = null
+      await runningVoice.stop()
+      void startVoice().catch(() => undefined)
+    }
+    return { llmApiKeyPresent: false }
+  })
+  ipcMain.handle('settings:save', async (_e, settings: Record<string, unknown>) => {
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('Invalid settings')
+    const candidate = settings as Partial<DesktopSettings>
+    if (candidate.enableVoiceprint === true) {
       const status = await voiceprintStatusPayload()
       if (!status.enrolled) throw new Error('请先注册声纹，再启用声纹验证')
       if (!status.supportsContinuous) throw new Error('当前声纹档案为旧版（仅唤醒词），请重新注册后再启用')
@@ -673,25 +799,25 @@ app.whenReady().then(async () => {
     const before = settingsStore?.get()
     const saved = settingsStore?.save(settings)
     // 皮肤变化 → 重载 orb 让新皮肤生效
-    if (before && saved && settings.orbSkin !== undefined && before.orbSkin !== saved.orbSkin) {
+    if (before && saved && candidate.orbSkin !== undefined && before.orbSkin !== saved.orbSkin) {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.reload()
       }
     }
     // 快捷键变化 → 重新注册
-    if (before && saved && settings.wakeShortcut !== undefined && before.wakeShortcut !== saved.wakeShortcut) {
+    if (before && saved && candidate.wakeShortcut !== undefined && before.wakeShortcut !== saved.wakeShortcut) {
       globalShortcut.unregister(before.wakeShortcut)
       registerWakeShortcut(saved.wakeShortcut)
     }
     // 语音/网关相关字段变化 → 运行中的子进程需要重启才生效
     if (before && saved) {
       const enableChanged =
-        settings.enableVoice !== undefined && before.enableVoice !== saved.enableVoice
+        candidate.enableVoice !== undefined && before.enableVoice !== saved.enableVoice
       const voiceChanged = VOICE_AFFECTING_FIELDS.some(
-        (f) => settings[f] !== undefined && before[f] !== saved[f],
+        (f) => candidate[f] !== undefined && before[f] !== saved[f],
       )
       const gatewayPortChanged =
-        settings.gatewayPort !== undefined && before.gatewayPort !== saved.gatewayPort
+        candidate.gatewayPort !== undefined && before.gatewayPort !== saved.gatewayPort
       try {
         if (gatewayPortChanged && gateway) {
           await gateway.stop()
@@ -727,8 +853,25 @@ app.whenReady().then(async () => {
       }
     }
     recordActivity()
-    return saved ?? {}
+    return { ...(saved ?? {}), llmApiKeyPresent: secretStore?.hasLlmApiKey() ?? false }
   })
+  const knowledgeHandlers = createKnowledgeIpcHandlers({
+    service: knowledgeService,
+    pickDirectory: () => dialog.showOpenDialog(settingsWindow ?? mainWindow!, {
+      title: '选择知识库目录',
+      properties: ['openDirectory'],
+    }),
+    // RuntimeManager replaces this provider in Task 7; Task 5 never starts a download itself.
+    modelStatus: async () => ({ downloadBytes: 0, diskBytes: 0, state: 'needs_consent' }),
+    cancel: () => undefined,
+  })
+  ipcMain.handle('knowledge:snapshot', () => knowledgeHandlers.snapshot())
+  ipcMain.handle('knowledge:add-collection', () => knowledgeHandlers.addCollection())
+  ipcMain.handle('knowledge:remove-collection', (_event, collectionId: unknown) => knowledgeHandlers.removeCollection(collectionId))
+  ipcMain.handle('knowledge:reindex', (_event, collectionId: unknown, confirmed: unknown) => knowledgeHandlers.reindex(collectionId, confirmed))
+  ipcMain.handle('knowledge:delete-index', (_event, collectionId: unknown) => knowledgeHandlers.deleteIndex(collectionId))
+  ipcMain.handle('knowledge:cancel', () => knowledgeHandlers.cancel())
+  ipcMain.handle('knowledge:state', () => knowledgeHandlers.snapshot())
   ipcMain.on('app:quit', () => {
     console.log('[desktop] app:quit via IPC')
     app.quit()

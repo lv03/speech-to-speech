@@ -1,7 +1,9 @@
 import { app } from 'electron'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { normalizeSttHotwords } from '../shared/stt-hotwords.js'
+import type { SecretStore } from './secret-store'
 
 export interface DesktopSettings {
   /** 后端 coding agent 类型 */
@@ -26,8 +28,6 @@ export interface DesktopSettings {
   voiceprintThreshold: number
   /** 语音引擎 LLM 后端 */
   llmBackend: string
-  /** LLM API Key（responses-api 用） */
-  llmApiKey: string
   /** LLM API 地址（远程后端用，对应 --responses_api_base_url） */
   llmBaseUrl: string
   /** LLM 模型名（空 = 后端默认） */
@@ -60,7 +60,6 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   enableVoiceprint: false,
   voiceprintThreshold: 0.75,
   llmBackend: 'responses-api',
-  llmApiKey: '',
   llmBaseUrl: '',
   llmModel: '',
   sttBackend: 'parakeet-tdt',
@@ -75,6 +74,7 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
 export class SettingsStore {
   private readonly path: string
   private cache: DesktopSettings
+  private legacyLlmApiKey = ''
 
   constructor(directory?: string) {
     const dir = directory || join(app.getPath('userData'), 'settings.json')
@@ -90,6 +90,7 @@ export class SettingsStore {
     try {
       if (existsSync(this.path)) {
         const raw = JSON.parse(readFileSync(this.path, 'utf-8'))
+        if (typeof raw.llmApiKey === 'string' && raw.llmApiKey) this.legacyLlmApiKey = raw.llmApiKey
         return { ...DEFAULT_SETTINGS, ...this.sanitize(raw) }
       }
     } catch {
@@ -125,7 +126,6 @@ export class SettingsStore {
       out.voiceprintThreshold = raw.voiceprintThreshold
     }
     if (typeof raw.llmBackend === 'string' && raw.llmBackend.trim()) out.llmBackend = raw.llmBackend.trim()
-    if (typeof raw.llmApiKey === 'string') out.llmApiKey = raw.llmApiKey
     if (typeof raw.llmBaseUrl === 'string') out.llmBaseUrl = raw.llmBaseUrl.trim()
     if (typeof raw.llmModel === 'string') out.llmModel = raw.llmModel.trim()
     if (typeof raw.language === 'string' && raw.language.trim()) out.language = raw.language.trim()
@@ -143,17 +143,31 @@ export class SettingsStore {
     return out
   }
 
-  save(next: Partial<DesktopSettings>): DesktopSettings {
+  save(next: Record<string, unknown>): DesktopSettings {
     this.cache = { ...this.cache, ...this.sanitize(next) }
+    this.writePublicSettings()
+    return this.get()
+  }
+
+  /** Moves the legacy plaintext key before atomically replacing public JSON. */
+  migrateLegacyLlmApiKey(secrets: SecretStore): void {
+    if (!this.legacyLlmApiKey) return
+    if (!secrets.hasLlmApiKey()) secrets.setLlmApiKey(this.legacyLlmApiKey)
+    this.legacyLlmApiKey = ''
+    this.writePublicSettings()
+  }
+
+  private writePublicSettings(): void {
     try {
       mkdirSync(dirname(this.path), { recursive: true })
-      writeFileSync(this.path, JSON.stringify(this.cache, null, 2), {
+      const temporary = `${this.path}.${randomBytes(8).toString('hex')}.tmp`
+      writeFileSync(temporary, JSON.stringify(this.cache, null, 2), {
         encoding: 'utf-8',
         mode: 0o600,
       })
+      renameSync(temporary, this.path)
     } catch (error) {
       console.error('[desktop] 设置写入失败：', error)
     }
-    return this.get()
   }
 }
