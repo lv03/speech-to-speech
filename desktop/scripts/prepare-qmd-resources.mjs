@@ -1,0 +1,140 @@
+import { cp, mkdir, readFile, rm } from 'node:fs/promises'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+const QMD_PACKAGE = '@tobilu/qmd'
+const QMD_VERSION = '2.8.3'
+
+function matchesPlatform(values, current) {
+  if (!Array.isArray(values) || values.length === 0) return true
+  if (values.includes(`!${current}`)) return false
+  const positive = values.filter((value) => !value.startsWith('!'))
+  return positive.length === 0 || positive.includes(current)
+}
+
+function isCompatible(record, platform, arch) {
+  return matchesPlatform(record.os, platform) && matchesPlatform(record.cpu, arch)
+}
+
+async function packageExists(packageRoot) {
+  try {
+    await readFile(join(packageRoot, 'package.json'))
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function resolvePackage(packageName, fromDirectory) {
+  let cursor = resolve(fromDirectory)
+  while (true) {
+    const candidate = join(cursor, 'node_modules', packageName)
+    if (await packageExists(candidate)) return candidate
+    if (cursor.endsWith('/node_modules')) {
+      const directCandidate = join(cursor, packageName)
+      if (await packageExists(directCandidate)) return directCandidate
+    }
+    const parent = dirname(cursor)
+    if (parent === cursor) return null
+    cursor = parent
+  }
+}
+
+function lockKey(sourceRoot, packageRoot) {
+  const packageRelativePath = relative(sourceRoot, packageRoot)
+  if (packageRelativePath.startsWith('..') || isAbsolute(packageRelativePath)) {
+    throw new Error(`QMD dependency resolves outside source node_modules: ${packageRoot}`)
+  }
+  return `node_modules/${packageRelativePath.split(sep).join('/')}`
+}
+
+async function loadLockfile(lockfilePath) {
+  const lockfile = JSON.parse(await readFile(lockfilePath, 'utf8'))
+  if (!lockfile.packages || typeof lockfile.packages !== 'object') {
+    throw new Error(`QMD resource lockfile has no packages map: ${lockfilePath}`)
+  }
+  return lockfile.packages
+}
+
+/**
+ * Copy the lockfile-selected production closure of QMD into Electron's
+ * extraResources directory. Source-relative locations preserve nested
+ * production versions and their native package resolution.
+ */
+export async function prepareQmdResources({
+  sourceNodeModules,
+  destination,
+  lockfilePath = join(resolve(sourceNodeModules), '..', 'package-lock.json'),
+  platform = process.platform,
+  arch = process.arch,
+}) {
+  const sourceRoot = resolve(sourceNodeModules)
+  const destinationRoot = resolve(destination)
+  const packages = await loadLockfile(lockfilePath)
+  const selected = new Map()
+
+  async function visit(packageName, fromDirectory, required) {
+    const packageRoot = await resolvePackage(packageName, fromDirectory)
+    if (!packageRoot) {
+      if (required) throw new Error(`Cannot resolve QMD production dependency: ${packageName}`)
+      return
+    }
+
+    const packageLockKey = lockKey(sourceRoot, packageRoot)
+    const record = packages[packageLockKey]
+    if (!record || record.dev || !isCompatible(record, platform, arch)) return
+    if (selected.has(packageLockKey)) return
+    selected.set(packageLockKey, { packageName, packageRoot })
+
+    for (const dependencyName of Object.keys(record.dependencies ?? {})) {
+      await visit(dependencyName, packageRoot, true)
+    }
+    for (const dependencyName of Object.keys(record.optionalDependencies ?? {})) {
+      await visit(dependencyName, packageRoot, false)
+    }
+  }
+
+  const qmdRoot = await resolvePackage(QMD_PACKAGE, sourceRoot)
+  if (!qmdRoot) throw new Error(`Cannot resolve ${QMD_PACKAGE} from ${sourceRoot}`)
+  const qmdRecord = packages[lockKey(sourceRoot, qmdRoot)]
+  if (!qmdRecord || qmdRecord.version !== QMD_VERSION) {
+    throw new Error(`Expected ${QMD_PACKAGE}@${QMD_VERSION} in package-lock.json`)
+  }
+  await visit(QMD_PACKAGE, sourceRoot, true)
+
+  const destinationNodeModules = join(destinationRoot, 'node_modules')
+  await rm(destinationNodeModules, { recursive: true, force: true })
+  await mkdir(destinationNodeModules, { recursive: true })
+
+  for (const [packageLockKey, { packageRoot }] of selected) {
+    const packageRelativePath = packageLockKey.slice('node_modules/'.length)
+    const target = join(destinationNodeModules, packageRelativePath)
+    await mkdir(dirname(target), { recursive: true })
+    await cp(packageRoot, target, {
+      recursive: true,
+      force: true,
+      dereference: true,
+      filter: (source) => {
+        const nestedNodeModules = join(packageRoot, 'node_modules')
+        return source !== nestedNodeModules && !source.startsWith(`${nestedNodeModules}${sep}`)
+      },
+    })
+  }
+
+  return [...new Set([...selected.values()].map(({ packageName }) => packageName))].sort()
+}
+
+async function main() {
+  const scriptRoot = resolve(dirname(new URL(import.meta.url).pathname), '..')
+  const sourceNodeModules = process.env.QMD_SOURCE_NODE_MODULES ?? join(scriptRoot, 'node_modules')
+  const destination = process.env.QMD_RESOURCES_DIR ?? join(scriptRoot, 'build', 'qmd-resources')
+  const packages = await prepareQmdResources({ sourceNodeModules, destination })
+  console.log(`Prepared QMD resources: ${packages.length} production packages at ${destination}`)
+}
+
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+  })
+}
