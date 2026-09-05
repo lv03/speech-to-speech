@@ -471,6 +471,7 @@ def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadMana
         RealtimeAudioClient,
         RealtimeAudioClientConfig,
         load_realtime_tool_module,
+        load_realtime_tool_modules,
     )
 
     local_audio = args.local_audio_kwargs
@@ -481,7 +482,11 @@ def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadMana
     tool_executor = None
     tool_response_create = True
     if local_audio.local_audio_tool_module:
-        tools, tool_executor, tool_response_create = load_realtime_tool_module(local_audio.local_audio_tool_module)
+        module_names = [name.strip() for name in local_audio.local_audio_tool_module.split(",")]
+        if len(module_names) == 1:
+            tools, tool_executor, tool_response_create = load_realtime_tool_module(module_names[0])
+        else:
+            tools, tool_executor, tool_response_create = load_realtime_tool_modules(module_names)
     server_manager = build_pipeline(args, stop_event, host="127.0.0.1")
     # Surface the wake-word security gate's locked/unlocked state to stdout as
     # EVENT lines so the desktop app can mirror it (sleep the orb while locked,

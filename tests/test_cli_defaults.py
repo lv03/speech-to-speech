@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from dataclasses import fields
 from types import SimpleNamespace
@@ -473,6 +474,39 @@ def test_talk_loads_opt_in_tool_module(monkeypatch):
     assert config.tools == [tool]
     assert config.tool_executor is executor
     assert config.tool_response_create is False
+
+
+def test_talk_loads_multiple_tool_modules_in_declared_order(monkeypatch):
+    first_tool = {"type": "function", "name": "first", "parameters": {"type": "object"}}
+    second_tool = {"type": "function", "name": "second", "parameters": {"type": "object"}}
+
+    async def first_executor(_name, _arguments):
+        return "first-result"
+
+    async def second_executor(_name, _arguments):
+        return "second-result"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "test_cli_first_tools",
+        SimpleNamespace(TOOLS=[first_tool], execute_tool=first_executor, CREATE_RESPONSE=False),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "test_cli_second_tools",
+        SimpleNamespace(TOOLS=[second_tool], execute_tool=second_executor, CREATE_RESPONSE=True),
+    )
+
+    config = parse_talk_arguments(["--tool-module", "test_cli_first_tools,test_cli_second_tools"])
+
+    first_result = asyncio.run(config.tool_executor("first", {}))
+    second_result = asyncio.run(config.tool_executor("second", {}))
+    assert [tool["name"] for tool in config.tools] == ["first", "second"]
+    assert config.tool_response_create is True
+    assert first_result.output == "first-result"
+    assert first_result.create_response is False
+    assert second_result.output == "second-result"
+    assert second_result.create_response is True
 
 
 @pytest.mark.parametrize("flag", ["--host", "--port", "--base-url", "--websocket-base-url", "--stt"])

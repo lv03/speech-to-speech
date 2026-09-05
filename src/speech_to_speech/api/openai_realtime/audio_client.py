@@ -14,7 +14,7 @@ import json
 import logging
 import signal
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib import import_module
 from ipaddress import ip_address
@@ -91,6 +91,47 @@ def load_realtime_tool_module(module_name: str) -> tuple[list[dict[str, Any]], T
         raise ValueError(f"Tool module {module_name!r} CREATE_RESPONSE must be a boolean")
     _validate_tool_config(tools, executor)
     return tools, executor, create_response
+
+
+def load_realtime_tool_modules(module_names: Sequence[str]) -> tuple[list[dict[str, Any]], ToolExecutor, bool]:
+    """Load and merge several explicit Realtime tool module contracts.
+
+    Plain return values are wrapped with the originating module's
+    ``CREATE_RESPONSE`` policy so modules can keep independent defaults.
+    ``ToolResult`` values remain authoritative for individual calls.
+    """
+
+    names = [name.strip() for name in module_names]
+    if not names:
+        raise ValueError("At least one tool module is required")
+    if any(not name for name in names):
+        raise ValueError("Tool module names must not be empty")
+
+    merged_tools: list[dict[str, Any]] = []
+    executors: dict[str, tuple[ToolExecutor, bool]] = {}
+    module_defaults: list[bool] = []
+    for module_name in names:
+        tools, executor, create_response = load_realtime_tool_module(module_name)
+        module_defaults.append(create_response)
+        for tool in tools:
+            name = tool["name"]
+            if name in executors:
+                raise ValueError(f"Duplicate local client tool name: {name}")
+            merged_tools.append(tool)
+            executors[name] = (executor, create_response)
+
+    async def merged_executor(name: str, arguments: dict[str, Any]) -> Any:
+        try:
+            executor, create_response = executors[name]
+        except KeyError as exc:
+            raise ValueError(f"unknown tool {name!r}") from exc
+        result = await executor(name, arguments)
+        if isinstance(result, ToolResult):
+            return result
+        return ToolResult(result, create_response=create_response)
+
+    default_create_response = module_defaults[0] if len(module_defaults) == 1 else True
+    return merged_tools, merged_executor, default_create_response
 
 
 def _validate_tool_config(tools: list[dict[str, Any]], executor: ToolExecutor | None) -> dict[str, Any]:

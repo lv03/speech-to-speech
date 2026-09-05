@@ -12,6 +12,7 @@ import numpy as np
 from speech_to_speech.api.openai_realtime.audio_client import (
     RealtimeAudioClientConfig,
     load_realtime_tool_module,
+    load_realtime_tool_modules,
     run_realtime_audio_client,
 )
 from speech_to_speech.pipeline.transcript_logging import (
@@ -175,7 +176,11 @@ def parse_talk_arguments(argv: Sequence[str]) -> RealtimeAudioClientConfig:
     tool_executor = None
     tool_response_create = defaults.tool_response_create
     if namespace.tool_module:
-        tools, tool_executor, tool_response_create = load_realtime_tool_module(namespace.tool_module)
+        module_names = [name.strip() for name in namespace.tool_module.split(",")]
+        if len(module_names) == 1:
+            tools, tool_executor, tool_response_create = load_realtime_tool_module(module_names[0])
+        else:
+            tools, tool_executor, tool_response_create = load_realtime_tool_modules(module_names)
     return RealtimeAudioClientConfig(
         url=namespace.url,
         model=namespace.model,

@@ -20,6 +20,7 @@ from speech_to_speech.api.openai_realtime.audio_client import (
     build_session_update,
     handle_server_event,
     load_realtime_tool_module,
+    load_realtime_tool_modules,
     normalize_realtime_url,
     run_realtime_audio_client,
 )
@@ -217,6 +218,58 @@ def test_audio_client_loads_explicit_tool_module_contract(monkeypatch):
     assert tools == [TOOL_DEFINITION]
     assert loaded_executor is executor
     assert create_response is False
+
+
+def test_audio_client_merges_tool_modules_and_preserves_each_module_response_policy(monkeypatch):
+    first_tool = {"type": "function", "name": "fire_and_forget", "parameters": {"type": "object"}}
+    second_tool = {"type": "function", "name": "lookup", "parameters": {"type": "object"}}
+
+    async def first_executor(name, arguments):
+        assert (name, arguments) == ("fire_and_forget", {"value": 1})
+        return "queued"
+
+    async def second_executor(name, arguments):
+        assert (name, arguments) == ("lookup", {})
+        return ToolResult("found", create_response=True)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "test_first_tools",
+        SimpleNamespace(TOOLS=[first_tool], execute_tool=first_executor, CREATE_RESPONSE=False),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "test_second_tools",
+        SimpleNamespace(TOOLS=[second_tool], execute_tool=second_executor, CREATE_RESPONSE=True),
+    )
+
+    tools, executor, create_response = load_realtime_tool_modules(["test_first_tools", "test_second_tools"])
+
+    first_result = asyncio.run(executor("fire_and_forget", {"value": 1}))
+    second_result = asyncio.run(executor("lookup", {}))
+
+    assert tools == [first_tool, second_tool]
+    assert create_response is True
+    assert first_result == ToolResult("queued", create_response=False)
+    assert second_result == ToolResult("found", create_response=True)
+
+
+def test_audio_client_rejects_empty_or_duplicate_tool_modules(monkeypatch):
+    tool = {"type": "function", "name": "duplicate", "parameters": {"type": "object"}}
+    module = SimpleNamespace(TOOLS=[tool], execute_tool=noop_tool_executor, CREATE_RESPONSE=True)
+    monkeypatch.setitem(sys.modules, "test_duplicate_tools", module)
+
+    with pytest.raises(ValueError, match="At least one"):
+        load_realtime_tool_modules([])
+    with pytest.raises(ValueError, match="Duplicate local client tool name: duplicate"):
+        load_realtime_tool_modules(["test_duplicate_tools", "test_duplicate_tools"])
+
+
+def test_audio_client_does_not_silently_skip_a_tool_module(monkeypatch):
+    monkeypatch.setitem(sys.modules, "test_valid_tools", SimpleNamespace(TOOLS=[], execute_tool=noop_tool_executor))
+
+    with pytest.raises(ModuleNotFoundError):
+        load_realtime_tool_modules(["test_valid_tools", "module_that_does_not_exist"])
 
 
 @pytest.mark.parametrize("rate", [8000, 44100, 48000])
