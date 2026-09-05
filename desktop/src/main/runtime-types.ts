@@ -57,3 +57,43 @@ export interface KnowledgeSnapshot {
   state: RuntimeState
   collections: CollectionRecord[]
 }
+
+export interface QmdSearchResult {
+  docid: string
+  file: string
+  title: string
+  score: number
+  snippet: string
+  line?: number
+}
+
+export interface QmdStatus {
+  totalDocuments: number
+  needsEmbedding: number
+  hasVectorIndex: boolean
+  collections: Array<{ name: string; documents: number }>
+}
+
+export interface LineRange {
+  startLine: number
+  endLine: number
+}
+
+export interface KnowledgeSearchHit {
+  handle: string
+  collectionId: string
+  collectionName: string
+  relativeFile: string
+  title: string
+  score: number
+  snippet: string
+  line?: number
+}
+
+export interface KnowledgeDocument {
+  handle: string
+  collectionName: string
+  relativeFile: string
+  title: string
+  content: string
+}
