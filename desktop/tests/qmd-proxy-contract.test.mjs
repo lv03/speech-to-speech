@@ -200,6 +200,32 @@ test('returns sanitized health and never leaks absolute paths in public response
   })
 })
 
+test('filters path-like collection names and non-opaque handles at the public boundary', async () => {
+  await withProxy({
+    service: service({
+      search: async () => [{
+        handle: '#qmd-docid',
+        collectionId: 'col_123',
+        collectionName: '/Users/private/notes',
+        relativeFile: 'safe.md',
+        title: 'Safe',
+        score: 1,
+        snippet: 'safe',
+      }],
+    }),
+  }, async ({ url, token }) => {
+    const response = await fetch(`${url}/v1/search`, {
+      method: 'POST',
+      headers: headers(token),
+      body: JSON.stringify({ query: 'hello' }),
+    })
+    const body = await response.text()
+    expect(body).not.toContain('/Users/private/notes')
+    expect(body).not.toContain('#qmd-docid')
+    expect(JSON.parse(body)).toMatchObject({ status: 'no_results', results: [] })
+  })
+})
+
 test('truncates document content to at most 64 KiB without corrupting UTF-8', async () => {
   const content = '你'.repeat(30_000)
   await withProxy({

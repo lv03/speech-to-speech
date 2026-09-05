@@ -69,6 +69,12 @@ function hasPublicRelativeFile(value: unknown): value is string {
     !value.split('/').some((part) => part === '..' || part === '')
 }
 
+function hasPublicCollectionName(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 120 &&
+    !value.includes('\0') && !value.includes('/') && !value.includes('\\') &&
+    !/[\u0000-\u001f\u007f]/.test(value)
+}
+
 export class QmdProxy {
   private readonly service: KnowledgeService
   private readonly host: '127.0.0.1' | '::1'
@@ -231,7 +237,8 @@ export class QmdProxy {
           throw new KnowledgeError('invalid_request', 'Knowledge search request is invalid')
         }
         await this.readyForSearch()
-        const hits = (await this.service.search(query, collectionId, topK)).filter((hit) => hasPublicRelativeFile(hit.relativeFile))
+        const hits = (await this.service.search(query, collectionId, topK)).filter((hit) =>
+          HANDLE_PATTERN.test(hit.handle) && hasPublicCollectionName(hit.collectionName) && hasPublicRelativeFile(hit.relativeFile))
         hits.forEach((hit) => this.rememberHandle(hit.handle))
         this.send(response, 200, {
           status: hits.length > 0 ? 'ok' : 'no_results',
@@ -261,7 +268,8 @@ export class QmdProxy {
           throw new KnowledgeError('document_not_allowed', 'Document handle is not allowed')
         }
         const document = await this.service.getDocument(handle, { startLine, endLine })
-        if (!hasPublicRelativeFile(document.relativeFile)) {
+        if (!HANDLE_PATTERN.test(document.handle) || document.handle !== handle ||
+          !hasPublicCollectionName(document.collectionName) || !hasPublicRelativeFile(document.relativeFile)) {
           throw new KnowledgeError('document_not_allowed', 'Document handle is not allowed')
         }
         this.send(response, 200, {

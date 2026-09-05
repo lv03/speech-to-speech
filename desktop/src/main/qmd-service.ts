@@ -89,12 +89,17 @@ function normalizeSourcePath(file: string): string {
   return file.split(sep).join('/')
 }
 
+function validDisplayName(value: string): boolean {
+  return value.length > 0 && value.length <= 120 && !value.includes('\0') &&
+    !value.includes('/') && !value.includes('\\') && !/[\u0000-\u001f\u007f]/.test(value)
+}
+
 function validPersistedRecord(value: unknown): value is CollectionRecord {
   if (!value || typeof value !== 'object') return false
   const record = value as Partial<CollectionRecord>
   return (
     typeof record.collectionId === 'string' && /^col_[a-f0-9]{32}$/.test(record.collectionId) &&
-    typeof record.displayName === 'string' && record.displayName.length > 0 && record.displayName.length <= 120 &&
+    typeof record.displayName === 'string' && validDisplayName(record.displayName) &&
     typeof record.root === 'string' && isAbsolute(record.root) &&
     record.include === INCLUDE_PATTERN &&
     typeof record.enabled === 'boolean' &&
@@ -212,7 +217,7 @@ export class QmdService implements KnowledgeService {
         throw new KnowledgeError('collection_exists', 'This knowledge collection is already configured')
       }
       const name = (typeof displayName === 'string' ? displayName.trim() : '') || basename(canonicalRoot)
-      if (!name) throw new KnowledgeError('collection_invalid', 'Knowledge collection name is invalid')
+      if (!validDisplayName(name)) throw new KnowledgeError('collection_invalid', 'Knowledge collection name is invalid')
       const collectionId = `col_${randomBytes(16).toString('hex')}`
       const record: CollectionRecord = {
         collectionId,
