@@ -56,10 +56,11 @@ test('runs only fixed QMD index commands in the private QMD environment', async 
   ])
   expect(calls.every((call) => call.command === process.execPath)).toBe(true)
   expect(calls.every((call) => call.options.stdio === 'ignore')).toBe(true)
-  expect(calls.every((call) => call.options.env.INDEX_PATH === join(dataRoot, 'cache', 'qmd', 'index.sqlite'))).toBe(true)
-  expect(calls.every((call) => call.options.env.HOME === join(dataRoot, 'home'))).toBe(true)
-  expect(calls.every((call) => call.options.env.XDG_CONFIG_HOME === join(dataRoot, 'config'))).toBe(true)
-  expect(calls.every((call) => call.options.env.XDG_CACHE_HOME === join(dataRoot, 'cache'))).toBe(true)
+  expect(calls.every((call) => call.options.env.INDEX_PATH === join(dataRoot, 'qmd', 'cache', 'qmd', 'index.sqlite'))).toBe(true)
+  expect(calls.every((call) => call.options.env.HOME === join(dataRoot, 'qmd', 'home'))).toBe(true)
+  expect(calls.every((call) => call.options.env.XDG_CONFIG_HOME === join(dataRoot, 'qmd', 'config'))).toBe(true)
+  expect(calls.every((call) => call.options.env.QMD_CONFIG_DIR === join(dataRoot, 'qmd', 'config', 'qmd'))).toBe(true)
+  expect(calls.every((call) => call.options.env.XDG_CACHE_HOME === join(dataRoot, 'qmd', 'cache'))).toBe(true)
 })
 
 test('rejects arbitrary names, roots, and masks before spawning QMD', async () => {

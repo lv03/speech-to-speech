@@ -120,13 +120,16 @@ export class QmdRuntime {
   }
 
   private async environment(): Promise<NodeJS.ProcessEnv> {
-    const home = join(this.dataRoot, 'home')
-    const config = join(this.dataRoot, 'config')
-    const cache = join(this.dataRoot, 'cache')
+    const qmdRoot = join(this.dataRoot, 'qmd')
+    const home = join(qmdRoot, 'home')
+    const config = join(qmdRoot, 'config')
+    const cache = join(qmdRoot, 'cache')
+    const configDir = join(config, 'qmd')
     const indexPath = join(cache, 'qmd', 'index.sqlite')
     await Promise.all([
       mkdir(home, { recursive: true }),
       mkdir(config, { recursive: true }),
+      mkdir(configDir, { recursive: true }),
       mkdir(dirname(indexPath), { recursive: true }),
     ])
     return {
@@ -134,6 +137,7 @@ export class QmdRuntime {
       ELECTRON_RUN_AS_NODE: '1',
       HOME: home,
       XDG_CONFIG_HOME: config,
+      QMD_CONFIG_DIR: configDir,
       XDG_CACHE_HOME: cache,
       INDEX_PATH: indexPath,
       QMD_INDEX_PATH: indexPath,

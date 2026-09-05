@@ -41,7 +41,10 @@ test('downloads a model, reports progress, and returns a verified asset path', a
 
   expect(path).toBe(join(root, 'qmd', 'cache', 'qmd', 'models', 'embedding-1.0.0.gguf'))
   await expect(readFile(path, 'utf8')).resolves.toBe(content)
-  await expect(readFile(join(root, 'qmd', 'config', 'qmd', 'index.yml'), 'utf8')).resolves.toContain(`embed: ${path}`)
+  const config = await readFile(join(root, 'qmd', 'config', 'qmd', 'index.yml'), 'utf8')
+  expect(config).toContain(`embed: ${path}`)
+  expect(config).toContain(`rerank: ${path}`)
+  expect(config).toContain(`generate: ${path}`)
   await expect(store.inspect('embedding')).resolves.toMatchObject({ present: true, bytes: content.length })
   expect(progress.at(-1)).toMatchObject({ assetId: 'embedding', completed: content.length, total: content.length })
 })

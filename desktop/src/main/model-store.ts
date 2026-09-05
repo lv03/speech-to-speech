@@ -80,7 +80,10 @@ export class ModelStore {
       if (code !== 'ENOENT') throw error
     }
 
-    config.models = { embed: path }
+    // v1 only invokes vec-only search. Point every QMD model role at the
+    // verified local asset so an accidental non-vec call cannot trigger an
+    // implicit hf: download; rerank/generate are not loaded in this profile.
+    config.models = { embed: path, rerank: path, generate: path }
     const directory = join(this.root, 'qmd', 'config', 'qmd')
     await mkdir(directory, { recursive: true, mode: 0o700 })
     const temporary = `${configPath}.tmp`
