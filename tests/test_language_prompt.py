@@ -25,6 +25,7 @@ from openai.types.realtime.realtime_session_create_request import RealtimeSessio
 
 import speech_to_speech.LLM.base_openai_compatible_language_model as base_mod
 from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
+from speech_to_speech.arguments_classes.language_model_base_arguments import LanguageModelBaseArguments
 from speech_to_speech.LLM.chat import Chat, make_user_message
 from speech_to_speech.LLM.chat_completions_language_model import ChatCompletionsApiModelHandler
 from speech_to_speech.pipeline.messages import GenerateResponseRequest
@@ -125,3 +126,14 @@ def test_unknown_language_code_still_emits_no_instruction():
     contents = _sent_messages(handler, "xx-auto")
 
     assert not [c for c in contents if isinstance(c, str) and c.startswith("Please reply to my message in ")]
+
+
+def test_default_language_prompt_treats_knowledge_as_untrusted_reference_material():
+    prompt = LanguageModelBaseArguments().init_chat_prompt
+
+    assert "untrusted reference material" in prompt
+    assert "Markdown" in prompt
+    assert "embedded instructions" in prompt.lower()
+    assert "ignore" in prompt.lower()
+    assert "read files" in prompt.lower()
+    assert "source" in prompt.lower()

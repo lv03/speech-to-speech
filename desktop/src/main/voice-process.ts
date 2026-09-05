@@ -23,6 +23,10 @@ export interface VoiceOptions {
   securityTimeoutS?: number
   /** Gateway URL（透传给语音引擎的工具模块） */
   gatewayUrl?: string
+  /** Knowledge proxy loopback URL（只通过子进程环境注入） */
+  qmdProxyUrl?: string
+  /** Knowledge proxy bearer token（只通过子进程环境注入） */
+  qmdProxyToken?: string
   /** 就绪探测超时（ms） */
   startupTimeoutMs?: number
   /** 打印 Realtime JSON 事件（供状态动画） */
@@ -59,6 +63,28 @@ export interface VoiceOptions {
   llmReasoningEffort?: 'none' | 'low' | 'medium' | 'high'
 }
 
+export interface VoiceEnvironmentOptions {
+  baseEnv?: NodeJS.ProcessEnv
+  gatewayUrl: string
+  qmdProxyUrl?: string
+  qmdProxyToken?: string
+  llmApiKey?: string
+}
+
+/** Build the child-only environment without putting knowledge credentials in argv. */
+export function buildVoiceEnvironment(options: VoiceEnvironmentOptions): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...(options.baseEnv ?? process.env) }
+  env.GATEWAY_URL = options.gatewayUrl
+  delete env.QMD_PROXY_URL
+  delete env.QMD_PROXY_TOKEN
+  if (options.qmdProxyUrl && options.qmdProxyToken) {
+    env.QMD_PROXY_URL = options.qmdProxyUrl
+    env.QMD_PROXY_TOKEN = options.qmdProxyToken
+  }
+  if (options.llmApiKey) env.OPENAI_API_KEY = options.llmApiKey
+  return env
+}
+
 /**
  * 内嵌启动 speech-to-speech local（语音引擎 + 麦克风/扬声器回环客户端），
  * 挂上 Agent Gateway 工具模块与（可选）唤醒词。
@@ -75,6 +101,8 @@ export class EmbeddedVoice {
   private readonly wakeWord: string
   private readonly securityTimeoutS: number
   private readonly gatewayUrl: string
+  private readonly qmdProxyUrl: string
+  private readonly qmdProxyToken: string
   private readonly startupTimeoutMs: number
   private readonly printJson: boolean
   private readonly onEvent: ((event: Record<string, unknown>) => void) | undefined
@@ -101,6 +129,8 @@ export class EmbeddedVoice {
     this.wakeWord = options.wakeWord || '你好，噜噜'
     this.securityTimeoutS = Math.max(0, options.securityTimeoutS ?? 60)
     this.gatewayUrl = options.gatewayUrl || process.env.GATEWAY_URL || 'http://127.0.0.1:3101'
+    this.qmdProxyUrl = options.qmdProxyUrl || ''
+    this.qmdProxyToken = options.qmdProxyToken || ''
     this.startupTimeoutMs = options.startupTimeoutMs ?? 300_000
     this.printJson = options.printJson ?? true
     this.onEvent = options.onEvent
@@ -127,7 +157,7 @@ export class EmbeddedVoice {
   private buildArgs(): string[] {
     const args = [
       '-m', 'speech_to_speech.cli', 'local',
-      '--tool-module', 'speech_to_speech.tools.agent_gateway',
+      '--tool-module', 'speech_to_speech.tools.agent_gateway,speech_to_speech.tools.qmd_knowledge',
       '--port', String(this.port),
       '--stt', this.sttBackend,
       '--tts', this.ttsBackend,
@@ -233,14 +263,12 @@ export class EmbeddedVoice {
   async start(): Promise<void> {
     if (this.running) return
 
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      // 语音引擎的工具模块据此定位 Gateway
-      GATEWAY_URL: this.gatewayUrl,
-    }
-    if (this.llmApiKey) {
-      env.OPENAI_API_KEY = this.llmApiKey
-    }
+    const env = buildVoiceEnvironment({
+      gatewayUrl: this.gatewayUrl,
+      qmdProxyUrl: this.qmdProxyUrl,
+      qmdProxyToken: this.qmdProxyToken,
+      llmApiKey: this.llmApiKey,
+    })
 
     this.child = spawn(this.python, this.buildArgs(), {
       cwd: this.root,
