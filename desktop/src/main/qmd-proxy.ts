@@ -70,7 +70,7 @@ function hasPublicRelativeFile(value: unknown): value is string {
 }
 
 function hasPublicCollectionName(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= 120 &&
+  return typeof value === 'string' && value !== '.' && value !== '..' && value.length > 0 && value.length <= 120 &&
     !value.includes('\0') && !value.includes('/') && !value.includes('\\') &&
     !/[\u0000-\u001f\u007f]/.test(value)
 }

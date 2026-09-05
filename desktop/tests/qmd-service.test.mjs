@@ -63,6 +63,12 @@ test('canonicalizes roots, rejects duplicate directories, and rebuilds a deleted
   await expect(readFile(join(notes, 'safe.md'), 'utf8')).resolves.toBe('# safe\n')
 })
 
+test('rejects dot-segment collection names', async () => {
+  const { notes, service } = await fixture()
+  await expect(service.addCollection(notes, '.')).rejects.toMatchObject({ code: 'collection_invalid' })
+  await expect(service.addCollection(notes, '..')).rejects.toMatchObject({ code: 'collection_invalid' })
+})
+
 test('uses a single-writer queue for collection mutations', async () => {
   const root = await mkdtemp(join(tmpdir(), 's2s-qmd-queue-'))
   const firstRoot = join(root, 'first')

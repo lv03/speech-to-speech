@@ -226,6 +226,57 @@ test('filters path-like collection names and non-opaque handles at the public bo
   })
 })
 
+test('rejects dot-segment collection names in search and document responses', async () => {
+  await withProxy({
+    service: service({
+      search: async () => [{
+        handle: HANDLE,
+        collectionId: 'col_123',
+        collectionName: '..',
+        relativeFile: 'safe.md',
+        title: 'Safe',
+        score: 1,
+        snippet: 'safe',
+      }],
+    }),
+  }, async ({ url, token }) => {
+    const response = await fetch(`${url}/v1/search`, {
+      method: 'POST',
+      headers: headers(token),
+      body: JSON.stringify({ query: 'hello' }),
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ status: 'no_results', results: [] })
+  })
+
+  await withProxy({
+    service: service({
+      getDocument: async (handle) => ({
+        handle,
+        collectionName: '.',
+        relativeFile: 'safe.md',
+        title: 'Safe',
+        content: 'trusted content',
+      }),
+    }),
+  }, async ({ url, token }) => {
+    const requestHeaders = headers(token)
+    const search = await fetch(`${url}/v1/search`, {
+      method: 'POST',
+      headers: requestHeaders,
+      body: JSON.stringify({ query: 'hello' }),
+    })
+    const handle = (await search.json()).results[0].handle
+    const response = await fetch(`${url}/v1/document`, {
+      method: 'POST',
+      headers: requestHeaders,
+      body: JSON.stringify({ handle }),
+    })
+    expect(response.status).toBe(403)
+    expect(await response.json()).toMatchObject({ code: 'document_not_allowed' })
+  })
+})
+
 test('truncates document content to at most 64 KiB without corrupting UTF-8', async () => {
   const content = '你'.repeat(30_000)
   await withProxy({

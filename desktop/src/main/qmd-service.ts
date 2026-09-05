@@ -90,7 +90,7 @@ function normalizeSourcePath(file: string): string {
 }
 
 function validDisplayName(value: string): boolean {
-  return value.length > 0 && value.length <= 120 && !value.includes('\0') &&
+  return value !== '.' && value !== '..' && value.length > 0 && value.length <= 120 && !value.includes('\0') &&
     !value.includes('/') && !value.includes('\\') && !/[\u0000-\u001f\u007f]/.test(value)
 }
 
