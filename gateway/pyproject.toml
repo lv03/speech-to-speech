@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=77.0.3", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "speech-to-speech-gateway"
+version = "0.1.0"
+description = "Embedded agent gateway for speech-to-speech desktop builds"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "pydantic>=2.0",
+    "uvicorn>=0.30.0",
+]
+
+[tool.setuptools]
+packages = ["gateway", "gateway.agent_adapter"]
+package-dir = { gateway = ".", "gateway.agent_adapter" = "agent_adapter" }
