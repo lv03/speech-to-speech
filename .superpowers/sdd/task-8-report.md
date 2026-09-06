@@ -13,7 +13,7 @@ npx vitest run tests/verify-package.test.mjs
 Result: PASS (1 file, 6 tests)
 
 npm test
-Result: PASS (Vitest: 15 files, 95 tests; Node: 9 tests)
+Result: the final checkout's Vitest phase has 1 unrelated failure in `tests/qmd-service.test.mjs` (the existing public-docid assertion); 14 files pass and the Node phase is not reached because the script uses `&&`.
 
 npm run typecheck
 Result: PASS
@@ -46,3 +46,5 @@ The built main was also started by the Electron executable with a temporary app 
 ## Concerns
 
 Real macOS arm64 package acceptance remains pending the manually supplied, version-matched runtime bundle and embedding GGUF smoke asset. The local tests verify the contracts and the actual Electron dispatch/resource failure boundary, but cannot replace the CI smoke with real QMD native resources, standalone Python, wheelhouse, and model data.
+
+The broader desktop suite also contains an existing out-of-scope `qmd-service`/test mismatch around the public docid contract. It was left untouched because those files belong to the parallel QMD service slice; the focused package-verification suite and typecheck remain green.
