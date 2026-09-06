@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, net, Notification, protocol, Tray } from 'electron'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -8,16 +8,9 @@ import { EmbeddedGateway } from './gateway-process'
 import { EmbeddedVoice } from './voice-process'
 import { SettingsStore, type DesktopSettings } from './settings'
 import { SecretStore } from './secret-store'
-import type { CollectionRecord, KnowledgeModelStatus, KnowledgeSnapshot, RuntimeManifest } from './runtime-types'
+import type { CollectionRecord, KnowledgeSnapshot } from './runtime-types'
 import { QmdService } from './qmd-service'
 import { QmdIndexer } from './qmd-indexer'
-import { QmdProxy, type QmdProxyEndpoint } from './qmd-proxy'
-import { QmdMcpClient } from './qmd-mcp-client'
-import { ModelStore } from './model-store'
-import { QmdRuntime } from './qmd-runtime'
-import { RuntimeManager, startProcessesInOrder, stopProcessesInOrder } from './runtime-manager'
-import { PythonRuntime } from './python-runtime'
-import type { RuntimePaths } from './runtime-types'
 import { listSkins, skinDirectories, type SkinInfo } from './skin-catalog'
 import { isVoiceActivityState, shouldDelegateOrbSleepToVoice } from '../shared/visibility-policy.js'
 
@@ -37,24 +30,12 @@ let voice: EmbeddedVoice | null = null
 let settingsStore: SettingsStore | null = null
 let secretStore: SecretStore | null = null
 let knowledgeService: QmdService | null = null
-let knowledgeProxy: QmdProxy | null = null
-let knowledgeProxyEndpoint: QmdProxyEndpoint | null = null
-let runtimeManager: RuntimeManager | null = null
-let pythonRuntime: PythonRuntime | null = null
-let pythonRuntimePaths: RuntimePaths | null = null
-let runtimeManifestError: string | null = null
 let skinsCache: SkinInfo[] = []
 let hideTimer: NodeJS.Timeout | null = null
 let gatewayWs: WebSocket | null = null
 const announcedTaskIds = new Set<string>()
 let pendingSpeak: string[] = []
 let voiceOwnsVisibility = false
-
-function pushKnowledgeSnapshot(snapshot: { state: string; model: KnowledgeModelStatus; collections: PublicKnowledgeCollection[] }): void {
-  if (settingsWindow && !settingsWindow.isDestroyed()) {
-    settingsWindow.webContents.send('knowledge:snapshot-changed', snapshot)
-  }
-}
 
 /** 影响运行中语音引擎行为的设置字段（变化时需重启引擎才生效）。 */
 const VOICE_AFFECTING_FIELDS = [
@@ -64,71 +45,6 @@ const VOICE_AFFECTING_FIELDS = [
 ] as const
 
 const COLLECTION_ID = /^col_[a-f0-9]{32}$/
-
-const EMPTY_RUNTIME_MANIFEST: RuntimeManifest = {
-  schemaVersion: 1,
-  platform: 'darwin-arm64',
-  pythonAbi: 'unavailable',
-  profile: 'voice-default',
-  assets: [],
-}
-
-function loadRuntimeManifest(): { manifest: RuntimeManifest; error?: string } {
-  const manifestPath = app.isPackaged
-    ? join(process.resourcesPath, 'runtime-manifest.json')
-    : process.env.RUNTIME_MANIFEST_PATH
-  if (!manifestPath) {
-    return { manifest: EMPTY_RUNTIME_MANIFEST, error: 'Knowledge runtime manifest is unavailable' }
-  }
-  try {
-    const parsed = JSON.parse(readFileSync(manifestPath, 'utf8')) as RuntimeManifest
-    if (
-      parsed.schemaVersion !== 1 || parsed.platform !== 'darwin-arm64' ||
-      parsed.profile !== 'voice-default' || typeof parsed.pythonAbi !== 'string' ||
-      !Array.isArray(parsed.assets)
-    ) {
-      throw new Error('Knowledge runtime manifest is invalid')
-    }
-    const kinds = new Set<string>()
-    for (const candidate of parsed.assets) {
-      if (!candidate || typeof candidate !== 'object') throw new Error('Knowledge runtime manifest is invalid')
-      const asset = candidate as unknown as Record<string, unknown>
-      if (
-        typeof asset.id !== 'string' || !asset.id || kinds.has(asset.kind as string) ||
-        typeof asset.version !== 'string' || !asset.version ||
-        typeof asset.kind !== 'string' ||
-        !['python-runtime', 'wheelhouse', 'qmd', 'model'].includes(asset.kind) ||
-        typeof asset.install !== 'string' || !['resources', 'userData'].includes(asset.install) ||
-        (asset.install === 'userData' && asset.kind !== 'model') ||
-        (asset.install === 'resources' && (typeof asset.path !== 'string' || isAbsolute(asset.path) || asset.path.split('/').some((part) => part === '..'))) ||
-        (asset.install === 'userData' && asset.path !== undefined) ||
-        typeof asset.url !== 'string' || new URL(asset.url).protocol !== 'https:' ||
-        typeof asset.size !== 'number' || !Number.isSafeInteger(asset.size) || asset.size <= 0 ||
-        typeof asset.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(asset.sha256)
-      ) {
-        throw new Error('Knowledge runtime manifest is invalid')
-      }
-      kinds.add(asset.kind)
-    }
-    if (['python-runtime', 'wheelhouse', 'qmd', 'model'].some((kind) => !kinds.has(kind))) {
-      throw new Error('Knowledge runtime manifest is incomplete')
-    }
-    return { manifest: parsed }
-  } catch (error) {
-    return {
-      manifest: EMPTY_RUNTIME_MANIFEST,
-      error: 'Knowledge runtime manifest is invalid or unavailable',
-    }
-  }
-}
-
-async function ensurePythonRuntime(): Promise<RuntimePaths> {
-  if (pythonRuntimePaths) return pythonRuntimePaths
-  if (runtimeManifestError) throw new Error(runtimeManifestError)
-  if (!pythonRuntime) throw new Error('Python runtime is not initialized')
-  pythonRuntimePaths = await pythonRuntime.ensureReady()
-  return pythonRuntimePaths
-}
 
 export interface PublicKnowledgeCollection {
   collectionId: string
@@ -140,7 +56,7 @@ export interface PublicKnowledgeCollection {
 
 export interface PublicKnowledgeSnapshot {
   state: string
-  model: KnowledgeModelStatus
+  model: { downloadBytes: number; diskBytes: number; state: string }
   collections: PublicKnowledgeCollection[]
 }
 
@@ -154,19 +70,13 @@ export interface KnowledgeIpcHandlers {
 }
 
 interface KnowledgeIpcDependencies {
-  service: {
-    snapshot: () => Promise<KnowledgeSnapshot>
-    addCollection: (root: string) => Promise<unknown>
-    removeCollection: (collectionId: string) => Promise<void>
-    reindex: (collectionId: string, confirmed?: boolean) => Promise<void>
-    deleteIndex: (collectionId: string) => Promise<void>
-  }
+  service: Pick<QmdService, 'snapshot' | 'addCollection' | 'removeCollection' | 'reindex' | 'deleteIndex'>
   pickDirectory: () => Promise<{ canceled: boolean; filePaths: string[] }>
-  modelStatus: () => Promise<KnowledgeModelStatus>
+  modelStatus: () => Promise<{ downloadBytes: number; diskBytes: number; state: string }>
   cancel: () => void
 }
 
-function publicKnowledgeSnapshot(snapshot: KnowledgeSnapshot, model: KnowledgeModelStatus): PublicKnowledgeSnapshot {
+function publicKnowledgeSnapshot(snapshot: KnowledgeSnapshot, model: { downloadBytes: number; diskBytes: number; state: string }): PublicKnowledgeSnapshot {
   return {
     state: snapshot.state.name,
     model,
@@ -185,19 +95,6 @@ function assertCollectionId(value: unknown): string {
   return value
 }
 
-function mapKnowledgeIpcError(error: unknown): Error {
-  const code = typeof error === 'object' && error !== null && 'code' in error
-    ? String((error as { code?: unknown }).code)
-    : ''
-  const messages: Record<string, string> = {
-    collection_limit: '知识库最多支持 32 个已启用目录',
-    collection_exists: '该知识库目录已经添加',
-    collection_invalid: '知识库目录无效',
-    operation_in_progress: '知识库已有操作正在进行',
-  }
-  return new Error(messages[code] ?? (error instanceof Error ? error.message : '知识库操作失败'))
-}
-
 /** Main-process-only adapter for the fixed, renderer-safe knowledge IPC contract. */
 export function createKnowledgeIpcHandlers(dependencies: KnowledgeIpcDependencies): KnowledgeIpcHandlers {
   const snapshot = async (): Promise<PublicKnowledgeSnapshot> => publicKnowledgeSnapshot(
@@ -207,41 +104,25 @@ export function createKnowledgeIpcHandlers(dependencies: KnowledgeIpcDependencie
   return {
     snapshot,
     async addCollection(): Promise<PublicKnowledgeSnapshot> {
-      try {
-        const result = await dependencies.pickDirectory()
-        if (!result.canceled && result.filePaths.length === 1 && typeof result.filePaths[0] === 'string') {
-          await dependencies.service.addCollection(result.filePaths[0])
-        }
-        return snapshot()
-      } catch (error) {
-        throw mapKnowledgeIpcError(error)
+      const result = await dependencies.pickDirectory()
+      if (!result.canceled && result.filePaths.length === 1 && typeof result.filePaths[0] === 'string') {
+        await dependencies.service.addCollection(result.filePaths[0])
       }
+      return snapshot()
     },
     async removeCollection(collectionId: unknown): Promise<PublicKnowledgeSnapshot> {
-      try {
-        await dependencies.service.removeCollection(assertCollectionId(collectionId))
-        return snapshot()
-      } catch (error) {
-        throw mapKnowledgeIpcError(error)
-      }
+      await dependencies.service.removeCollection(assertCollectionId(collectionId))
+      return snapshot()
     },
     async reindex(collectionId: unknown, confirmed?: unknown): Promise<PublicKnowledgeSnapshot> {
-      try {
-        const model = await dependencies.modelStatus()
-        if (model.state === 'needs_consent' && confirmed !== true) throw new Error('Model download confirmation is required')
-        await dependencies.service.reindex(assertCollectionId(collectionId), confirmed === true)
-        return snapshot()
-      } catch (error) {
-        throw mapKnowledgeIpcError(error)
-      }
+      const model = await dependencies.modelStatus()
+      if (model.state === 'needs_consent' && confirmed !== true) throw new Error('Model download confirmation is required')
+      await dependencies.service.reindex(assertCollectionId(collectionId))
+      return snapshot()
     },
     async deleteIndex(collectionId: unknown): Promise<PublicKnowledgeSnapshot> {
-      try {
-        await dependencies.service.deleteIndex(assertCollectionId(collectionId))
-        return snapshot()
-      } catch (error) {
-        throw mapKnowledgeIpcError(error)
-      }
+      await dependencies.service.deleteIndex(assertCollectionId(collectionId))
+      return snapshot()
     },
     cancel: () => dependencies.cancel(),
   }
@@ -444,26 +325,12 @@ function showSettings(): void {
 
 async function startGateway(): Promise<void> {
   const settings = settingsStore?.get() ?? { gatewayPort: 3101 }
-  const runtime = await ensurePythonRuntime()
-  gateway = new EmbeddedGateway({
-    port: settings.gatewayPort,
-    runtime,
-    mode: app.isPackaged ? 'packaged' : 'development',
-  })
+  gateway = new EmbeddedGateway({ port: settings.gatewayPort })
   const url = await gateway.start()
   console.log(`[desktop] gateway ready at ${url}`)
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('gateway:ready', url)
   }
-}
-
-async function startKnowledgeProxy(): Promise<void> {
-  if (knowledgeProxy && knowledgeProxyEndpoint) return
-  if (!knowledgeService) throw new Error('Knowledge service is not initialized')
-  const proxy = new QmdProxy({ service: knowledgeService })
-  const endpoint = await proxy.start()
-  knowledgeProxy = proxy
-  knowledgeProxyEndpoint = endpoint
 }
 
 async function startVoice(): Promise<void> {
@@ -480,17 +347,12 @@ async function startVoice(): Promise<void> {
   if (voiceOwnsVisibility) {
     clearHideTimer()
   }
-  const runtime = await ensurePythonRuntime()
   pushVoiceStatus('starting')
   const v = new EmbeddedVoice({
-    runtime,
-    mode: app.isPackaged ? 'packaged' : 'development',
     wakeWordEnabled: settings.wakeWordEnabled,
     wakeWord: settings.wakeWord,
     securityTimeoutS: settings.autoHideSeconds,
     gatewayUrl: gatewayUrl() ?? 'http://127.0.0.1:3101',
-    qmdProxyUrl: knowledgeProxyEndpoint?.url,
-    qmdProxyToken: knowledgeProxyEndpoint?.token,
     voiceprintEnabled: settings.enableVoiceprint,
     voiceprintThreshold: settings.voiceprintThreshold,
     llmBackend: settings.llmBackend,
@@ -750,11 +612,14 @@ function voiceprintPath(): string {
   return join(homedir(), '.cache', 'speech_to_speech', 'voiceprint', 'default.npz')
 }
 
+function pythonForCommands(): string {
+  return process.env.GATEWAY_PYTHON || join(__dirname, '../../../.venv/bin/python')
+}
+
 /** spawn 一个 voiceprint 子命令，stdout/stderr 实时推送给设置窗口。 */
 async function runVoiceprintCommand(args: string[]): Promise<{ ok: boolean; output: string }> {
-  const runtime = await ensurePythonRuntime()
   return new Promise((resolvePromise) => {
-    const child = spawn(runtime.python, args, { cwd: runtime.appRoot })
+    const child = spawn(pythonForCommands(), args, { cwd: resolve(__dirname, '../../..') })
     let output = ''
     const onChunk = (chunk: Buffer) => {
       const text = chunk.toString()
@@ -782,13 +647,12 @@ interface VoiceprintStatus {
 }
 
 /** 读取声纹档案元信息（JSON）；文件不存在或解析失败返回 null。 */
-async function runVoiceprintInfoJson(): Promise<Record<string, unknown> | null> {
-  const runtime = await ensurePythonRuntime()
+function runVoiceprintInfoJson(): Promise<Record<string, unknown> | null> {
   return new Promise((resolvePromise) => {
     const child = spawn(
-      runtime.python,
+      pythonForCommands(),
       ['-m', 'speech_to_speech.cli', 'voiceprint', 'info', '--json', '--profile', voiceprintPath()],
-      { cwd: runtime.appRoot },
+      { cwd: resolve(__dirname, '../../..') },
     )
     let output = ''
     child.stdout?.on('data', (chunk) => {
@@ -852,13 +716,7 @@ async function gatewayFetch(path: string, init?: RequestInit): Promise<unknown> 
 
 // ── 生命周期 ───────────────────────────────────────────────────────────
 
-if (process.argv.includes('--package-verify')) {
-  const packageVerifyEntry = new URL('./packageVerify.js', import.meta.url).href
-  void import(packageVerifyEntry).catch(() => {
-    process.stderr.write('PACKAGE_VERIFY_FAILED:runtime\n')
-    process.exitCode = 1
-  })
-} else {
+if (!process.argv.includes('--package-verify')) {
 app.whenReady().then(async () => {
   if (process.platform === 'darwin') {
     app.setActivationPolicy('accessory')
@@ -873,33 +731,6 @@ app.whenReady().then(async () => {
     metadataPath: join(app.getPath('userData'), 'knowledge', 'collections.json'),
     runner: new QmdIndexer({ resourceRoot: qmdResourceRoot, dataRoot: app.getPath('userData') }),
   })
-  const runtimeManifestResult = loadRuntimeManifest()
-  const runtimeManifest = runtimeManifestResult.manifest
-  runtimeManifestError = runtimeManifestResult.error ?? null
-  pythonRuntime = new PythonRuntime({
-    userDataDir: app.getPath('userData'),
-    manifest: runtimeManifest,
-    packagedRoot: app.isPackaged ? join(process.resourcesPath, 'runtime') : undefined,
-    devRoot: app.isPackaged ? undefined : resolve(__dirname, '../../..'),
-  })
-  const modelAsset = runtimeManifest.assets.find((asset) => asset.kind === 'model')
-  const qmdRuntime = new QmdRuntime({ resourceRoot: qmdResourceRoot, dataRoot: app.getPath('userData') })
-  const qmdClient = new QmdMcpClient({ endpoint: () => qmdRuntime.endpoint?.baseUrl ?? '' })
-  runtimeManager = new RuntimeManager({
-    service: knowledgeService,
-    modelStore: new ModelStore({ root: app.getPath('userData'), manifest: runtimeManifest }),
-    modelAssetId: modelAsset?.id ?? 'embedding',
-    modelDownloadBytes: modelAsset?.size ?? 0,
-    modelDiskBytes: modelAsset?.size ?? 0,
-    modelUnavailableReason: runtimeManifestResult.error,
-    qmdRuntime,
-    qmdClient,
-    invalidateHandles: () => knowledgeProxy?.invalidateHandles(),
-  })
-  runtimeManager.subscribe((snapshot) => pushKnowledgeSnapshot(snapshot))
-  if (runtimeManifestResult.error) {
-    console.error('[desktop] 知识库运行时不可用：', runtimeManifestResult.error)
-  }
   refreshSkins()
   registerSkinProtocol()
 
@@ -1026,13 +857,14 @@ app.whenReady().then(async () => {
     return { ...(saved ?? {}), llmApiKeyPresent: secretStore?.hasLlmApiKey() ?? false }
   })
   const knowledgeHandlers = createKnowledgeIpcHandlers({
-    service: runtimeManager!,
+    service: knowledgeService,
     pickDirectory: () => dialog.showOpenDialog(settingsWindow ?? mainWindow!, {
       title: '选择知识库目录',
       properties: ['openDirectory'],
     }),
-    modelStatus: () => runtimeManager!.modelStatus(),
-    cancel: () => runtimeManager!.cancel(),
+    // RuntimeManager replaces this provider in Task 7; Task 5 never starts a download itself.
+    modelStatus: async () => ({ downloadBytes: 0, diskBytes: 0, state: 'needs_consent' }),
+    cancel: () => undefined,
   })
   ipcMain.handle('knowledge:snapshot', () => knowledgeHandlers.snapshot())
   ipcMain.handle('knowledge:add-collection', () => knowledgeHandlers.addCollection())
@@ -1059,13 +891,11 @@ app.whenReady().then(async () => {
   registerWakeShortcut(settingsStore?.get().wakeShortcut ?? '')
   recordActivity()
 
-  void startProcessesInOrder({
-    gateway: startGateway,
-    subscribeGatewayEvents,
-    proxy: startKnowledgeProxy,
-    restoreIndexes: () => runtimeManager?.restoreExistingIndexes() ?? Promise.resolve(),
-    voice: startVoice,
-  })
+  void startGateway()
+    .then(() => {
+      subscribeGatewayEvents()
+      return startVoice()
+    })
     .catch((error) => {
       console.error('[desktop] 服务启动失败：', error)
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1075,6 +905,14 @@ app.whenReady().then(async () => {
 
   app.on('activate', () => showOrb())
 })
+}
+
+if (process.argv.includes('--package-verify')) {
+  const packageVerifyEntry = new URL('./packageVerify.js', import.meta.url).href
+  void import(packageVerifyEntry).catch(() => {
+    process.stderr.write('PACKAGE_VERIFY_FAILED:runtime\n')
+    process.exitCode = 1
+  })
 }
 
 app.on('window-all-closed', () => {
@@ -1087,28 +925,23 @@ app.on('before-quit', () => {
 })
 
 app.on('will-quit', (event) => {
-  console.log('[desktop] will-quit fired (gateway=%s proxy=%s voice=%s)', !!gateway, !!knowledgeProxy, !!voice)
+  console.log('[desktop] will-quit fired (gateway=%s voice=%s)', !!gateway, !!voice)
   globalShortcut.unregisterAll()
   clearHideTimer()
   gatewayWs?.close()
   gatewayWs = null
-  if (!gateway && !knowledgeProxy && !voice) return
+  if (!gateway && !voice) return
   event.preventDefault()
-  const stoppingVoice = voice
-  const stoppingProxy = knowledgeProxy
-  const stoppingGateway = gateway
-  const stoppingRuntime = runtimeManager
-  voice = null
-  knowledgeProxy = null
-  knowledgeProxyEndpoint = null
-  gateway = null
-  runtimeManager = null
-  void stopProcessesInOrder({
-    voice: stoppingVoice ? () => stoppingVoice.stop() : undefined,
-    proxy: stoppingProxy ? () => stoppingProxy.stop() : undefined,
-    qmd: stoppingRuntime ? () => stoppingRuntime.stop() : undefined,
-    gateway: stoppingGateway ? () => stoppingGateway.stop() : undefined,
-  }).then(() => {
-    app.quit()
-  })
+  const stops: Promise<void>[] = []
+  if (voice) {
+    const v = voice
+    voice = null
+    stops.push(v.stop())
+  }
+  if (gateway) {
+    const g = gateway
+    gateway = null
+    stops.push(g.stop())
+  }
+  void Promise.allSettled(stops).finally(() => app.quit())
 })
