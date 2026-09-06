@@ -9,13 +9,15 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "test:vitest": "vitest run --exclude tests/hotwords.test.mjs --exclude tests/visibility-policy.test.mjs",
-    "test:node": "node --test tests/hotwords.test.mjs tests/visibility-policy.test.mjs",
+    "test:vitest": "vitest run --exclude tests/hotwords.test.mjs --exclude tests/visibility-policy.test.mjs --exclude tests/voice-process-tools.test.mjs",
+    "test:node": "node --test tests/hotwords.test.mjs tests/visibility-policy.test.mjs tests/voice-process-tools.test.mjs",
     "test": "npm run test:vitest && npm run test:node # npm appends CLI arguments to the final command",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "prepare:qmd": "node scripts/prepare-qmd-resources.mjs",
-    "dist": "npm run prepare:qmd && electron-vite build && electron-builder",
-    "dist:mac": "npm run prepare:qmd && electron-vite build && electron-builder --mac"
+    "prepare:qmd:bundle": "rm -rf build/qmd-resources && mkdir -p build/qmd-resources && cp -R \"$QMD_BUNDLE_DIR/.\" build/qmd-resources/",
+    "prepare:runtime": "node scripts/build-runtime.mjs",
+    "dist": "npm run prepare:qmd && npm run prepare:runtime && electron-vite build && electron-builder",
+    "dist:mac": "if [ -n \"${QMD_BUNDLE_DIR:-}\" ]; then npm run prepare:qmd:bundle; else npm run prepare:qmd; fi && npm run prepare:runtime && electron-vite build && electron-builder --mac"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

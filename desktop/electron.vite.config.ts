@@ -5,6 +5,12 @@ export default defineConfig({
   main: {
     build: {
       outDir: 'out/main',
+      rollupOptions: {
+        input: {
+          index: resolve(__dirname, 'src/main/index.ts'),
+          packageVerify: resolve(__dirname, 'src/main/package-verify.ts'),
+        },
+      },
     },
   },
   preload: {

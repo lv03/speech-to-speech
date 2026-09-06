@@ -4,6 +4,24 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      runtime_bundle_url:
+        description: "HTTPS URL of the macOS arm64 runtime asset bundle"
+        required: true
+        type: string
+      runtime_bundle_sha256:
+        description: "SHA-256 of the runtime asset bundle"
+        required: true
+        type: string
+      smoke_model_url:
+        description: "HTTPS URL of the version-matched embedding GGUF smoke asset"
+        required: true
+        type: string
+      smoke_model_sha256:
+        description: "SHA-256 of the embedding GGUF smoke asset"
+        required: true
+        type: string
 
 jobs:
   ruff:
@@ -164,3 +182,146 @@ jobs:
           unset OPENAI_API_KEY
           # Validate the installed entry point without loading models or calling OpenAI.
           python tests/install_smoke.py
+
+  desktop-package-smoke:
+    name: Desktop package smoke (macOS arm64)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_bundle_url != '' }}
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install desktop dependencies
+        run: npm ci --prefix desktop --no-audit --no-fund
+      - name: Fetch and validate real runtime assets
+        shell: bash
+        env:
+          RUNTIME_BUNDLE_URL: ${{ inputs.runtime_bundle_url }}
+          RUNTIME_BUNDLE_SHA256: ${{ inputs.runtime_bundle_sha256 }}
+          SMOKE_MODEL_URL: ${{ inputs.smoke_model_url }}
+          SMOKE_MODEL_SHA256: ${{ inputs.smoke_model_sha256 }}
+        run: |
+          set -euo pipefail
+          case "$RUNTIME_BUNDLE_URL" in
+            https://*) ;;
+            *) echo "runtime_bundle_url must use HTTPS" >&2; exit 1 ;;
+          esac
+          case "$SMOKE_MODEL_URL" in
+            https://*) ;;
+            *) echo "smoke_model_url must use HTTPS" >&2; exit 1 ;;
+          esac
+          if [[ ! "$RUNTIME_BUNDLE_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "runtime_bundle_sha256 must be a 64-character hex digest" >&2
+            exit 1
+          fi
+          if [[ ! "$SMOKE_MODEL_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "smoke_model_sha256 must be a 64-character hex digest" >&2
+            exit 1
+          fi
+          asset_root="$RUNNER_TEMP/s2s-runtime-assets"
+          mkdir -p "$asset_root"
+          bundle="$RUNNER_TEMP/s2s-runtime-assets.tar.gz"
+          curl --fail --location --silent --show-error "$RUNTIME_BUNDLE_URL" --output "$bundle"
+          printf '%s  %s\n' "$RUNTIME_BUNDLE_SHA256" "$bundle" | shasum -a 256 --check
+          tar -xzf "$bundle" -C "$asset_root"
+          manifest_file="$asset_root/manifest-input.json"
+          test -f "$manifest_file"
+          test -x "$asset_root/runtime/bin/python"
+          test -d "$asset_root/runtime/wheelhouse"
+          test -d "$asset_root/qmd"
+          test -n "$(find "$asset_root/qmd" -type f -name '*.node' -print -quit)"
+          cp "$GITHUB_WORKSPACE/desktop/package-lock.json" "$asset_root/qmd/package-lock.json"
+          if find "$asset_root/runtime" -type f -name '*.gguf' -print -quit | grep -q .; then
+            echo "runtime bundle must not contain GGUF model files" >&2
+            exit 1
+          fi
+          node --input-type=module - "$manifest_file" <<'NODE'
+          import { readFileSync } from 'node:fs'
+          import { isAbsolute } from 'node:path'
+          const manifest = JSON.parse(readFileSync(process.argv[2], 'utf8'))
+          const required = new Set(['python-runtime', 'wheelhouse', 'qmd', 'model'])
+          const kinds = new Set()
+          if (!Array.isArray(manifest.assets)) throw new Error('manifest assets are missing')
+          for (const asset of manifest.assets) {
+            if (!asset || kinds.has(asset.kind) || !required.has(asset.kind) || typeof asset.url !== 'string' || !asset.url.startsWith('https://')) {
+              throw new Error('manifest asset contract is invalid')
+            }
+            if (asset.kind === 'model') {
+              if (asset.install !== 'userData' || asset.path !== undefined) throw new Error('model must install to userData without a resource path')
+            } else if (asset.install !== 'resources' || typeof asset.path !== 'string' || isAbsolute(asset.path) || asset.path.includes('\\') || asset.path.split('/').some((part) => !part || part === '.' || part === '..')) {
+              throw new Error('resource asset path must be relative')
+            }
+            kinds.add(asset.kind)
+          }
+          for (const kind of required) if (!kinds.has(kind)) throw new Error(`missing ${kind} asset`)
+          NODE
+          smoke_model="$RUNNER_TEMP/qmd-model/embedding.gguf"
+          mkdir -p "$(dirname "$smoke_model")"
+          curl --fail --location --silent --show-error "$SMOKE_MODEL_URL" --output "$smoke_model"
+          printf '%s  %s\n' "$SMOKE_MODEL_SHA256" "$smoke_model" | shasum -a 256 --check
+          model_sha=$(node --input-type=module - "$manifest_file" <<'NODE'
+          import { readFileSync } from 'node:fs'
+          const manifest = JSON.parse(readFileSync(process.argv[2], 'utf8'))
+          const model = manifest.assets.find((asset) => asset.kind === 'model')
+          if (!model || model.sha256 !== process.env.SMOKE_MODEL_SHA256) process.exit(1)
+          process.stdout.write(model.sha256)
+          NODE
+          )
+          test "$model_sha" = "$SMOKE_MODEL_SHA256"
+          model_name=$(node --input-type=module - "$manifest_file" <<'NODE'
+          import { readFileSync } from 'node:fs'
+          const manifest = JSON.parse(readFileSync(process.argv[2], 'utf8'))
+          const model = manifest.assets.find((asset) => asset.kind === 'model')
+          if (!model || model.install !== 'userData' || model.path !== undefined) process.exit(1)
+          process.stdout.write(`${model.id}-${model.version}.gguf`)
+          NODE
+          )
+          data_root="$RUNNER_TEMP/s2s-data"
+          mkdir -p "$data_root/qmd/cache/qmd/models"
+          cp "$smoke_model" "$data_root/qmd/cache/qmd/models/$model_name"
+          chmod 600 "$data_root/qmd/cache/qmd/models/$model_name"
+          mkdir -p desktop/build/runtime
+          rsync -a --exclude='*.gguf' "$asset_root/runtime/" desktop/build/runtime/
+          printf 'RUNTIME_ASSETS_FILE=%s\n' "$manifest_file" >> "$GITHUB_ENV"
+          printf 'RUNTIME_ASSETS_ROOT=%s\n' "$asset_root" >> "$GITHUB_ENV"
+          printf 'QMD_SOURCE_NODE_MODULES=%s\n' "$asset_root/qmd/node_modules" >> "$GITHUB_ENV"
+          printf 'SMOKE_MODEL_PATH=%s\n' "$smoke_model" >> "$GITHUB_ENV"
+      - name: Build macOS arm64 package
+        run: QMD_BUNDLE_DIR="$RUNTIME_ASSETS_ROOT/qmd" npm --prefix desktop run dist:mac
+      - name: Verify package without repository or system runtimes
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find desktop/dist -type d -name '*.app' -print -quit)
+          test -n "$app"
+          app_exec="$app/Contents/MacOS/speech-to-speech"
+          test -x "$app_exec"
+          test -f "$app/Contents/Resources/verify-package.mjs"
+          test -f "$app/Contents/Resources/runtime-manifest.json"
+          test -x "$app/Contents/Resources/runtime/bin/python"
+          test -n "$(find "$app/Contents/Resources/qmd" -type f -name '*.node' -print -quit)"
+          if find "$app/Contents/Resources" -type f -name '*.gguf' -print -quit | grep -q .; then
+            echo "production package must not contain GGUF model files" >&2
+            exit 1
+          fi
+          clean_home="$RUNNER_TEMP/s2s-clean-home"
+          fixture_root="$RUNNER_TEMP/kb-zh"
+          data_root="$RUNNER_TEMP/s2s-data"
+          package_work="$RUNNER_TEMP/s2s-package-work"
+          mkdir -p "$clean_home" "$package_work"
+          cp -R "$GITHUB_WORKSPACE/desktop/tests/fixtures/kb-zh" "$fixture_root"
+          cd "$package_work"
+          env -i \
+            HOME="$clean_home" \
+            PATH='' \
+            ELECTRON_RUN_AS_NODE=1 \
+            "$app_exec" \
+            "$app/Contents/Resources/verify-package.mjs" \
+            --app "$app" \
+            --fixture "$fixture_root" \
+            --data-root "$data_root" \
+            --smoke-model "$SMOKE_MODEL_PATH"

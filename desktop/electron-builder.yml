@@ -9,9 +9,16 @@ files:
 extraResources:
   - from: build/qmd-resources
     to: qmd
+  - from: build/runtime-manifest.json
+    to: runtime-manifest.json
+  - from: build/runtime
+    to: runtime
+  - from: scripts/verify-package.mjs
+    to: verify-package.mjs
 asar: true
 asarUnpack:
   - "**/*.node"
+  - "qmd/**/*.node"
 mac:
   target:
     - dmg
