@@ -3,6 +3,8 @@ import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import type { RuntimePaths } from './runtime-types'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 // 项目根目录：desktop/out/main → ../../.. 是仓库根（含 gateway/ 包）
@@ -13,6 +15,10 @@ export interface GatewayOptions {
   root?: string
   /** Python 解释器路径（默认自动探测） */
   python?: string
+  /** Authoritative PythonRuntime result for packaged launches. */
+  runtime?: RuntimePaths
+  /** Packaged mode refuses local/PATH probing unless runtime is supplied. */
+  mode?: 'development' | 'packaged'
   /** Gateway 端口 */
   port?: number
   /** 就绪探测超时（ms） */
@@ -52,8 +58,11 @@ export class EmbeddedGateway {
   private readonly startupTimeoutMs: number
 
   constructor(options: GatewayOptions = {}) {
-    this.root = options.root || process.env.GATEWAY_ROOT || DEFAULT_ROOT
-    this.python = options.python || findPython(this.root)
+    if (options.mode === 'packaged' && !options.runtime) {
+      throw new Error('Packaged Gateway requires PythonRuntime paths')
+    }
+    this.root = options.runtime?.appRoot || options.root || process.env.GATEWAY_ROOT || DEFAULT_ROOT
+    this.python = options.runtime?.python || options.python || findPython(this.root)
     this.port = options.port ?? Number(process.env.GATEWAY_PORT || 3101)
     this.startupTimeoutMs = options.startupTimeoutMs ?? 15_000
   }

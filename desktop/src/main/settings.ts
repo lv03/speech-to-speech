@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { normalizeSttHotwords } from '../shared/stt-hotwords.js'
 import type { SecretStore } from './secret-store'
+import type { RetrievalPreference } from './runtime-types'
 
 export interface DesktopSettings {
   /** 后端 coding agent 类型 */
@@ -46,6 +47,10 @@ export interface DesktopSettings {
   language: string
   /** LLM 推理等级：none（关闭思考）/ low / medium / high（对应 --responses_api_reasoning_effort） */
   llmReasoningEffort: 'none' | 'low' | 'medium' | 'high'
+  /** Local knowledge retrieval profile. */
+  knowledgeRetrievalMode: RetrievalPreference
+  /** Run a bounded local query after startup/indexing to warm the daemon. */
+  knowledgePreheatEnabled: boolean
 }
 
 export const DEFAULT_SETTINGS: DesktopSettings = {
@@ -69,6 +74,8 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   ttsVoice: '',
   language: 'auto',
   llmReasoningEffort: 'none',
+  knowledgeRetrievalMode: 'auto',
+  knowledgePreheatEnabled: true,
 }
 
 export class SettingsStore {
@@ -140,6 +147,10 @@ export class SettingsStore {
       // 旧版布尔开关迁移：true（禁用思考）→ none；false（开启思考）→ medium
       out.llmReasoningEffort = raw.llmDisableThinking ? 'none' : 'medium'
     }
+    if (typeof raw.knowledgeRetrievalMode === 'string' && ['auto', 'hybrid', 'vec-only'].includes(raw.knowledgeRetrievalMode)) {
+      out.knowledgeRetrievalMode = raw.knowledgeRetrievalMode as RetrievalPreference
+    }
+    if (typeof raw.knowledgePreheatEnabled === 'boolean') out.knowledgePreheatEnabled = raw.knowledgePreheatEnabled
     return out
   }
 

@@ -185,6 +185,25 @@
                 <span id="knowledge-state">正在检查…</span>
                 <span id="knowledge-model">模型信息正在检查…</span>
               </div>
+              <div class="setting-row">
+                <label for="knowledge-retrieval-mode">检索模式</label>
+                <select id="knowledge-retrieval-mode">
+                  <option value="auto">自动（v1 向量检索）</option>
+                  <option value="hybrid" disabled>混合检索（当前不可用）</option>
+                  <option value="vec-only">向量检索</option>
+                </select>
+              </div>
+              <div class="setting-row">
+                <label for="knowledge-preheat-enabled">启动后预热</label>
+                <div class="toggle-field">
+                  <label class="toggle-switch">
+                    <input id="knowledge-preheat-enabled" type="checkbox" />
+                    <span class="toggle-track"></span>
+                  </label>
+                  <span class="toggle-hint">仅在已有可用索引时执行一次受控查询</span>
+                </div>
+              </div>
+              <p class="setting-hint">切换检索模式会使现有索引进入待重新索引状态，不会删除原始文件。</p>
               <div id="knowledge-collections" class="knowledge-collections"></div>
               <div class="knowledge-actions">
                 <button id="knowledge-add" type="button">添加目录</button>

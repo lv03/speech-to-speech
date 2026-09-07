@@ -13,6 +13,7 @@ declare global {
       setLlmApiKey(value: string): Promise<{ llmApiKeyPresent: boolean }>
       clearLlmApiKey(): Promise<{ llmApiKeyPresent: boolean }>
       knowledgeSnapshot(): Promise<Record<string, unknown>>
+      onKnowledgeSnapshot(cb: (snapshot: Record<string, unknown>) => void): void
       addKnowledgeCollection(): Promise<Record<string, unknown>>
       removeKnowledgeCollection(collectionId: string): Promise<Record<string, unknown>>
       reindexKnowledgeCollection(collectionId: string, confirmed: boolean): Promise<Record<string, unknown>>

@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { findPython } from './gateway-process'
+import type { RuntimePaths } from './runtime-types'
 import { getSttHotwordFlag, normalizeSttHotwords } from '../shared/stt-hotwords.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -13,6 +14,10 @@ export interface VoiceOptions {
   root?: string
   /** Python 解释器路径 */
   python?: string
+  /** Authoritative PythonRuntime result for packaged launches. */
+  runtime?: RuntimePaths
+  /** Packaged mode refuses local/PATH probing unless runtime is supplied. */
+  mode?: 'development' | 'packaged'
   /** 语音引擎 Realtime 端口 */
   port?: number
   /** 是否启用唤醒词 */
@@ -122,8 +127,11 @@ export class EmbeddedVoice {
   private readonly llmReasoningEffort: 'none' | 'low' | 'medium' | 'high'
 
   constructor(options: VoiceOptions = {}) {
-    this.root = options.root || process.env.GATEWAY_ROOT || DEFAULT_ROOT
-    this.python = options.python || findPython(this.root)
+    if (options.mode === 'packaged' && !options.runtime) {
+      throw new Error('Packaged Voice requires PythonRuntime paths')
+    }
+    this.root = options.runtime?.appRoot || options.root || process.env.GATEWAY_ROOT || DEFAULT_ROOT
+    this.python = options.runtime?.python || options.python || findPython(this.root)
     this.port = options.port ?? Number(process.env.VOICE_PORT || 8765)
     this.wakeWordEnabled = options.wakeWordEnabled ?? false
     this.wakeWord = options.wakeWord || '你好，噜噜'

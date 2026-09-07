@@ -21,6 +21,8 @@ export interface DesktopApi {
   clearLlmApiKey(): Promise<{ llmApiKeyPresent: boolean }>
   /** 获取脱敏后的知识库状态。 */
   knowledgeSnapshot(): Promise<Record<string, unknown>>
+  /** 知识库状态发生变化时推送脱敏快照。 */
+  onKnowledgeSnapshot(cb: (snapshot: Record<string, unknown>) => void): void
   /** 在主进程中打开目录选择器并添加 collection。 */
   addKnowledgeCollection(): Promise<Record<string, unknown>>
   removeKnowledgeCollection(collectionId: string): Promise<Record<string, unknown>>
@@ -77,6 +79,9 @@ const api: DesktopApi = {
   setLlmApiKey: (value) => ipcRenderer.invoke('settings:set-secret', value),
   clearLlmApiKey: () => ipcRenderer.invoke('settings:clear-secret'),
   knowledgeSnapshot: () => ipcRenderer.invoke('knowledge:snapshot'),
+  onKnowledgeSnapshot: (cb) => {
+    ipcRenderer.on('knowledge:snapshot-changed', (_e, snapshot: Record<string, unknown>) => cb(snapshot))
+  },
   addKnowledgeCollection: () => ipcRenderer.invoke('knowledge:add-collection'),
   removeKnowledgeCollection: (collectionId) => ipcRenderer.invoke('knowledge:remove-collection', collectionId),
   reindexKnowledgeCollection: (collectionId, confirmed) => ipcRenderer.invoke('knowledge:reindex', collectionId, confirmed),

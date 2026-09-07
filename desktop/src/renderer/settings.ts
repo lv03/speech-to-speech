@@ -20,6 +20,8 @@ interface SettingsPayload {
   ttsVoice: string
   language: string
   llmReasoningEffort: 'none' | 'low' | 'medium' | 'high'
+  knowledgeRetrievalMode: 'auto' | 'hybrid' | 'vec-only'
+  knowledgePreheatEnabled: boolean
 }
 
 // ── DOM 引用 ────────────────────────────────────────────────────────────
@@ -46,6 +48,8 @@ const refreshSkinsBtn = document.getElementById('refresh-skins') as HTMLButtonEl
 const autoHide = document.getElementById('auto-hide') as HTMLSelectElement
 const wakeShortcut = document.getElementById('wake-shortcut') as HTMLInputElement
 const language = document.getElementById('language') as HTMLSelectElement
+const knowledgeRetrievalMode = document.getElementById('knowledge-retrieval-mode') as HTMLSelectElement
+const knowledgePreheatEnabled = document.getElementById('knowledge-preheat-enabled') as HTMLInputElement
 const voiceprintStatusEl = document.getElementById('voiceprint-status')!
 const voiceprintEnrollBtn = document.getElementById('voiceprint-enroll') as HTMLButtonElement
 const voiceprintVerifyBtn = document.getElementById('voiceprint-verify') as HTMLButtonElement
@@ -110,6 +114,8 @@ function render(settings: SettingsPayload): void {
   autoHide.value = String(settings.autoHideSeconds ?? 0)
   wakeShortcut.value = settings.wakeShortcut
   language.value = settings.language
+  knowledgeRetrievalMode.value = settings.knowledgeRetrievalMode
+  knowledgePreheatEnabled.checked = settings.knowledgePreheatEnabled
 }
 
 function collect(): SettingsPayload {
@@ -134,6 +140,10 @@ function collect(): SettingsPayload {
     autoHideSeconds: Number(autoHide.value) || 0,
     wakeShortcut: wakeShortcut.value.trim(),
     language: language.value,
+    knowledgeRetrievalMode: (['auto', 'hybrid', 'vec-only'].includes(knowledgeRetrievalMode.value)
+      ? knowledgeRetrievalMode.value
+      : 'auto') as 'auto' | 'hybrid' | 'vec-only',
+    knowledgePreheatEnabled: knowledgePreheatEnabled.checked,
   }
 }
 
@@ -146,7 +156,15 @@ interface KnowledgeCollection {
 
 interface KnowledgeSnapshot {
   state: string
-  model: { downloadBytes: number; diskBytes: number; state: string }
+  model: {
+    downloadBytes: number
+    diskBytes: number
+    state: string
+    mode?: string
+    availableModes?: string[]
+    completedBytes?: number
+    reason?: string
+  }
   collections: KnowledgeCollection[]
 }
 
@@ -155,6 +173,15 @@ const knowledgeModel = document.getElementById('knowledge-model')!
 const knowledgeCollections = document.getElementById('knowledge-collections')!
 const knowledgeAdd = document.getElementById('knowledge-add') as HTMLButtonElement
 const knowledgeCancel = document.getElementById('knowledge-cancel') as HTMLButtonElement
+
+function updateRetrievalModeAvailability(availableModes: string[] = []): void {
+  const hybrid = knowledgeRetrievalMode.querySelector<HTMLOptionElement>('option[value="hybrid"]')
+  if (!hybrid) return
+  const enabled = availableModes.includes('hybrid')
+  hybrid.disabled = !enabled
+  hybrid.textContent = enabled ? '混合检索' : '混合检索（当前不可用）'
+  if (!enabled && knowledgeRetrievalMode.value === 'hybrid') knowledgeRetrievalMode.value = 'auto'
+}
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '未知'
@@ -169,8 +196,14 @@ function formatBytes(bytes: number): string {
 }
 
 function renderKnowledge(snapshot: KnowledgeSnapshot): void {
+  updateRetrievalModeAvailability(snapshot.model.availableModes)
   knowledgeState.textContent = `状态：${snapshot.state}`
-  knowledgeModel.textContent = `模型下载：${formatBytes(snapshot.model.downloadBytes)}；占用空间：${formatBytes(snapshot.model.diskBytes)}；${snapshot.model.state}`
+  const progress = snapshot.model.completedBytes !== undefined
+    ? `；已完成：${formatBytes(snapshot.model.completedBytes)}`
+    : ''
+  const mode = snapshot.model.mode ? `；模式：${snapshot.model.mode}` : ''
+  const reason = snapshot.model.reason ? `；${snapshot.model.reason}` : ''
+  knowledgeModel.textContent = `模型下载：${formatBytes(snapshot.model.downloadBytes)}；占用空间：${formatBytes(snapshot.model.diskBytes)}${progress}${mode}；${snapshot.model.state}${reason}`
   knowledgeCollections.replaceChildren()
   for (const collection of snapshot.collections) {
     const row = document.createElement('article')
@@ -210,6 +243,10 @@ async function refreshKnowledge(): Promise<void> {
     knowledgeState.textContent = '状态未知'
   }
 }
+
+window.desktop.onKnowledgeSnapshot((snapshot) => {
+  renderKnowledge(snapshot as unknown as KnowledgeSnapshot)
+})
 
 knowledgeAdd.addEventListener('click', async () => {
   knowledgeAdd.disabled = true
