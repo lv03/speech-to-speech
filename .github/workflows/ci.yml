@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       runtime_bundle_url:
-        description: "HTTPS URL of the macOS arm64 runtime asset bundle"
+        description: "HTTPS URL of the macOS 15+ arm64 runtime asset bundle"
         required: true
         type: string
       runtime_bundle_sha256:
@@ -15,7 +15,7 @@ on:
         required: true
         type: string
       smoke_model_url:
-        description: "HTTPS URL of the version-matched embedding GGUF smoke asset"
+        description: "HTTPS URL of the version-matched macOS 15+ arm64 embedding GGUF smoke asset"
         required: true
         type: string
       smoke_model_sha256:
@@ -109,6 +109,26 @@ jobs:
         run: uv build
       - name: Check package metadata
         run: uvx twine check --strict dist/*
+      - name: Verify application wheel contains gateway
+        shell: bash
+        run: |
+          python - "$(find dist -name 'speech_to_speech-*.whl' -print -quit)" <<'PY'
+          import sys
+          from zipfile import ZipFile
+
+          wheel = sys.argv[1]
+          if not wheel:
+              raise SystemExit("application wheel is missing")
+          with ZipFile(wheel) as archive:
+              names = set(archive.namelist())
+          required = {"gateway/__init__.py", "gateway/__main__.py", "speech_to_speech/__init__.py"}
+          missing = sorted(required - names)
+          if missing:
+              raise SystemExit(f"application wheel is missing: {', '.join(missing)}")
+          leaked = sorted(name for name in names if name.startswith("gateway/tests/"))
+          if leaked:
+              raise SystemExit(f"application wheel contains tests: {', '.join(leaked)}")
+          PY
       - uses: actions/upload-artifact@v7
         with:
           name: dist
@@ -152,7 +172,7 @@ jobs:
             extra: "[omnivoice]"
             smoke_extra: omnivoice
           - label: macos-arm64
-            os: macos-14
+            os: macos-15
             extra: ""
             smoke_extra: ""
     steps:
@@ -184,12 +204,15 @@ jobs:
           python tests/install_smoke.py
 
   desktop-package-smoke:
-    name: Desktop package smoke (macOS arm64)
+    name: Desktop package smoke (macOS 15+ arm64)
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_bundle_url != '' }}
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: "latest"
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -197,6 +220,31 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - name: Install desktop dependencies
         run: npm ci --prefix desktop --no-audit --no-fund
+      - name: Prepare runtime manifest signing keys
+        env:
+          RUNTIME_MANIFEST_PRIVATE_KEY: ${{ secrets.RUNTIME_MANIFEST_PRIVATE_KEY }}
+          RUNTIME_MANIFEST_PUBLIC_KEY: ${{ secrets.RUNTIME_MANIFEST_PUBLIC_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RUNTIME_MANIFEST_PRIVATE_KEY"
+          test -n "$RUNTIME_MANIFEST_PUBLIC_KEY"
+          private_key="$RUNNER_TEMP/runtime-manifest-private-key.pem"
+          public_key="$RUNNER_TEMP/runtime-manifest-public-key.pem"
+          umask 077
+          printf '%s\n' "$RUNTIME_MANIFEST_PRIVATE_KEY" > "$private_key"
+          printf '%s\n' "$RUNTIME_MANIFEST_PUBLIC_KEY" > "$public_key"
+          node --input-type=module - "$private_key" "$public_key" <<'NODE'
+          import { createPrivateKey, createPublicKey } from 'node:crypto'
+          import { readFileSync } from 'node:fs'
+          const privateKey = createPublicKey(createPrivateKey(readFileSync(process.argv[2])))
+          const publicKey = createPublicKey(readFileSync(process.argv[3]))
+          const privateDer = privateKey.export({ type: 'spki', format: 'der' })
+          const publicDer = publicKey.export({ type: 'spki', format: 'der' })
+          if (!privateDer.equals(publicDer)) throw new Error('runtime manifest signing keys do not match')
+          NODE
+          printf 'RUNTIME_MANIFEST_PRIVATE_KEY_FILE=%s\n' "$private_key" >> "$GITHUB_ENV"
+          printf 'RUNTIME_MANIFEST_PUBLIC_KEY_FILE=%s\n' "$public_key" >> "$GITHUB_ENV"
       - name: Fetch and validate real runtime assets
         shell: bash
         env:
@@ -229,11 +277,36 @@ jobs:
           printf '%s  %s\n' "$RUNTIME_BUNDLE_SHA256" "$bundle" | shasum -a 256 --check
           tar -xzf "$bundle" -C "$asset_root"
           manifest_file="$asset_root/manifest-input.json"
+          manifest_signature="$asset_root/manifest-input.json.sig"
           test -f "$manifest_file"
+          test -s "$manifest_signature"
+          node --input-type=module - "$manifest_file" "$manifest_signature" "$RUNTIME_MANIFEST_PUBLIC_KEY_FILE" <<'NODE'
+          import { createPublicKey, verify } from 'node:crypto'
+          import { readFileSync } from 'node:fs'
+          const manifestText = readFileSync(process.argv[2])
+          const encodedSignature = readFileSync(process.argv[3], 'utf8').trim()
+          const signature = Buffer.from(encodedSignature, 'base64')
+          const publicKey = createPublicKey(readFileSync(process.argv[4]))
+          if (signature.length !== 64 || !verify(null, manifestText, publicKey, signature)) {
+            throw new Error('runtime manifest input signature verification failed')
+          }
+          NODE
           test -x "$asset_root/runtime/bin/python"
           test -d "$asset_root/runtime/wheelhouse"
+          application_wheel=$(find "$asset_root/runtime/wheelhouse" -maxdepth 1 -type f \( -name 'speech_to_speech-*.whl' -o -name 'speech_to_speech_*.whl' \) -print -quit)
+          test -n "$application_wheel"
+          "$asset_root/runtime/bin/python" -m zipfile -t "$application_wheel"
           test -d "$asset_root/qmd"
           test -n "$(find "$asset_root/qmd" -type f -name '*.node' -print -quit)"
+          if find "$asset_root/runtime/wheelhouse" -maxdepth 1 -type f \( \
+            -iname 'funasr-*.whl' -o \
+            -iname 'kaldiio-*.whl' -o \
+            -iname 'aiortc-*.whl' -o \
+            -iname 'google_crc32c-*.whl' \
+          \) -print -quit | grep -q .; then
+            echo "v1 runtime bundle contains optional voice or development extras" >&2
+            exit 1
+          fi
           cp "$GITHUB_WORKSPACE/desktop/package-lock.json" "$asset_root/qmd/package-lock.json"
           if find "$asset_root/runtime" -type f -name '*.gguf' -print -quit | grep -q .; then
             echo "runtime bundle must not contain GGUF model files" >&2
@@ -243,11 +316,22 @@ jobs:
           import { readFileSync } from 'node:fs'
           import { isAbsolute } from 'node:path'
           const manifest = JSON.parse(readFileSync(process.argv[2], 'utf8'))
+          if (JSON.stringify(manifest.approvedProfiles ?? []) !== '["vec-only"]') {
+            throw new Error('v1 runtime manifest must approve vec-only only')
+          }
           const required = new Set(['python-runtime', 'wheelhouse', 'qmd', 'model'])
           const kinds = new Set()
+          const modelRoles = new Set()
           if (!Array.isArray(manifest.assets)) throw new Error('manifest assets are missing')
           for (const asset of manifest.assets) {
-            if (!asset || kinds.has(asset.kind) || !required.has(asset.kind) || typeof asset.url !== 'string' || !asset.url.startsWith('https://')) {
+            const modelRole = asset?.kind === 'model' && typeof asset.role === 'string' ? asset.role :
+              asset?.kind === 'model' && asset.id === 'embedding' ? 'embedding' :
+                asset?.kind === 'model' && (asset.id === 'reranker' || asset.id === 'rerank') ? 'reranker' :
+                  asset?.kind === 'model' && (asset.id === 'generator' || asset.id === 'generation') ? 'generator' : undefined
+            if (!asset || (asset.kind !== 'model' && kinds.has(asset.kind)) || !required.has(asset.kind) ||
+              (asset.kind === 'model' && asset.role !== undefined && !['embedding', 'reranker', 'generator'].includes(asset.role)) ||
+              (modelRole !== undefined && modelRoles.has(modelRole)) ||
+              typeof asset.url !== 'string' || !asset.url.startsWith('https://')) {
               throw new Error('manifest asset contract is invalid')
             }
             if (asset.kind === 'model') {
@@ -256,8 +340,12 @@ jobs:
               throw new Error('resource asset path must be relative')
             }
             kinds.add(asset.kind)
+            if (modelRole !== undefined) modelRoles.add(modelRole)
           }
           for (const kind of required) if (!kinds.has(kind)) throw new Error(`missing ${kind} asset`)
+          if (!manifest.assets.some((asset) => asset.kind === 'model' && (asset.role === 'embedding' || asset.id === 'embedding'))) {
+            throw new Error('missing embedding asset')
+          }
           NODE
           smoke_model="$RUNNER_TEMP/qmd-model/embedding.gguf"
           mkdir -p "$(dirname "$smoke_model")"
@@ -266,7 +354,7 @@ jobs:
           model_sha=$(node --input-type=module - "$manifest_file" <<'NODE'
           import { readFileSync } from 'node:fs'
           const manifest = JSON.parse(readFileSync(process.argv[2], 'utf8'))
-          const model = manifest.assets.find((asset) => asset.kind === 'model')
+          const model = manifest.assets.find((asset) => asset.kind === 'model' && (asset.role === 'embedding' || asset.id === 'embedding'))
           if (!model || model.sha256 !== process.env.SMOKE_MODEL_SHA256) process.exit(1)
           process.stdout.write(model.sha256)
           NODE
@@ -275,22 +363,47 @@ jobs:
           model_name=$(node --input-type=module - "$manifest_file" <<'NODE'
           import { readFileSync } from 'node:fs'
           const manifest = JSON.parse(readFileSync(process.argv[2], 'utf8'))
-          const model = manifest.assets.find((asset) => asset.kind === 'model')
+          const model = manifest.assets.find((asset) => asset.kind === 'model' && (asset.role === 'embedding' || asset.id === 'embedding'))
           if (!model || model.install !== 'userData' || model.path !== undefined) process.exit(1)
           process.stdout.write(`${model.id}-${model.version}.gguf`)
           NODE
           )
           data_root="$RUNNER_TEMP/s2s-data"
-          mkdir -p "$data_root/qmd/cache/qmd/models"
-          cp "$smoke_model" "$data_root/qmd/cache/qmd/models/$model_name"
-          chmod 600 "$data_root/qmd/cache/qmd/models/$model_name"
+          mkdir -p "$data_root/runtime/models"
+          cp "$smoke_model" "$data_root/runtime/models/$model_name"
+          chmod 600 "$data_root/runtime/models/$model_name"
           mkdir -p desktop/build/runtime
-          rsync -a --exclude='*.gguf' "$asset_root/runtime/" desktop/build/runtime/
+          rsync -a --delete --exclude='*.gguf' "$asset_root/runtime/" desktop/build/runtime/
           printf 'RUNTIME_ASSETS_FILE=%s\n' "$manifest_file" >> "$GITHUB_ENV"
+          printf 'RUNTIME_ASSETS_SIGNATURE_FILE=%s\n' "$manifest_signature" >> "$GITHUB_ENV"
           printf 'RUNTIME_ASSETS_ROOT=%s\n' "$asset_root" >> "$GITHUB_ENV"
           printf 'QMD_SOURCE_NODE_MODULES=%s\n' "$asset_root/qmd/node_modules" >> "$GITHUB_ENV"
           printf 'SMOKE_MODEL_PATH=%s\n' "$smoke_model" >> "$GITHUB_ENV"
-      - name: Build macOS arm64 package
+      - name: Validate locked base wheelhouse closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          requirements="$RUNNER_TEMP/runtime-base-requirements.txt"
+          closure_report="$RUNNER_TEMP/runtime-base-closure.json"
+          uv export --frozen --no-dev --no-editable --no-emit-project --output-file "$requirements"
+          "$RUNTIME_ASSETS_ROOT/runtime/bin/python" -m pip install \
+            --dry-run --ignore-installed --pre --break-system-packages --no-index \
+            --find-links "$RUNTIME_ASSETS_ROOT/runtime/wheelhouse" \
+            --requirement "$requirements" \
+            --only-binary=:all: \
+            --report "$closure_report"
+          npm --prefix desktop run validate:runtime-wheelhouse -- \
+            --wheelhouse "$RUNTIME_ASSETS_ROOT/runtime/wheelhouse" \
+            --report "$closure_report"
+      - name: Generate third-party license inventory
+        shell: bash
+        run: |
+          npm --prefix desktop run license-report -- \
+            --node-modules "$RUNTIME_ASSETS_ROOT/qmd/node_modules" \
+            --wheelhouse "$RUNTIME_ASSETS_ROOT/runtime/wheelhouse" \
+            --json "$RUNNER_TEMP/runtime-licenses.json" \
+            --markdown "$RUNNER_TEMP/THIRD-PARTY-NOTICES.md"
+      - name: Build macOS 15+ arm64 package
         run: QMD_BUNDLE_DIR="$RUNTIME_ASSETS_ROOT/qmd" npm --prefix desktop run dist:mac
       - name: Verify package without repository or system runtimes
         shell: bash
@@ -324,4 +437,12 @@ jobs:
             --app "$app" \
             --fixture "$fixture_root" \
             --data-root "$data_root" \
-            --smoke-model "$SMOKE_MODEL_PATH"
+            --smoke-model "$SMOKE_MODEL_PATH" \
+            --metrics "$RUNNER_TEMP/package-metrics.json"
+      - name: Upload package verification metrics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-package-metrics
+          path: ${{ runner.temp }}/package-metrics.json
+          if-no-files-found: ignore

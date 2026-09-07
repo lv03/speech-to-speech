@@ -58,21 +58,23 @@ desktop/
 - [x] **内嵌启动 speech-to-speech 语音引擎**：spawn `speech-to-speech local`，挂工具模块（`agent_gateway,qmd_knowledge`）+ 唤醒词，就绪探测（stdout 启动完成消息）
 - [x] **状态动画接通**：Gateway 任务状态 → working/idle；语音状态 → listening/thinking/speaking/idle（通过 local 模式 `--local_audio_print_json` 的 EVENT 事件解析）
 - [x] **全局快捷键 + 自动休眠**：可配置唤醒快捷键（切换悬浮球显示/隐藏），空闲自动隐藏
-- [x] **Electron 打包**：electron-builder（macOS zip/dmg，未签名）
-- [x] **本地知识库代码链路**：QMD 2.8.3、vec-only 检索、opaque handle、实时状态、Python 多工具和安全边界测试
-- [ ] **发布 gate**：需要真实 macOS arm64 runtime bundle 后执行干净安装包 smoke；通过前不宣称 v1 发布完成
+- [x] **Electron 打包**：electron-builder（macOS 15+ zip/dmg；无凭据时本地可未签名，发布环境使用 Developer ID/公证凭据）
+- [x] **本地知识库代码链路**：QMD 2.8.3、vec-only 检索、opaque docid、实时状态、Python 多工具和安全边界测试
+- [ ] **发布 gate**：需要真实 macOS 15+ arm64 runtime bundle、签名 manifest 和干净安装包 smoke；通过前不宣称 v1 发布完成
 - [x] **声纹注册 UI 入口**：设置窗口可查声纹状态（区分未注册 / 自然语音档案 / 旧版需重录）、注册（录多段自然语音，进度实时显示）、验证；启用后语音引擎加 `--enable_voiceprint`，并支持设置声纹阈值 `--voiceprint_threshold`
 
 ## 打包与发布验收
 
 ```bash
 cd desktop
-npm run dist:mac    # 需要真实 macOS arm64 runtime bundle 的 manifest/资源
+npm run dist:mac    # 需要真实 macOS 15+ arm64 runtime bundle 的 manifest/资源
 ```
 
-发布包包含固定版本的 QMD 资源、native addon、standalone Python 和锁定 wheelhouse，但不内置 GGUF。用户明确同意后，应用才会从 manifest 的 HTTPS URL 下载 embedding 模型到 app-private `userData/qmd/cache/qmd/models/`，并在下载前校验大小和 SHA-256。打包不会依赖用户安装 Node、npm、Python、QMD CLI 或仓库代码。真实发布 gate 由手动触发的 macOS arm64 CI 完成：它在空 PATH、临时 HOME、无仓库运行时的环境中，把同版本、同 SHA 的真实 smoke GGUF 预置到临时 userData，使用临时中文 fixture 执行 `collection add -> update -> embed -> status -> vec query -> get`，再验证 app 内 QmdProxy 和 Python 工具链；没有真实 bundle 或 smoke asset 时不得用占位文件代替。
+发布包包含固定版本的 QMD 资源、native addon、standalone Python 和锁定 wheelhouse，但不内置 GGUF。应用只接受由固定公钥验证过的 Ed25519 manifest；用户明确同意后，应用才会从 manifest 的 HTTPS URL 下载 embedding 模型到 app-private `userData/runtime/models/<asset.id>-<asset.version>.gguf`，并在下载前校验大小和 SHA-256；QMD 的 config/cache/index 固定在 `userData/qmd/`。打包不会依赖用户安装 Node、npm、Python、QMD CLI 或仓库代码。真实发布 gate 由手动触发的 macOS 15+ arm64 CI 完成：它在空 PATH、临时 HOME、无仓库运行时的环境中，把同版本、同 SHA 的真实 smoke GGUF 预置到临时 userData，使用临时中文 fixture 执行 `collection add -> update -> embed -> status -> vec query -> get`，再验证 app 内 QmdProxy 和 Python 工具链；没有真实 bundle、签名 manifest 或 smoke asset 时不得用占位文件代替。
 
-当前本地已通过 desktop 单元/契约测试、TypeScript 构建和 Python 测试；由于本机没有真实 runtime bundle，不能把本地开发构建称为可发布安装包。
+当前本地已通过 desktop 单元/契约测试、TypeScript 构建、Python 测试，以及使用真实 macOS 15+ arm64 standalone Python、候选锁定 wheelhouse、QMD/native addon、签名临时 manifest 和 embedding GGUF 的 packaged verifier；2026-09-07 clean-root metrics sidecar 记录的热查询 P95 约为 `27.9 ms`，冷启动约 `4.95 s`，verifier RSS 约 `240 MiB`。`desktop/build/runtime/wheelhouse` 已同步为 126 个 wheel（125 个基础包加应用 wheel），locked base closure 校验通过，但许可证报告仍阻塞于 `espeakng-loader 0.2.4` 的许可证和源码溯源确认。正式发布 HTTPS 资产地址、CI 密钥配置、应用签名/公证和许可证法律审查仍未就绪，因此不能把当前 staging 结果称为可发布安装包。
+
+发布操作顺序、manifest 公钥轮换、许可证清单和 Apple 签名/公证要求见 [`docs/kb-runtime-release.md`](../docs/kb-runtime-release.md)。
 
 ## 自定义外观（Codex Pet 包）
 
