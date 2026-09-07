@@ -71,6 +71,13 @@ async function main() {
   const kept = base.assets.filter((asset) => asset.kind !== 'model' || asset.id === 'embedding')
   const embedding = kept.find((asset) => asset.id === 'embedding')
   if (!embedding) throw new Error('源 manifest 缺少 embedding 模型资产')
+  // embedding 镜像：modelscope 下载端点在部分网络不可达（实测连接超时），
+  // 默认改指 hf-mirror（同字节同 sha，尺寸已核对）；可用 EMBED_GGUF_URL 覆盖。
+  if (process.env.EMBED_GGUF_URL) {
+    embedding.url = process.env.EMBED_GGUF_URL
+  } else if (/modelscope\.cn/.test(embedding.url)) {
+    embedding.url = 'https://hf-mirror.com/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf'
+  }
   const reranker = await findLocalModel('reranker', RERANKER)
   const generator = await findLocalModel('generator', GENERATOR)
   const manifest = {
