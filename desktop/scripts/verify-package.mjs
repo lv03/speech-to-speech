@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 
 const SUPPORTED_PLATFORM = 'darwin-arm64'
 const REQUIRED_ASSET_KINDS = new Set(['python-runtime', 'wheelhouse', 'qmd', 'model'])
+const MODEL_ROLES = new Set(['embedding', 'reranker', 'generator'])
 const FAILURE_CODES = new Set(['args', 'resources', 'native', 'fixture', 'model', 'qmd', 'proxy', 'runtime', 'child'])
 
 function inside(root, path) {
@@ -41,22 +42,62 @@ async function verifyResourceAsset(path, asset) {
   }
 }
 
+async function verifyWheelhouse(path) {
+  let entries
+  try {
+    const metadata = await stat(path)
+    if (!metadata.isDirectory()) throw new Error('wheelhouse is not a directory')
+    entries = await readdir(path, { withFileTypes: true })
+  } catch {
+    throw new Error('Packaged Python wheelhouse is missing')
+  }
+
+  const applicationWheels = entries.filter((entry) =>
+    entry.isFile() && /^speech_to_speech[-_][^/]+\.whl$/i.test(entry.name),
+  )
+  if (applicationWheels.length === 0) {
+    throw new Error('Packaged Python wheelhouse has no versioned speech_to_speech wheel')
+  }
+
+  for (const entry of applicationWheels) {
+    const contents = await readFile(join(path, entry.name))
+    if (contents.length < 4 || contents[0] !== 0x50 || contents[1] !== 0x4b || contents[2] !== 0x03 || contents[3] !== 0x04) {
+      throw new Error('Packaged Python wheelhouse contains an invalid application wheel')
+    }
+  }
+}
+
 function validateManifest(manifest) {
   if (
     !manifest || manifest.schemaVersion !== 1 || manifest.platform !== SUPPORTED_PLATFORM ||
     typeof manifest.pythonAbi !== 'string' || !manifest.pythonAbi ||
-    manifest.profile !== 'voice-default' || !Array.isArray(manifest.assets)
+    manifest.profile !== 'voice-default' || !Array.isArray(manifest.approvedProfiles) ||
+    !manifest.approvedProfiles.includes('vec-only') ||
+    manifest.approvedProfiles.some((profile) => !['vec-only', 'hybrid'].includes(profile)) ||
+    !Array.isArray(manifest.assets)
   ) {
     throw new Error('Packaged runtime manifest is invalid')
   }
 
   const ids = new Set()
   const kinds = new Set()
+  const modelRoles = new Set()
   for (const asset of manifest.assets) {
+    const modelRole = asset?.kind === 'model' && typeof asset.role === 'string'
+      ? asset.role
+      : asset?.kind === 'model' && asset.id === 'embedding'
+        ? 'embedding'
+        : asset?.kind === 'model' && (asset.id === 'reranker' || asset.id === 'rerank')
+          ? 'reranker'
+          : asset?.kind === 'model' && (asset.id === 'generator' || asset.id === 'generation')
+            ? 'generator'
+            : undefined
     if (
       !asset || typeof asset !== 'object' || typeof asset.id !== 'string' || !asset.id || ids.has(asset.id) ||
       typeof asset.version !== 'string' || !asset.version || typeof asset.kind !== 'string' ||
-      !REQUIRED_ASSET_KINDS.has(asset.kind) || kinds.has(asset.kind) ||
+      !REQUIRED_ASSET_KINDS.has(asset.kind) || (asset.kind !== 'model' && kinds.has(asset.kind)) ||
+      (asset.kind === 'model' && asset.role !== undefined && !MODEL_ROLES.has(asset.role)) ||
+      (modelRole !== undefined && modelRoles.has(modelRole)) ||
       !['resources', 'userData'].includes(asset.install) ||
       (asset.install === 'userData' && asset.kind !== 'model') ||
       (asset.install === 'resources' && (
@@ -77,10 +118,12 @@ function validateManifest(manifest) {
     }
     ids.add(asset.id)
     kinds.add(asset.kind)
+    if (modelRole !== undefined) modelRoles.add(modelRole)
   }
 
-  for (const kind of REQUIRED_ASSET_KINDS) {
-    if (!kinds.has(kind)) throw new Error('Packaged runtime manifest is incomplete')
+  if ([...REQUIRED_ASSET_KINDS].some((kind) => !kinds.has(kind)) ||
+    !manifest.assets.some((asset) => asset.kind === 'model' && (asset.role === 'embedding' || asset.id === 'embedding'))) {
+    throw new Error('Packaged runtime manifest is incomplete')
   }
 }
 
@@ -100,10 +143,13 @@ export async function resolvePackageResources(resourcesRoot) {
   const qmdRoot = join(root, 'qmd')
   const runtimeRoot = join(root, 'runtime')
   const manifestPath = join(root, 'runtime-manifest.json')
+  const signaturePath = `${manifestPath}.sig`
   const qmdEntrypoint = join(qmdRoot, 'node_modules', '@tobilu', 'qmd', 'bin', 'qmd')
   const python = join(runtimeRoot, process.platform === 'win32' ? 'bin/python.exe' : 'bin/python')
 
   await requireEntry(manifestPath, 'runtime manifest')
+  const signature = (await readFile(signaturePath, 'utf8').catch(() => '')).trim()
+  if (!signature) throw new Error('Packaged runtime manifest signature is missing')
   await requireEntry(qmdEntrypoint, 'QMD entrypoint')
   await requireEntry(python, 'Python runtime')
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
@@ -121,12 +167,14 @@ export async function resolvePackageResources(resourcesRoot) {
   if (!inside(root, wheelhouseAssetPath) || !inside(realRoot, await realpath(wheelhouseAssetPath))) {
     throw new Error('Packaged wheelhouse escapes installation root')
   }
-    await requireEntry(wheelhouseAssetPath, 'Python wheelhouse')
-    await verifyResourceAsset(wheelhouseAssetPath, wheelhouseAsset)
+  await requireEntry(wheelhouseAssetPath, 'Python wheelhouse')
+  await verifyResourceAsset(wheelhouseAssetPath, wheelhouseAsset)
   const wheelhouseCandidate = join(runtimeRoot, 'wheelhouse')
-  const wheelhouseRoot = await stat(wheelhouseCandidate).then((metadata) =>
-    metadata.isDirectory() ? wheelhouseCandidate : wheelhouseAssetPath,
-  ).catch(() => wheelhouseAssetPath)
+  await verifyWheelhouse(wheelhouseCandidate)
+  if (!inside(realRoot, await realpath(wheelhouseCandidate))) {
+    throw new Error('Packaged wheelhouse escapes installation root')
+  }
+  const wheelhouseRoot = wheelhouseCandidate
 
   for (const asset of manifest.assets) {
     if (asset.install !== 'resources') continue
@@ -183,6 +231,7 @@ export function parseVerifierArgs(argv) {
       '--fixture': 'fixture',
       '--data-root': 'dataRoot',
       '--smoke-model': 'smokeModel',
+      '--metrics': 'metrics',
     }[flag]
     if (!key || values[key] !== undefined || typeof argv[index + 1] !== 'string' || !argv[index + 1] || argv[index + 1].startsWith('--')) {
       throw failure('args', 'Verifier arguments are invalid')
@@ -190,7 +239,7 @@ export function parseVerifierArgs(argv) {
     values[key] = argv[index + 1]
     index += 1
   }
-  if (Object.keys(values).length !== 4) {
+  if (Object.keys(values).length < 4) {
     throw failure('args', 'Verifier arguments are incomplete: --app --fixture --data-root --smoke-model')
   }
   return values
@@ -208,14 +257,17 @@ function defaultRun(command, args, options) {
   })
 }
 
-export async function launchPackageVerify({ app, fixture, dataRoot, smokeModel, run = defaultRun }) {
+export async function launchPackageVerify({ app, fixture, dataRoot, smokeModel, metrics, run = defaultRun }) {
   const childEnvironment = { ...process.env, PATH: '' }
   delete childEnvironment.ELECTRON_RUN_AS_NODE
   delete childEnvironment.NODE_PATH
   delete childEnvironment.RUNTIME_MANIFEST_PATH
   const result = await run(
     packagedExecutable(app),
-    ['--package-verify', '--fixture', fixture, '--data-root', dataRoot, '--smoke-model', smokeModel],
+    [
+      '--package-verify', '--fixture', fixture, '--data-root', dataRoot, '--smoke-model', smokeModel,
+      ...(metrics ? ['--metrics', metrics] : []),
+    ],
     { cwd: dirname(resolve(app)), env: childEnvironment },
   )
   if (result?.code !== 0) throw failure('child', 'Packaged app verification failed')

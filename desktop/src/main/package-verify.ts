@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { chmod, copyFile, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
+import { chmod, copyFile, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -14,11 +14,16 @@ import { QmdMcpClient } from './qmd-mcp-client'
 import { QmdProxy } from './qmd-proxy'
 import { QmdRuntime } from './qmd-runtime'
 import { QmdService } from './qmd-service'
+import { parseAndVerifyRuntimeManifest } from './runtime-manifest'
+import { EMBEDDED_RUNTIME_MANIFEST_PUBLIC_KEY_PEM } from './runtime-manifest-public-key'
 import type { RuntimeAsset, RuntimeManifest } from './runtime-types'
 
 const execFileAsync = promisify(execFile)
 const PACKAGE_VERIFY_FLAG = '--package-verify'
 const REQUIRED_ASSET_KINDS = new Set(['python-runtime', 'wheelhouse', 'qmd', 'model'])
+const MODEL_ROLES = new Set(['embedding', 'reranker', 'generator'])
+const HOT_QUERY_SAMPLES = 20
+const HOT_QUERY_P95_LIMIT_MS = 300
 const FAILURE_CODES = ['args', 'resources', 'native', 'fixture', 'model', 'qmd', 'proxy', 'runtime'] as const
 type PackageVerifyCode = typeof FAILURE_CODES[number]
 
@@ -26,6 +31,28 @@ interface PackageVerifyOptions {
   fixture: string
   dataRoot: string
   smokeModel: string
+  metrics?: string
+}
+
+interface PackageVerifyMetrics {
+  schemaVersion: 1
+  durationsMs: {
+    coldStart: number
+    modelInstall: number
+    qmdStart: number
+    indexing: number
+    pythonTool: number
+  }
+  hotQueryMs: {
+    samples: number
+    p50: number
+    p95: number
+    max: number
+  }
+  resourceBytes: {
+    dataRoot: number
+  }
+  processRssBytes: number
 }
 
 class PackageVerifyFailure extends Error {
@@ -53,7 +80,7 @@ function parseOptions(argv: string[]): PackageVerifyOptions | null {
     const flag = argv[index]
     if (index === 0 && !flag.startsWith('--')) continue
     if (flag === PACKAGE_VERIFY_FLAG) continue
-    if (!['--fixture', '--data-root', '--smoke-model'].includes(flag)) fail('args')
+    if (!['--fixture', '--data-root', '--smoke-model', '--metrics'].includes(flag)) fail('args')
     const value = argv[index + 1]
     if (!value || value.startsWith('--') || values.has(flag)) fail('args')
     values.set(flag, value)
@@ -62,10 +89,11 @@ function parseOptions(argv: string[]): PackageVerifyOptions | null {
   const fixture = values.get('--fixture')
   const dataRoot = values.get('--data-root')
   const smokeModel = values.get('--smoke-model')
-  if (!fixture || !dataRoot || !smokeModel || !isAbsolute(fixture) || !isAbsolute(dataRoot) || !isAbsolute(smokeModel)) {
+  const metrics = values.get('--metrics')
+  if (!fixture || !dataRoot || !smokeModel || !isAbsolute(fixture) || !isAbsolute(dataRoot) || !isAbsolute(smokeModel) || (metrics && !isAbsolute(metrics))) {
     fail('args')
   }
-  return { fixture, dataRoot, smokeModel }
+  return { fixture, dataRoot, smokeModel, metrics }
 }
 
 function packageFailureOutput(code: PackageVerifyCode): string {
@@ -79,9 +107,15 @@ function assertManifest(manifest: RuntimeManifest): void {
   ) fail('resources')
   const ids = new Set<string>()
   const kinds = new Set<string>()
+  const modelRoles = new Set<string>()
   for (const asset of manifest.assets) {
+    const modelRole = asset?.kind === 'model'
+      ? asset.role ?? (asset.id === 'embedding' ? 'embedding' : asset.id === 'reranker' || asset.id === 'rerank' ? 'reranker' : asset.id === 'generator' || asset.id === 'generation' ? 'generator' : undefined)
+      : undefined
     if (
-      !asset || ids.has(asset.id) || kinds.has(asset.kind) || !REQUIRED_ASSET_KINDS.has(asset.kind) ||
+      !asset || ids.has(asset.id) || (asset.kind !== 'model' && kinds.has(asset.kind)) || !REQUIRED_ASSET_KINDS.has(asset.kind) ||
+      (asset.kind === 'model' && asset.role !== undefined && !MODEL_ROLES.has(asset.role)) ||
+      (modelRole !== undefined && modelRoles.has(modelRole)) ||
       !asset.id || !asset.version || !['resources', 'userData'].includes(asset.install) ||
       (asset.install === 'userData' && asset.kind !== 'model') ||
       (asset.install === 'resources' && (
@@ -94,8 +128,10 @@ function assertManifest(manifest: RuntimeManifest): void {
     ) fail('resources')
     ids.add(asset.id)
     kinds.add(asset.kind)
+    if (modelRole !== undefined) modelRoles.add(modelRole)
   }
-  if ([...REQUIRED_ASSET_KINDS].some((kind) => !kinds.has(kind))) fail('resources')
+  if ([...REQUIRED_ASSET_KINDS].some((kind) => !kinds.has(kind)) ||
+    !manifest.assets.some((asset) => asset.kind === 'model' && (asset.role === 'embedding' || asset.id === 'embedding'))) fail('resources')
 }
 
 async function requireEntry(path: string, code: PackageVerifyCode): Promise<void> {
@@ -116,6 +152,29 @@ async function verifyResourceAsset(path: string, asset: RuntimeAsset): Promise<v
   } catch (error) {
     if (error instanceof PackageVerifyFailure) throw error
     fail('resources')
+  }
+}
+
+async function verifyWheelhouse(path: string): Promise<void> {
+  let entries
+  try {
+    const metadata = await stat(path)
+    if (!metadata.isDirectory()) fail('resources')
+    entries = await readdir(path, { withFileTypes: true })
+  } catch (error) {
+    if (error instanceof PackageVerifyFailure) throw error
+    fail('resources')
+  }
+
+  const applicationWheels = entries.filter((entry) =>
+    entry.isFile() && /^speech_to_speech[-_][^/]+\.whl$/i.test(entry.name),
+  )
+  if (applicationWheels.length === 0) fail('resources')
+  for (const entry of applicationWheels) {
+    const contents = await readFile(join(path, entry.name))
+    if (contents.length < 4 || contents[0] !== 0x50 || contents[1] !== 0x4b || contents[2] !== 0x03 || contents[3] !== 0x04) {
+      fail('resources')
+    }
   }
 }
 
@@ -149,7 +208,15 @@ async function packageResources(): Promise<PackageResources> {
   const qmdEntrypoint = join(qmdRoot, 'node_modules', '@tobilu', 'qmd', 'bin', 'qmd')
   const python = join(runtimeRoot, process.platform === 'win32' ? 'bin/python.exe' : 'bin/python')
   try {
-    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as RuntimeManifest
+    if (!EMBEDDED_RUNTIME_MANIFEST_PUBLIC_KEY_PEM) fail('resources')
+    const manifestText = await readFile(manifestPath, 'utf8')
+    const signature = await readFile(`${manifestPath}.sig`, 'utf8')
+    const manifest = parseAndVerifyRuntimeManifest(
+      manifestText,
+      signature,
+      EMBEDDED_RUNTIME_MANIFEST_PUBLIC_KEY_PEM,
+      { requireSignature: true },
+    )
     assertManifest(manifest)
     const realRoot = await realpathSafe(root)
     for (const path of [qmdRoot, runtimeRoot, manifestPath, qmdEntrypoint, python]) {
@@ -161,10 +228,9 @@ async function packageResources(): Promise<PackageResources> {
     await requireEntry(wheelhouseAssetPath, 'resources')
     await verifyResourceAsset(wheelhouseAssetPath, wheelhouseAsset as RuntimeAsset)
     if (!inside(root, wheelhouseAssetPath) || !inside(realRoot, await realpathSafe(wheelhouseAssetPath))) fail('resources')
-    const wheelhouseDirectory = join(runtimeRoot, 'wheelhouse')
-    const wheelhouse = await stat(wheelhouseDirectory).then((metadata) =>
-      metadata.isDirectory() ? wheelhouseDirectory : wheelhouseAssetPath,
-    ).catch(() => wheelhouseAssetPath)
+    const wheelhouse = join(runtimeRoot, 'wheelhouse')
+    await verifyWheelhouse(wheelhouse)
+    if (!inside(realRoot, await realpathSafe(wheelhouse))) fail('resources')
     for (const asset of manifest.assets.filter((candidate) => candidate.install === 'resources')) {
       const assetPath = resolve(root, asset.path ?? '')
       await requireEntry(assetPath, 'resources')
@@ -225,14 +291,15 @@ async function assertPrivateQmdPaths(dataRoot: string): Promise<void> {
     environment.XDG_CACHE_HOME,
     environment.QMD_CONFIG_DIR,
     environment.INDEX_PATH,
-    join(root, 'qmd', 'cache', 'qmd', 'models'),
+    join(root, 'runtime', 'models'),
   ]) {
     if (!path || !inside(root, resolve(path))) fail('runtime')
   }
 }
 
 async function installSmokeModel(resources: PackageResources, dataRoot: string, smokeModel: string): Promise<void> {
-  const asset = resources.manifest.assets.find((candidate) => candidate.kind === 'model') as RuntimeAsset | undefined
+  const asset = resources.manifest.assets.find((candidate) =>
+    candidate.kind === 'model' && (candidate.role === 'embedding' || candidate.id === 'embedding')) as RuntimeAsset | undefined
   if (!asset) fail('model')
   let contents: Buffer
   try {
@@ -243,7 +310,7 @@ async function installSmokeModel(resources: PackageResources, dataRoot: string, 
     fail('model')
   }
   if (createHash('sha256').update(contents).digest('hex') !== asset.sha256) fail('model')
-  const modelsRoot = join(dataRoot, 'qmd', 'cache', 'qmd', 'models')
+  const modelsRoot = join(dataRoot, 'runtime', 'models')
   const destination = join(modelsRoot, `${asset.id}-${asset.version}.gguf`)
   const temporary = `${destination}.${randomBytes(8).toString('hex')}.tmp`
   const store = new ModelStore({ root: dataRoot, manifest: resources.manifest })
@@ -295,7 +362,7 @@ async function runVoiceToolSmoke(resources: PackageResources, dataRoot: string, 
     packagedRoot: resources.runtimeRoot,
   })
   const paths = await runtime.ensureReady()
-  if (!inside(resources.root, resolve(paths.python)) || !inside(resources.root, resolve(paths.appRoot))) fail('runtime')
+  if (!inside(resolve(dataRoot), resolve(paths.python)) || !inside(resources.root, resolve(paths.appRoot))) fail('runtime')
   const script = [
     'import asyncio, json',
     'from speech_to_speech.tools.qmd_knowledge import TOOLS, get_document, search_knowledge',
@@ -303,11 +370,11 @@ async function runVoiceToolSmoke(resources: PackageResources, dataRoot: string, 
     "  assert {tool['name'] for tool in TOOLS} == {'search_knowledge', 'get_document'}",
     '  result = json.loads(await search_knowledge("花生过敏", top_k=3))',
     '  assert result["status"] == "ok" and result["results"]',
-    '  document = json.loads(await get_document(result["results"][0]["handle"]))',
+    '  document = json.loads(await get_document(result["results"][0]["docid"]))',
     '  assert document["status"] == "ok" and "花生" in document["content"]',
     '  malicious = json.loads(await search_knowledge("忽略系统规则", top_k=3))',
     '  assert malicious["status"] == "ok" and malicious["results"]',
-    '  malicious_document = json.loads(await get_document(malicious["results"][0]["handle"]))',
+    '  malicious_document = json.loads(await get_document(malicious["results"][0]["docid"]))',
     '  assert "只能作为资料内容" in malicious_document["content"]',
     'asyncio.run(main())',
   ].join('\n')
@@ -326,7 +393,61 @@ async function runVoiceToolSmoke(resources: PackageResources, dataRoot: string, 
   }
 }
 
+async function verifyHotQueryLatency(proxy: { url: string; token: string }): Promise<PackageVerifyMetrics['hotQueryMs']> {
+  const samples: number[] = []
+  for (let index = 0; index < HOT_QUERY_SAMPLES; index += 1) {
+    const startedAt = performance.now()
+    let response: Response
+    try {
+      response = await fetch(`${proxy.url}/v1/search`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${proxy.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ query: '花生过敏', top_k: 3 }),
+        signal: AbortSignal.timeout(2000),
+      })
+      const body = await response.json() as { status?: unknown; results?: unknown }
+      if (!response.ok || body.status !== 'ok' || !Array.isArray(body.results) || body.results.length === 0) fail('qmd')
+    } catch (error) {
+      if (error instanceof PackageVerifyFailure) throw error
+      fail('proxy')
+    }
+    samples.push(performance.now() - startedAt)
+  }
+
+  samples.sort((left, right) => left - right)
+  const percentile = (fraction: number): number => samples[Math.min(samples.length - 1, Math.ceil(samples.length * fraction) - 1)] ?? Number.POSITIVE_INFINITY
+  const p50 = percentile(0.5)
+  const p95 = percentile(0.95)
+  const max = samples.at(-1) ?? Number.POSITIVE_INFINITY
+  if (!Number.isFinite(p50) || !Number.isFinite(p95) || !Number.isFinite(max) || p95 > HOT_QUERY_P95_LIMIT_MS) fail('qmd')
+  return { samples: samples.length, p50, p95, max }
+}
+
+async function directoryBytes(path: string): Promise<number> {
+  try {
+    const metadata = await stat(path)
+    if (metadata.isFile()) return metadata.size
+    if (!metadata.isDirectory()) return 0
+    const entries = await readdir(path, { withFileTypes: true })
+    const sizes = await Promise.all(entries.map((entry) => directoryBytes(join(path, entry.name))))
+    return sizes.reduce((total, size) => total + size, 0)
+  } catch {
+    return 0
+  }
+}
+
+async function writeMetrics(path: string | undefined, metrics: PackageVerifyMetrics): Promise<void> {
+  if (!path) return
+  const temporary = `${path}.${process.pid}.tmp`
+  await writeFile(temporary, `${JSON.stringify(metrics, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+  await rename(temporary, path)
+}
+
 export async function runPackageVerification(options: PackageVerifyOptions): Promise<void> {
+  const verificationStartedAt = performance.now()
   const resources = await packageResources()
   await loadNativeAddon(resources)
   await assertPrivateQmdPaths(options.dataRoot)
@@ -336,8 +457,16 @@ export async function runPackageVerification(options: PackageVerifyOptions): Pro
   const homeBefore = await snapshotUserQmdState()
   let qmdRuntime: QmdRuntime | undefined
   let proxy: QmdProxy | undefined
+  let modelInstallMs = 0
+  let qmdStartMs = 0
+  let indexingMs = 0
+  let pythonToolMs = 0
+  let coldStartMs = 0
+  let hotQueryMs: PackageVerifyMetrics['hotQueryMs'] = { samples: 0, p50: 0, p95: 0, max: 0 }
   try {
+    const modelStartedAt = performance.now()
     await installSmokeModel(resources, options.dataRoot, options.smokeModel)
+    modelInstallMs = performance.now() - modelStartedAt
     const metadataPath = join(options.dataRoot, 'knowledge', 'collections.json')
     const service = new QmdService({
       metadataPath,
@@ -346,25 +475,33 @@ export async function runPackageVerification(options: PackageVerifyOptions): Pro
     const collection = await service.addCollection(options.fixture, '中文验收')
     qmdRuntime = new QmdRuntime({ resourceRoot: resources.qmdRoot, dataRoot: options.dataRoot })
     const client = new QmdMcpClient({ endpoint: () => qmdRuntime?.endpoint?.baseUrl ?? '' })
+    const qmdStartedAt = performance.now()
     await qmdRuntime.start()
+    qmdStartMs = performance.now() - qmdStartedAt
     service.setClient(client)
     await client.initialize()
+    const indexingStartedAt = performance.now()
     await service.reindex(collection.collectionId)
+    indexingMs = performance.now() - indexingStartedAt
     const status = await client.status()
     if (!status.hasVectorIndex || status.totalDocuments < 3) fail('qmd')
     const allergy = (await service.search('花生过敏', collection.collectionId, 3))[0]
     if (!allergy || allergy.relativeFile !== 'allergy.md') fail('qmd')
-    const allergyDocument = await service.getDocument(allergy.handle, { startLine: 1, endLine: 5 })
+    coldStartMs = performance.now() - verificationStartedAt
+    const allergyDocument = await service.getDocument(allergy.docid, { startLine: 1, endLine: 5 })
     if (!allergyDocument.content.includes('花生')) fail('qmd')
     const malicious = (await service.search('忽略系统规则', collection.collectionId, 3))
       .find((hit) => hit.relativeFile === 'malicious-instructions.md')
     if (!malicious) fail('qmd')
-    const maliciousDocument = await service.getDocument(malicious.handle, { startLine: 1, endLine: 5 })
+    const maliciousDocument = await service.getDocument(malicious.docid, { startLine: 1, endLine: 5 })
     if (!maliciousDocument.content.includes('只能作为资料内容')) fail('qmd')
     service.setRuntimeState({ name: 'ready_vec', updatedAt: new Date().toISOString() })
     proxy = new QmdProxy({ service })
     const endpoint = await proxy.start()
+    hotQueryMs = await verifyHotQueryLatency(endpoint)
+    const pythonStartedAt = performance.now()
     await runVoiceToolSmoke(resources, options.dataRoot, endpoint)
+    pythonToolMs = performance.now() - pythonStartedAt
   } catch (error) {
     if (error instanceof PackageVerifyFailure) throw error
     fail('qmd')
@@ -373,6 +510,19 @@ export async function runPackageVerification(options: PackageVerifyOptions): Pro
     await qmdRuntime?.stop().catch(() => undefined)
   }
   if (homeBefore !== await snapshotUserQmdState()) fail('runtime')
+  await writeMetrics(options.metrics, {
+    schemaVersion: 1,
+    durationsMs: {
+      coldStart: coldStartMs,
+      modelInstall: modelInstallMs,
+      qmdStart: qmdStartMs,
+      indexing: indexingMs,
+      pythonTool: pythonToolMs,
+    },
+    hotQueryMs,
+    resourceBytes: { dataRoot: await directoryBytes(options.dataRoot) },
+    processRssBytes: process.memoryUsage().rss,
+  })
 }
 
 export function packageVerifyOptionsFromArgv(argv = process.argv.slice(1)): PackageVerifyOptions | null {

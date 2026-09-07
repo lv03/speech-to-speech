@@ -1,12 +1,32 @@
-export type RuntimeAssetKind = 'python-runtime' | 'uv' | 'wheelhouse' | 'qmd' | 'model'
+export type RuntimeAssetKind = 'python-runtime' | 'wheelhouse' | 'qmd' | 'model'
+export type RuntimeAssetInstall = 'resources' | 'userData'
+export type RuntimeModelRole = 'embedding' | 'reranker' | 'generator'
+export type RetrievalMode = 'hybrid' | 'vec-only'
+export type RetrievalPreference = 'auto' | RetrievalMode
+export type ApprovedRetrievalProfile = RetrievalMode
 
 export interface RuntimeAsset {
   id: string
   version: string
   kind: RuntimeAssetKind
+  install: RuntimeAssetInstall
+  path?: string
   url: string
   size: number
   sha256: string
+  role?: RuntimeModelRole
+}
+
+export interface RetrievalProfile {
+  mode: RetrievalMode
+  embeddingAssetId: string
+  rerankerAssetId?: string
+  generatorAssetId?: string
+}
+
+export interface RetrievalProfiles {
+  vecOnly: RetrievalProfile | null
+  hybrid: RetrievalProfile | null
 }
 
 export interface RuntimeManifest {
@@ -14,6 +34,7 @@ export interface RuntimeManifest {
   platform: 'darwin-arm64'
   pythonAbi: string
   profile: 'voice-default'
+  approvedProfiles: ApprovedRetrievalProfile[]
   assets: RuntimeAsset[]
 }
 
@@ -51,11 +72,64 @@ export interface CollectionRecord {
   enabled: boolean
   lastIndexedAt: string | null
   indexState: 'pending' | 'indexing' | 'ready' | 'failed'
+  indexFingerprint: string | null
 }
 
 export interface KnowledgeSnapshot {
   state: RuntimeState
   collections: CollectionRecord[]
+}
+
+export type KnowledgeModelState =
+  | 'not_needed'
+  | 'needs_consent'
+  | 'downloading'
+  | 'installing'
+  | 'ready'
+  | 'failed'
+
+export interface KnowledgeModelStatus {
+  state: KnowledgeModelState
+  downloadBytes: number
+  diskBytes: number
+  completedBytes?: number
+  reason?: string
+  mode?: RetrievalMode
+  availableModes?: RetrievalMode[]
+}
+
+export interface PublicKnowledgeCollection {
+  collectionId: string
+  displayName: string
+  directory: string
+  indexState: CollectionRecord['indexState']
+  lastIndexedAt: string | null
+}
+
+export interface PublicKnowledgeSnapshot {
+  state: RuntimeStateName
+  reason?: string
+  model: KnowledgeModelStatus
+  collections: PublicKnowledgeCollection[]
+}
+
+export function sanitizePublicReason(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const reason = value.trim()
+  if (
+    !reason || reason.length > 200 || /[\u0000-\u001f\u007f]/.test(reason) || reason.includes('\\') ||
+    reason.startsWith('/') || /\b[A-Za-z]:\//.test(reason) || /(?:qmd|file|https?):\/\//i.test(reason)
+  ) return undefined
+  return reason
+}
+
+export function publicModelStatus(status: KnowledgeModelStatus): KnowledgeModelStatus {
+  const reason = sanitizePublicReason(status.reason)
+  const { reason: _reason, ...withoutReason } = status
+  return {
+    ...withoutReason,
+    ...(reason ? { reason } : {}),
+  }
 }
 
 export interface QmdSearchResult {
@@ -80,7 +154,7 @@ export interface LineRange {
 }
 
 export interface KnowledgeSearchHit {
-  handle: string
+  docid: string
   collectionId: string
   collectionName: string
   relativeFile: string
@@ -91,7 +165,7 @@ export interface KnowledgeSearchHit {
 }
 
 export interface KnowledgeDocument {
-  handle: string
+  docid: string
   collectionName: string
   relativeFile: string
   title: string

@@ -4,6 +4,12 @@ import { pathToFileURL } from 'node:url'
 
 const QMD_PACKAGE = '@tobilu/qmd'
 const QMD_VERSION = '2.8.3'
+const NATIVE_PREBUILD_TARGETS = new Set([
+  'darwin-arm64', 'darwin-x64',
+  'win32-arm64', 'win32-x64',
+  'linux-arm64', 'linux-x64',
+  'linuxmusl-arm64', 'linuxmusl-x64',
+])
 
 function matchesPlatform(values, current) {
   if (!Array.isArray(values) || values.length === 0) return true
@@ -46,6 +52,18 @@ function lockKey(sourceRoot, packageRoot) {
     throw new Error(`QMD dependency resolves outside source node_modules: ${packageRoot}`)
   }
   return `node_modules/${packageRelativePath.split(sep).join('/')}`
+}
+
+function isIncompatibleNativePrebuild(source, packageRoot, platform, arch) {
+  const relativePath = relative(packageRoot, source)
+  const segments = relativePath.split(sep)
+  const prebuildsIndex = segments.indexOf('prebuilds')
+  if (prebuildsIndex < 0) return false
+  const target = `${platform}-${arch}`
+  return segments.slice(prebuildsIndex + 1).some((segment) => {
+    const token = segment.replace(/\.node$/, '')
+    return NATIVE_PREBUILD_TARGETS.has(token) && token !== target
+  })
 }
 
 async function loadLockfile(lockfilePath) {
@@ -115,6 +133,7 @@ export async function prepareQmdResources({
       force: true,
       dereference: true,
       filter: (source) => {
+        if (isIncompatibleNativePrebuild(source, packageRoot, platform, arch)) return false
         const nestedNodeModules = join(packageRoot, 'node_modules')
         return source !== nestedNodeModules && !source.startsWith(`${nestedNodeModules}${sep}`)
       },
