@@ -147,7 +147,7 @@ export class SettingsStore {
       // 旧版布尔开关迁移：true（禁用思考）→ none；false（开启思考）→ medium
       out.llmReasoningEffort = raw.llmDisableThinking ? 'none' : 'medium'
     }
-    if (typeof raw.knowledgeRetrievalMode === 'string' && ['auto', 'hybrid', 'vec-only'].includes(raw.knowledgeRetrievalMode)) {
+    if (typeof raw.knowledgeRetrievalMode === 'string' && ['auto', 'vec-only', 'hybrid', 'full'].includes(raw.knowledgeRetrievalMode)) {
       out.knowledgeRetrievalMode = raw.knowledgeRetrievalMode as RetrievalPreference
     }
     if (typeof raw.knowledgePreheatEnabled === 'boolean') out.knowledgePreheatEnabled = raw.knowledgePreheatEnabled

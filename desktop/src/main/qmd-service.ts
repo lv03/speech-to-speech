@@ -503,9 +503,12 @@ export class QmdService implements KnowledgeService {
     for (const record of records) {
       let results
       try {
-        results = this.retrievalMode === 'hybrid'
-          ? await this.client.query(cleanQuery, this.internalName(record), topK, 'hybrid')
-          : await this.client.query(cleanQuery, this.internalName(record), topK)
+        results = await this.client.query(
+          cleanQuery,
+          this.internalName(record),
+          topK,
+          this.retrievalMode, // 'vec-only' | 'hybrid' | 'full'
+        )
       } catch (error) {
         if (error instanceof KnowledgeError) throw error
         throw new KnowledgeError('proxy_unavailable', 'Knowledge service is unavailable')

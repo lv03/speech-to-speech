@@ -217,13 +217,37 @@ export class QmdMcpClient implements QmdClient {
     return envelope.result
   }
 
+  /**
+   * Execute a retrieval in the requested mode:
+   *  - 'vec-only': vector search only (no rerank)
+   *  - 'hybrid': typed lex+vec sub-queries with rerank (no internal query expansion)
+   *  - 'full': plain-text query so QMD runs its complete pipeline (query
+   *    expansion to lex/vec/hyde + RRF + rerank)
+   */
   async query(query: string, collection: string, limit: number, mode: RetrievalMode = 'vec-only'): Promise<QmdSearchResult[]> {
-    const result = await this.callTool('query', {
-      searches: mode === 'hybrid' ? [{ type: 'lex', query }, { type: 'vec', query }] : [{ type: 'vec', query }],
-      collections: [collection],
-      limit,
-      rerank: mode === 'hybrid',
-    })
+    let result
+    if (mode === 'vec-only') {
+      result = await this.callTool('query', {
+        searches: [{ type: 'vec', query }],
+        collections: [collection],
+        limit,
+        rerank: false,
+      })
+    } else if (mode === 'full') {
+      result = await this.callTool('query', {
+        query,
+        collections: [collection],
+        limit,
+        rerank: true,
+      })
+    } else {
+      result = await this.callTool('query', {
+        searches: [{ type: 'lex', query }, { type: 'vec', query }],
+        collections: [collection],
+        limit,
+        rerank: true,
+      })
+    }
     return searchResults(resultPayload(result))
   }
 

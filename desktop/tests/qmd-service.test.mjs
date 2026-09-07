@@ -209,7 +209,7 @@ test('issues opaque docids, rejects unsafe result paths, and sends only the mapp
     title: 'Safe',
     content: 'trusted content',
   })
-  expect(clientCalls).toContainEqual(['query', 'safe', `kb_${collection.collectionId}`, 5])
+  expect(clientCalls).toContainEqual(['query', 'safe', `kb_${collection.collectionId}`, 5, 'vec-only'])
   expect(clientCalls).toContainEqual(['get', '#internal-docid', 2, 3])
 
   service.setClient(undefined)

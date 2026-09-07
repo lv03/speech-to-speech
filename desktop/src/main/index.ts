@@ -881,7 +881,7 @@ app.whenReady().then(async () => {
   if (retrievalProfiles.vecOnly) indexFingerprints['vec-only'] = getIndexFingerprint(runtimeManifest, retrievalProfiles.vecOnly, '2.8.3')
   if (retrievalProfiles.hybrid) indexFingerprints.hybrid = getIndexFingerprint(runtimeManifest, retrievalProfiles.hybrid, '2.8.3')
   const configuredRetrievalPreference = settingsStore?.get().knowledgeRetrievalMode ?? 'auto'
-  const effectiveRetrievalPreference = configuredRetrievalPreference === 'hybrid' && !retrievalProfiles.hybrid
+  const effectiveRetrievalPreference = (configuredRetrievalPreference === 'hybrid' || configuredRetrievalPreference === 'full') && !retrievalProfiles.hybrid
     ? 'auto'
     : configuredRetrievalPreference
   if (effectiveRetrievalPreference !== configuredRetrievalPreference) {
@@ -975,7 +975,7 @@ app.whenReady().then(async () => {
       if (!status.enrolled) throw new Error('请先注册声纹，再启用声纹验证')
       if (!status.supportsContinuous) throw new Error('当前声纹档案为旧版（仅唤醒词），请重新注册后再启用')
     }
-    if (candidate.knowledgeRetrievalMode === 'hybrid' && !getRetrievalProfiles(runtimeManifest).hybrid) {
+    if ((candidate.knowledgeRetrievalMode === 'hybrid' || candidate.knowledgeRetrievalMode === 'full') && !getRetrievalProfiles(runtimeManifest).hybrid) {
       throw new Error('当前运行时未提供可用的混合检索模型')
     }
     const before = settingsStore?.get()

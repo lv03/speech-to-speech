@@ -1,9 +1,9 @@
 export type RuntimeAssetKind = 'python-runtime' | 'wheelhouse' | 'qmd' | 'model'
 export type RuntimeAssetInstall = 'resources' | 'userData'
 export type RuntimeModelRole = 'embedding' | 'reranker' | 'generator'
-export type RetrievalMode = 'hybrid' | 'vec-only'
+export type RetrievalMode = 'vec-only' | 'hybrid' | 'full'
 export type RetrievalPreference = 'auto' | RetrievalMode
-export type ApprovedRetrievalProfile = RetrievalMode
+export type ApprovedRetrievalProfile = 'vec-only' | 'hybrid'
 
 export interface RuntimeAsset {
   id: string
@@ -18,7 +18,7 @@ export interface RuntimeAsset {
 }
 
 export interface RetrievalProfile {
-  mode: RetrievalMode
+  mode: ApprovedRetrievalProfile
   embeddingAssetId: string
   rerankerAssetId?: string
   generatorAssetId?: string

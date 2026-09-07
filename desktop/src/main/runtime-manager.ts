@@ -171,7 +171,7 @@ export class RuntimeManager {
     this.retryDelaysMs = options.retryDelaysMs ?? [1000, 2000, 4000]
     this.retrievalPreference = options.retrievalPreference ?? 'auto'
     this.preheatEnabled = options.preheatEnabled ?? true
-    this.service.setRetrievalMode?.(this.selectedProfile()?.mode ?? 'vec-only')
+    this.service.setRetrievalMode?.(this.executionMode())
     const initialFingerprint = this.indexFingerprints[this.selectedProfile()?.mode ?? 'vec-only']
     if (initialFingerprint) this.service.setIndexFingerprint?.(initialFingerprint)
     this.unsubscribeModelProgress = this.modelStore.onProgress?.((event) => {
@@ -234,9 +234,18 @@ export class RuntimeManager {
 
   private selectedProfile(preference = this.retrievalPreference): RetrievalProfile | null {
     if (preference === 'vec-only') return this.retrievalProfiles.vecOnly
-    if (preference === 'hybrid') return this.retrievalProfiles.hybrid
-    // auto = 已批准的最佳档：hybrid（BM25+向量+重排）优先，未批准/资产缺失时回落 vec-only
-    return this.retrievalProfiles.hybrid ?? this.retrievalProfiles.vecOnly
+    // 'auto' = 已批准的最佳档（默认完整管线）；'hybrid' / 'full' 都落在已批准的 hybrid profile
+    if (preference === 'auto') return this.retrievalProfiles.hybrid ?? this.retrievalProfiles.vecOnly
+    return this.retrievalProfiles.hybrid
+  }
+
+  /** 实际查询执行档：vec-only / hybrid(结构化，无扩展) / full(完整自动管线，含扩展)。 */
+  private executionMode(preference = this.retrievalPreference): RetrievalMode {
+    const profile = this.selectedProfile(preference)
+    if (!profile || profile.mode === 'vec-only') return 'vec-only'
+    if (preference === 'vec-only') return 'vec-only'
+    if (preference === 'hybrid') return 'hybrid'
+    return 'full' // 'auto' 或显式 'full' → 在 hybrid profile 上跑 QMD 完整管线
   }
 
   private availableModes(): RetrievalMode[] {
@@ -277,8 +286,8 @@ export class RuntimeManager {
   }
 
   async setRetrievalPreference(preference: RetrievalPreference): Promise<void> {
-    if (!['auto', 'hybrid', 'vec-only'].includes(preference)) throw new Error('Invalid retrieval preference')
-    if (preference === 'hybrid' && !this.retrievalProfiles.hybrid) {
+    if (!['auto', 'vec-only', 'hybrid', 'full'].includes(preference)) throw new Error('Invalid retrieval preference')
+    if ((preference === 'hybrid' || preference === 'full') && !this.retrievalProfiles.hybrid) {
       throw new Error('Retrieval mode hybrid is unavailable')
     }
     const previousProfile = this.selectedProfile()
@@ -287,7 +296,7 @@ export class RuntimeManager {
       if (this.stopped) throw new Error('Knowledge runtime is stopping')
       this.retrievalPreference = preference
       this.modelProgress.clear()
-      this.service.setRetrievalMode?.(nextProfile?.mode ?? 'vec-only')
+      this.service.setRetrievalMode?.(this.executionMode(preference))
       const nextFingerprint = this.indexFingerprints[nextProfile?.mode ?? 'vec-only']
       if (nextFingerprint) this.service.setIndexFingerprint?.(nextFingerprint)
       if (this.profileKey(previousProfile) === this.profileKey(nextProfile)) {
@@ -372,7 +381,7 @@ export class RuntimeManager {
       ? { present: false, completedBytes: this.completedModelBytes() }
       : await this.inspectProfile()
     const totalBytes = this.totalModelBytes()
-    const mode = this.selectedProfile()?.mode
+    const mode = this.executionMode()
     const availableModes = this.availableModes()
     if (this.currentState.name === 'downloading') {
       return {
@@ -470,7 +479,7 @@ export class RuntimeManager {
     await this.startQmdWithRetry()
   }
 
-  private async verifyQuery(collectionId: string, mode = this.selectedProfile()?.mode ?? 'vec-only'): Promise<void> {
+  private async verifyQuery(collectionId: string, mode = this.executionMode()): Promise<void> {
     const status = await this.qmdClient.status()
     if (!status.hasVectorIndex || status.needsEmbedding > 0) {
       throw new Error('QMD vector index is not ready')

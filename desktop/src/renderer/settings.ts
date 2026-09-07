@@ -20,7 +20,7 @@ interface SettingsPayload {
   ttsVoice: string
   language: string
   llmReasoningEffort: 'none' | 'low' | 'medium' | 'high'
-  knowledgeRetrievalMode: 'auto' | 'hybrid' | 'vec-only'
+  knowledgeRetrievalMode: 'auto' | 'vec-only' | 'hybrid' | 'full'
   knowledgePreheatEnabled: boolean
 }
 
@@ -140,9 +140,9 @@ function collect(): SettingsPayload {
     autoHideSeconds: Number(autoHide.value) || 0,
     wakeShortcut: wakeShortcut.value.trim(),
     language: language.value,
-    knowledgeRetrievalMode: (['auto', 'hybrid', 'vec-only'].includes(knowledgeRetrievalMode.value)
+    knowledgeRetrievalMode: (['auto', 'vec-only', 'hybrid', 'full'].includes(knowledgeRetrievalMode.value)
       ? knowledgeRetrievalMode.value
-      : 'auto') as 'auto' | 'hybrid' | 'vec-only',
+      : 'auto') as 'auto' | 'vec-only' | 'hybrid' | 'full',
     knowledgePreheatEnabled: knowledgePreheatEnabled.checked,
   }
 }
@@ -175,12 +175,15 @@ const knowledgeAdd = document.getElementById('knowledge-add') as HTMLButtonEleme
 const knowledgeCancel = document.getElementById('knowledge-cancel') as HTMLButtonElement
 
 function updateRetrievalModeAvailability(availableModes: string[] = []): void {
-  const hybrid = knowledgeRetrievalMode.querySelector<HTMLOptionElement>('option[value="hybrid"]')
-  if (!hybrid) return
-  const enabled = availableModes.includes('hybrid')
-  hybrid.disabled = !enabled
-  hybrid.textContent = enabled ? '混合检索' : '混合检索（当前不可用）'
-  if (!enabled && knowledgeRetrievalMode.value === 'hybrid') knowledgeRetrievalMode.value = 'auto'
+  const hybridApproved = availableModes.includes('hybrid')
+  for (const value of ['hybrid', 'full']) {
+    const option = knowledgeRetrievalMode.querySelector<HTMLOptionElement>(`option[value="${value}"]`)
+    if (!option) continue
+    option.disabled = !hybridApproved
+  }
+  if (!hybridApproved && ['hybrid', 'full'].includes(knowledgeRetrievalMode.value)) {
+    knowledgeRetrievalMode.value = 'auto'
+  }
 }
 
 function formatBytes(bytes: number): string {
