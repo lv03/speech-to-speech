@@ -1,4 +1,4 @@
-import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
@@ -25,26 +25,53 @@ const modelAsset = {
   id: 'embedding',
   version: '2026.09.06',
   kind: 'model',
+  role: 'embedding',
   install: 'userData',
   url: 'https://example.invalid/embedding.gguf',
   size: 1,
   sha256: 'd'.repeat(64),
 }
 
+const auxiliaryModelAssets = [
+  {
+    id: 'reranker',
+    version: '2026.09.06',
+    kind: 'model',
+    role: 'reranker',
+    install: 'userData',
+    url: 'https://example.invalid/reranker.gguf',
+    size: 1,
+    sha256: 'e'.repeat(64),
+  },
+  {
+    id: 'generator',
+    version: '2026.09.06',
+    kind: 'model',
+    role: 'generator',
+    install: 'userData',
+    url: 'https://example.invalid/generator.gguf',
+    size: 1,
+    sha256: 'f'.repeat(64),
+  },
+]
+
 async function packagedResources() {
   const root = await mkdtemp(join(tmpdir(), 's2s-package-resources-'))
   const qmdEntrypoint = join(root, 'qmd', 'node_modules', '@tobilu', 'qmd', 'bin', 'qmd')
   const nativeAddon = join(root, 'qmd', 'node_modules', '@node-llama-cpp', 'addon.node')
   const python = join(root, 'runtime', 'bin', 'python')
-  const wheelhouse = join(root, 'runtime', 'wheelhouse', 'speech_to_speech.whl')
+  const wheelhouseDirectory = join(root, 'runtime', 'wheelhouse')
+  const wheelhouseMarker = join(wheelhouseDirectory, 'README.txt')
+  const applicationWheel = join(wheelhouseDirectory, 'speech_to_speech-0.1.0-py3-none-any.whl')
   await mkdir(join(root, 'qmd', 'node_modules', '@tobilu', 'qmd', 'bin'), { recursive: true })
   await mkdir(join(root, 'qmd', 'node_modules', '@node-llama-cpp'), { recursive: true })
   await mkdir(join(root, 'runtime', 'bin'), { recursive: true })
-  await mkdir(join(root, 'runtime', 'wheelhouse'), { recursive: true })
+  await mkdir(wheelhouseDirectory, { recursive: true })
   await writeFile(qmdEntrypoint, '#!/usr/bin/env node\n')
   await writeFile(python, '#!/bin/sh\n')
   await chmod(python, 0o755)
-  await writeFile(wheelhouse, 'wheelhouse')
+  await writeFile(wheelhouseMarker, 'wheelhouse')
+  await writeFile(applicationWheel, Buffer.from('504b0304', 'hex'))
   await copyFile(nativeSource, nativeAddon)
   const resourceAsset = async (id, version, kind, path, url) => {
     const contents = await readFile(join(root, path))
@@ -64,14 +91,17 @@ async function packagedResources() {
     platform: 'darwin-arm64',
     pythonAbi: 'cp311',
     profile: 'voice-default',
+    approvedProfiles: ['vec-only'],
     assets: [
       await resourceAsset('python-runtime', '2026.09.06', 'python-runtime', 'runtime/bin/python', 'https://example.invalid/python-runtime.tar.gz'),
-      await resourceAsset('wheelhouse', '2026.09.06', 'wheelhouse', 'runtime/wheelhouse/speech_to_speech.whl', 'https://example.invalid/wheelhouse.tar.gz'),
+      await resourceAsset('wheelhouse', '2026.09.06', 'wheelhouse', 'runtime/wheelhouse/README.txt', 'https://example.invalid/wheelhouse.tar.gz'),
       await resourceAsset('qmd', '2.8.3', 'qmd', 'qmd/node_modules/@tobilu/qmd/bin/qmd', 'https://example.invalid/qmd.tar.gz'),
       modelAsset,
+      ...auxiliaryModelAssets,
     ],
   }))
-  return { root, qmdEntrypoint, nativeAddon, python, wheelhouse }
+  await writeFile(join(root, 'runtime-manifest.json.sig'), 'test-signature\n')
+  return { root, qmdEntrypoint, nativeAddon, python, wheelhouse: wheelhouseDirectory, applicationWheel }
 }
 
 test('resolves every packaged component inside installation resources without cwd or PATH', async () => {
@@ -96,6 +126,27 @@ test('resolves every packaged component inside installation resources without cw
   expect(packageSmokeEnvironment('/tmp/s2s-package-smoke').PATH).toBe('')
 })
 
+test('rejects a packaged manifest without a detached signature', async () => {
+  const resources = await packagedResources()
+  await rm(join(resources.root, 'runtime-manifest.json.sig'))
+
+  await expect(resolvePackageResources(resources.root)).rejects.toThrow(/signature/i)
+})
+
+test('rejects a packaged wheelhouse without a versioned application wheel', async () => {
+  const resources = await packagedResources()
+  await rm(resources.applicationWheel)
+
+  await expect(resolvePackageResources(resources.root)).rejects.toThrow(/wheelhouse/i)
+})
+
+test('rejects a versioned application wheel that is only a placeholder', async () => {
+  const resources = await packagedResources()
+  await writeFile(resources.applicationWheel, 'placeholder')
+
+  await expect(resolvePackageResources(resources.root)).rejects.toThrow(/wheelhouse/i)
+})
+
 test('loads the packaged QMD native addon instead of only checking that a .node file exists', async () => {
   const resources = await packagedResources()
   const addon = await verifyNativeAddon(await resolvePackageResources(resources.root))
@@ -109,12 +160,14 @@ test('launches package verification through the packaged Electron executable wit
   const fixture = join(root, 'kb-zh')
   const dataRoot = join(root, 'data')
   const smokeModel = join(root, 'qmd-model', 'embedding.gguf')
+  const metrics = join(root, 'metrics.json')
   const calls = []
   const result = await launchPackageVerify({
     app,
     fixture,
     dataRoot,
     smokeModel,
+    metrics,
     run: async (command, args, options) => {
       calls.push({ command, args, options })
       return { code: 0 }
@@ -129,6 +182,7 @@ test('launches package verification through the packaged Electron executable wit
     '--fixture', fixture,
     '--data-root', dataRoot,
     '--smoke-model', smokeModel,
+    '--metrics', metrics,
   ])
   expect(calls[0].options.cwd).toBe(root)
   expect(calls[0].options.env.PATH).toBe('')
@@ -147,6 +201,7 @@ test('requires explicit verifier inputs and emits only fixed failure codes', () 
     fixture: '/tmp/kb-zh',
     dataRoot: '/tmp/s2s-data',
     smokeModel: '/tmp/embedding.gguf',
+    metrics: undefined,
   })
   expect(() => parseVerifierArgs(['--fixture', '/tmp/kb-zh'])).toThrow(/--app|--data-root|--smoke-model/)
   expect(formatPackageVerifyFailure('qmd')).toBe('PACKAGE_VERIFY_FAILED:qmd')
@@ -184,8 +239,68 @@ test('uses the fixed two-stage packaged Electron protocol without legacy environ
   expect(indexSource).toContain("process.argv.includes('--package-verify')")
   expect(indexSource).toContain("new URL('./packageVerify.js', import.meta.url)")
   expect(packageVerifySource).toContain('packageVerifyOptionsFromArgv(argv = process.argv.slice(1))')
+  expect(packageVerifySource).toContain('HOT_QUERY_P95_LIMIT_MS = 300')
+  expect(packageVerifySource).toContain('performance.now()')
   expect(packageVerifySource.indexOf("app.setPath('userData'")).toBeLessThan(packageVerifySource.indexOf('await app.whenReady()'))
   expect(workflowSource).not.toMatch(/node\s+[^\n]*verify-package\.mjs/)
   expect(workflowSource).toContain('ELECTRON_RUN_AS_NODE=1')
   expect(workflowSource).toContain('--smoke-model "$SMOKE_MODEL_PATH"')
+  expect(workflowSource).toContain('--metrics "$RUNNER_TEMP/package-metrics.json"')
+  expect(workflowSource).toContain('desktop-package-metrics')
+  expect(workflowSource).toContain('secrets.RUNTIME_MANIFEST_PRIVATE_KEY')
+  expect(workflowSource).toContain('secrets.RUNTIME_MANIFEST_PUBLIC_KEY')
+  expect(workflowSource).toContain('RUNTIME_MANIFEST_PRIVATE_KEY_FILE')
+  expect(workflowSource).toContain('RUNTIME_MANIFEST_PUBLIC_KEY_FILE')
+  expect(workflowSource).toContain('manifest-input.json.sig')
+  expect(workflowSource).toContain('RUNTIME_ASSETS_SIGNATURE_FILE')
+  expect(workflowSource).toContain('npm --prefix desktop run license-report')
+  expect(workflowSource).toContain('runtime-licenses.json')
+  expect(workflowSource).toContain('uv export --frozen --no-dev --no-editable --no-emit-project')
+  expect(workflowSource).toContain('--dry-run --ignore-installed --pre --break-system-packages --no-index')
+  expect(workflowSource).toContain('--ignore-installed')
+  expect(workflowSource).toContain('runtime-base-closure.json')
+  expect(workflowSource).toContain('npm --prefix desktop run validate:runtime-wheelhouse')
+  expect(workflowSource).toContain("rsync -a --delete --exclude='*.gguf'")
+})
+
+test('requires the v1 runtime manifest to approve vec-only exclusively', async () => {
+  const workflowSource = await readFile(join(process.cwd(), '..', '.github', 'workflows', 'ci.yml'), 'utf8')
+
+  expect(workflowSource).toContain("JSON.stringify(manifest.approvedProfiles ?? []) !== '[\"vec-only\"]'")
+  expect(workflowSource).toContain('v1 runtime manifest must approve vec-only only')
+})
+
+test('packages the complete QMD production dependency closure, including node_modules', async () => {
+  const builderSource = await readFile(join(process.cwd(), 'electron-builder.yml'), 'utf8')
+
+  const qmdResourceFilter = /from: build\/qmd-resources[\s\S]*?filter:\s*\n\s+- ['"]\*\*\/\*['"]/;
+  expect(builderSource).toMatch(qmdResourceFilter)
+  expect(builderSource).toMatch(
+    /from: build\/qmd-resources\/node_modules[\s\S]*?to: qmd\/node_modules/,
+  )
+})
+
+test('keeps the macOS release floor aligned with the bundled MLX wheels', async () => {
+  const builderSource = await readFile(join(process.cwd(), 'electron-builder.yml'), 'utf8')
+  const workflowSource = await readFile(join(process.cwd(), '..', '.github', 'workflows', 'ci.yml'), 'utf8')
+
+  expect(builderSource).toMatch(/minimumSystemVersion:\s*['\"]?15(?:\.0(?:\.0)?)?['\"]?/)
+  expect(workflowSource).toContain('runs-on: macos-15')
+})
+
+test('does not disable release signing or notarization in the shared macOS config', async () => {
+  const builderSource = await readFile(join(process.cwd(), 'electron-builder.yml'), 'utf8')
+
+  expect(builderSource).not.toMatch(/identity:\s*null/)
+  expect(builderSource).not.toMatch(/notarize:\s*false/)
+})
+
+test('rejects optional voice and development extras from the v1 runtime bundle', async () => {
+  const workflowSource = await readFile(join(process.cwd(), '..', '.github', 'workflows', 'ci.yml'), 'utf8')
+
+  expect(workflowSource).toContain('funasr-*.whl')
+  expect(workflowSource).toContain('kaldiio-*.whl')
+  expect(workflowSource).toContain('aiortc-*.whl')
+  expect(workflowSource).toContain('google_crc32c-*.whl')
+  expect(workflowSource).toMatch(/optional.*extras|v1.*runtime.*bundle/i)
 })

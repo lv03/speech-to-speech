@@ -41,7 +41,10 @@ test('knowledge IPC picks directories in main, uses collection IDs, and returns 
         calls.push(['add', directory])
       },
       removeCollection: async (id) => calls.push(['remove', id]),
-      reindex: async (id) => calls.push(['reindex', id]),
+      reindex: async (id, confirmed) => {
+        if (!confirmed) throw new Error('Model download confirmation is required')
+        calls.push(['reindex', id, confirmed])
+      },
       deleteIndex: async (id) => calls.push(['delete-index', id]),
     },
     pickDirectory: async () => ({ canceled: false, filePaths: ['/Users/me/Notes'] }),
@@ -73,9 +76,53 @@ test('knowledge IPC picks directories in main, uses collection IDs, and returns 
   expect(calls).toEqual([
     ['add', '/Users/me/Notes'],
     ['remove', COLLECTION_ID],
-    ['reindex', COLLECTION_ID],
+    ['reindex', COLLECTION_ID, true],
     ['delete-index', COLLECTION_ID],
     ['cancel'],
   ])
   await expect(handlers.removeCollection('notes; rm -rf /')).rejects.toThrow('Invalid knowledge collection')
+})
+
+test('passes consent into the runtime guard without an IPC pre-check race', async () => {
+  const calls = []
+  let release
+  let active = false
+  let modelStatusCalls = 0
+  const handlers = createKnowledgeIpcHandlers({
+    service: {
+      snapshot: async () => ({ state: { name: 'indexing', updatedAt: '2026-09-05T00:00:00.000Z' }, collections: [] }),
+      addCollection: async () => undefined,
+      removeCollection: async () => undefined,
+      reindex: async (id, confirmed) => {
+        if (active) {
+          const error = new Error('Knowledge operation is already running')
+          error.code = 'operation_in_progress'
+          throw error
+        }
+        active = true
+        calls.push(['reindex', id, confirmed])
+        try {
+          if (!confirmed) throw new Error('Model download confirmation is required')
+          await new Promise((resolve) => { release = resolve })
+        } finally {
+          active = false
+        }
+      },
+      deleteIndex: async () => undefined,
+    },
+    pickDirectory: async () => ({ canceled: true, filePaths: [] }),
+    modelStatus: async () => {
+      modelStatusCalls += 1
+      return { downloadBytes: 600, diskBytes: 400, state: 'needs_consent' }
+    },
+    cancel: () => undefined,
+  })
+
+  const first = handlers.reindex(COLLECTION_ID, true)
+  while (!calls.length) await new Promise((resolve) => setTimeout(resolve, 0))
+  await expect(handlers.reindex(COLLECTION_ID, false)).rejects.toThrow('知识库已有操作正在进行')
+  expect(calls).toEqual([['reindex', COLLECTION_ID, true]])
+  expect(modelStatusCalls).toBe(0)
+  release()
+  await first
 })

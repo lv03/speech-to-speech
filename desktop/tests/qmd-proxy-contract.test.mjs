@@ -4,7 +4,7 @@ import { expect, test } from 'vitest'
 import { QmdProxy } from '../src/main/qmd-proxy'
 import { KnowledgeError } from '../src/main/qmd-service'
 
-const HANDLE = `doc_${'1'.repeat(64)}`
+const DOCID = `doc_${'1'.repeat(64)}`
 
 function service(overrides = {}) {
   return {
@@ -21,7 +21,7 @@ function service(overrides = {}) {
       }],
     }),
     search: async () => [{
-      handle: HANDLE,
+      docid: DOCID,
       collectionId: 'col_123',
       collectionName: 'Notes',
       relativeFile: 'safe.md',
@@ -29,8 +29,8 @@ function service(overrides = {}) {
       score: 0.81,
       snippet: 'safe snippet',
     }],
-    getDocument: async (handle) => ({
-      handle,
+    getDocument: async (docid) => ({
+      docid,
       collectionName: 'Notes',
       relativeFile: 'safe.md',
       title: 'Safe note',
@@ -154,17 +154,17 @@ test('checks no-collection and indexing states before search and sanitizes daemo
   })
 })
 
-test('uses only opaque handles and rejects unknown, expired, and capacity-evicted handles', async () => {
+test('uses only opaque docids and rejects unknown, expired, and capacity-evicted docids', async () => {
   let now = 1_000
-  let nextHandle = 1
-  const handles = () => `doc_${String(nextHandle++).padStart(64, '0')}`
+  let nextDocid = 1
+  const docids = () => `doc_${String(nextDocid++).padStart(64, '0')}`
   await withProxy({
     now: () => now,
     handleTtlMs: 10,
     maxHandles: 1,
     service: service({
       search: async () => [{
-        handle: handles(), collectionId: 'col', collectionName: 'Notes', relativeFile: 'safe.md',
+        docid: docids(), collectionId: 'col', collectionName: 'Notes', relativeFile: 'safe.md',
         title: 'Safe', score: 1, snippet: '',
       }],
     }),
@@ -172,21 +172,21 @@ test('uses only opaque handles and rejects unknown, expired, and capacity-evicte
     const requestHeaders = headers(token)
     const search = async () => (await (await fetch(`${url}/v1/search`, {
       method: 'POST', headers: requestHeaders, body: JSON.stringify({ query: 'hello' }),
-    })).json()).results[0].handle
+    })).json()).results[0].docid
     const first = await search()
     const second = await search()
 
     expect(first).toMatch(/^doc_[a-f0-9]{64}$/)
     expect(second).not.toBe(first)
-    for (const handle of [first, '#qmd-docid', '/etc/passwd', '../safe.md', 'safe.md\0x']) {
+    for (const docid of [first, '#qmd-docid', '/etc/passwd', '../safe.md', 'safe.md\0x']) {
       const response = await fetch(`${url}/v1/document`, {
-        method: 'POST', headers: requestHeaders, body: JSON.stringify({ handle }),
+        method: 'POST', headers: requestHeaders, body: JSON.stringify({ docid }),
       })
       expect(response.status).toBe(403)
     }
     now += 11
     const expired = await fetch(`${url}/v1/document`, {
-      method: 'POST', headers: requestHeaders, body: JSON.stringify({ handle: second }),
+      method: 'POST', headers: requestHeaders, body: JSON.stringify({ docid: second }),
     })
     expect(expired.status).toBe(403)
   })
@@ -200,11 +200,11 @@ test('returns sanitized health and never leaks absolute paths in public response
   })
 })
 
-test('filters path-like collection names and non-opaque handles at the public boundary', async () => {
+test('filters path-like collection names and non-opaque docids at the public boundary', async () => {
   await withProxy({
     service: service({
       search: async () => [{
-        handle: '#qmd-docid',
+        docid: '#qmd-docid',
         collectionId: 'col_123',
         collectionName: '/Users/private/notes',
         relativeFile: 'safe.md',
@@ -230,7 +230,7 @@ test('rejects dot-segment collection names in search and document responses', as
   await withProxy({
     service: service({
       search: async () => [{
-        handle: HANDLE,
+        docid: DOCID,
         collectionId: 'col_123',
         collectionName: '..',
         relativeFile: 'safe.md',
@@ -251,8 +251,8 @@ test('rejects dot-segment collection names in search and document responses', as
 
   await withProxy({
     service: service({
-      getDocument: async (handle) => ({
-        handle,
+      getDocument: async (docid) => ({
+        docid,
         collectionName: '.',
         relativeFile: 'safe.md',
         title: 'Safe',
@@ -266,11 +266,11 @@ test('rejects dot-segment collection names in search and document responses', as
       headers: requestHeaders,
       body: JSON.stringify({ query: 'hello' }),
     })
-    const handle = (await search.json()).results[0].handle
+    const docid = (await search.json()).results[0].docid
     const response = await fetch(`${url}/v1/document`, {
       method: 'POST',
       headers: requestHeaders,
-      body: JSON.stringify({ handle }),
+      body: JSON.stringify({ docid }),
     })
     expect(response.status).toBe(403)
     expect(await response.json()).toMatchObject({ code: 'document_not_allowed' })
@@ -281,8 +281,8 @@ test('truncates document content to at most 64 KiB without corrupting UTF-8', as
   const content = '你'.repeat(30_000)
   await withProxy({
     service: service({
-      getDocument: async (handle) => ({
-        handle,
+      getDocument: async (docid) => ({
+        docid,
         collectionName: 'Notes',
         relativeFile: 'safe.md',
         title: 'Safe',
@@ -295,14 +295,82 @@ test('truncates document content to at most 64 KiB without corrupting UTF-8', as
     const response = await fetch(`${url}/v1/document`, {
       method: 'POST',
       headers: requestHeaders,
-      body: JSON.stringify({ handle: HANDLE, start_line: 1, end_line: 80 }),
+      body: JSON.stringify({ docid: DOCID, start_line: 1, end_line: 80 }),
     })
     expect(response.status).toBe(200)
     const body = await response.json()
-    expect(body.handle).toBe(HANDLE)
-    expect(body).not.toHaveProperty('docid')
+    expect(body.docid).toBe(DOCID)
+    expect(body).not.toHaveProperty('handle')
     expect(Buffer.byteLength(body.content, 'utf8')).toBeLessThanOrEqual(64 * 1024)
     expect(body.content).not.toContain('\uFFFD')
+  })
+})
+
+test('rejects a search response that exceeds the proxy response byte limit', async () => {
+  await withProxy({
+    maxResponseBytes: 512,
+    service: service({ search: async () => [{
+      docid: DOCID,
+      collectionId: 'col_123',
+      collectionName: 'Notes',
+      relativeFile: 'safe.md',
+      title: 'Safe note',
+      score: 1,
+      snippet: 'x'.repeat(4_000),
+    }] }),
+  }, async ({ url, token }) => {
+    const response = await fetch(`${url}/v1/search`, {
+      method: 'POST',
+      headers: headers(token),
+      body: JSON.stringify({ query: 'hello' }),
+    })
+    const body = await response.text()
+
+    expect(response.status).toBe(503)
+    expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(512)
+    expect(JSON.parse(body)).toMatchObject({ status: 'error', code: 'proxy_unavailable' })
+  })
+})
+
+test('replaces path-like QMD metadata with a public relative fallback', async () => {
+  await withProxy({
+    service: service({
+      search: async () => [{
+        docid: DOCID,
+        collectionId: 'col_123',
+        collectionName: 'Notes',
+        relativeFile: 'safe.md',
+        title: '/private/qmd/index.sqlite',
+        score: 1,
+        snippet: 'safe',
+      }],
+      getDocument: async (docid) => ({
+        docid,
+        collectionName: 'Notes',
+        relativeFile: 'safe.md',
+        title: 'qmd:///private/qmd/index.sqlite',
+        content: 'trusted content',
+      }),
+    }),
+  }, async ({ url, token }) => {
+    const requestHeaders = headers(token)
+    const search = await fetch(`${url}/v1/search`, {
+      method: 'POST',
+      headers: requestHeaders,
+      body: JSON.stringify({ query: 'hello' }),
+    })
+    const searchBody = await search.json()
+    expect(searchBody.results[0].title).toBe('safe.md')
+    expect(JSON.stringify(searchBody)).not.toContain('/private/qmd')
+
+    const document = await fetch(`${url}/v1/document`, {
+      method: 'POST',
+      headers: requestHeaders,
+      body: JSON.stringify({ docid: DOCID }),
+    })
+    const documentBody = await document.json()
+    expect(documentBody.title).toBe('safe.md')
+    expect(JSON.stringify(documentBody)).not.toContain('/private/qmd')
   })
 })
 
@@ -317,5 +385,41 @@ test('maps stable service errors without leaking their private messages', async 
     expect(await response.json()).toEqual({
       status: 'error', code: 'knowledge_not_ready', message: 'Knowledge base is not ready',
     })
+  })
+})
+
+test('uses docid in the public document contract', async () => {
+  const docid = `doc_${'2'.repeat(64)}`
+  let requestedDocid = null
+  await withProxy({
+    service: service({
+      search: async () => [{
+        docid,
+        collectionId: 'col_123',
+        collectionName: 'Notes',
+        relativeFile: 'safe.md',
+        title: 'Safe note',
+        score: 1,
+        snippet: 'safe',
+      }],
+      getDocument: async (value) => {
+        requestedDocid = value
+        return { docid: value, collectionName: 'Notes', relativeFile: 'safe.md', title: 'Safe note', content: 'trusted' }
+      },
+    }),
+  }, async ({ url, token }) => {
+    const requestHeaders = headers(token)
+    const search = await fetch(`${url}/v1/search`, {
+      method: 'POST', headers: requestHeaders, body: JSON.stringify({ query: 'hello' }),
+    })
+    const searchBody = await search.json()
+    expect(searchBody.results[0].docid).toBe(docid)
+    expect(searchBody.results[0]).not.toHaveProperty('handle')
+
+    const document = await fetch(`${url}/v1/document`, {
+      method: 'POST', headers: requestHeaders, body: JSON.stringify({ docid }),
+    })
+    expect(await document.json()).toMatchObject({ status: 'ok', docid, content: 'trusted' })
+    expect(requestedDocid).toBe(docid)
   })
 })

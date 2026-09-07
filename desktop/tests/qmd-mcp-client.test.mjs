@@ -102,10 +102,47 @@ test('stores an MCP session header and sends it on later allowlisted tool calls'
   expect(headers[1].get('mcp-session-id')).toBe('session-123')
 })
 
+test('reset starts a new MCP generation without reusing initialization or session state', async () => {
+  const requests = []
+  const client = new QmdMcpClient({
+    endpoint: 'http://[::1]:8321/mcp',
+    fetch: async (_url, init) => {
+      const request = JSON.parse(init.body)
+      requests.push({ request, headers: new Headers(init.headers) })
+      if (request.method === 'initialize') {
+        return sse({ protocolVersion: '2025-06-18', serverInfo: { name: 'qmd', version: '2.8.3' } }, {
+          'mcp-session-id': `session-${requests.filter(({ request: item }) => item.method === 'initialize').length}`,
+        })
+      }
+      return sse({ structuredContent: { results: [] } })
+    },
+  })
+
+  await client.query('before reset', 'kb_col', 1)
+  client.reset()
+  await client.query('after reset', 'kb_col', 1)
+
+  expect(requests.filter(({ request }) => request.method === 'initialize')).toHaveLength(2)
+  expect(requests[2].headers.get('mcp-session-id')).toBeNull()
+  expect(requests[3].headers.get('mcp-session-id')).toBe('session-2')
+})
+
 test('maps unreachable QMD to a sanitized availability error', async () => {
   const client = new QmdMcpClient({
     endpoint: 'http://[::1]:8321/mcp',
     fetch: async () => { throw new Error('/Users/private/index.sqlite refused connection') },
+  })
+
+  await expect(client.initialize()).rejects.toMatchObject({
+    code: 'proxy_unavailable',
+    message: 'Knowledge service is unavailable',
+  })
+})
+
+test('rejects non-loopback MCP endpoints before making a request', async () => {
+  const client = new QmdMcpClient({
+    endpoint: 'http://localhost:8321/mcp',
+    fetch: async () => { throw new Error('network must not be used') },
   })
 
   await expect(client.initialize()).rejects.toMatchObject({

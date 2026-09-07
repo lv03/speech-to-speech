@@ -21,6 +21,18 @@ test('copies qmd and its production dependency closure without desktop dev depen
   expect(copied).not.toContain('vitest')
 })
 
+test('keeps only the requested platform native prebuilds', async () => {
+  const destination = await mkdtemp(join(tmpdir(), 's2s-qmd-platform-'))
+  const sourceNodeModules = join(process.cwd(), 'node_modules')
+
+  await prepareQmdResources({ sourceNodeModules, destination, platform: 'darwin', arch: 'arm64' })
+
+  await expect(readFile(join(destination, 'node_modules', 'better-sqlite3', 'prebuilds', 'darwin-arm64.node'))).resolves.toBeTruthy()
+  await expect(readFile(join(destination, 'node_modules', 'better-sqlite3', 'prebuilds', 'darwin-x64.node'))).rejects.toMatchObject({ code: 'ENOENT' })
+  await expect(readFile(join(destination, 'node_modules', 'better-sqlite3', 'prebuilds', 'linux-arm64.node'))).rejects.toMatchObject({ code: 'ENOENT' })
+  await expect(readFile(join(destination, 'node_modules', 'better-sqlite3', 'prebuilds', 'win32-arm64.node'))).rejects.toMatchObject({ code: 'ENOENT' })
+})
+
 test('uses the lockfile production closure and retains nested package locations', async () => {
   const root = await mkdtemp(join(tmpdir(), 's2s-qmd-lock-'))
   const sourceNodeModules = join(root, 'node_modules')
