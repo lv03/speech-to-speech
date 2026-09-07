@@ -288,7 +288,7 @@ test('aggregates progress and cancellation across every selected hybrid asset', 
   await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
 })
 
-test('auto keeps the v1 vec-only profile when hybrid assets are available', async () => {
+test('auto prefers the approved hybrid profile over vec-only', async () => {
   const dependencies = fakeDependencies({
     present: false,
     modelAssetSizes: { embedding: 100, reranker: 60, generator: 50 },
@@ -303,9 +303,9 @@ test('auto keeps the v1 vec-only profile when hybrid assets are available', asyn
   await dependencies.manager.reindex('col_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', true)
 
   expect(dependencies.events).toContain('model.ensure')
-  expect(dependencies.events).not.toContain('model.ensure:reranker')
-  expect(dependencies.events).not.toContain('model.ensure:generator')
-  await expect(dependencies.manager.snapshot()).resolves.toMatchObject({ state: { name: 'ready_vec' } })
+  expect(dependencies.events).toContain('model.ensure:reranker')
+  expect(dependencies.events).toContain('model.ensure:generator')
+  await expect(dependencies.manager.snapshot()).resolves.toMatchObject({ state: { name: 'ready_hybrid' } })
 })
 
 test('rejects hybrid when the manifest does not provide an approved hybrid profile', async () => {

@@ -79,9 +79,15 @@ const EMPTY_RUNTIME_MANIFEST: RuntimeManifest = {
 }
 
 function loadRuntimeManifest(): { manifest: RuntimeManifest; error?: string } {
-  const manifestPath = app.isPackaged
+  let manifestPath: string | null = app.isPackaged
     ? join(process.resourcesPath, 'runtime-manifest.json')
-    : process.env.RUNTIME_MANIFEST_PATH
+    : process.env.RUNTIME_MANIFEST_PATH ?? null
+  if (!manifestPath && !app.isPackaged) {
+    // 开发默认：若存在 hybrid 批准版（reranker/generator 资产齐备）则使用它，
+    // 否则保持 vec-only（EMPTY）语义。由 scripts/make-hybrid-manifest.mjs 生成。
+    const devHybridManifest = join(__dirname, '../../build/runtime-manifest.hybrid.json')
+    if (existsSync(devHybridManifest)) manifestPath = devHybridManifest
+  }
   if (!manifestPath) {
     return { manifest: EMPTY_RUNTIME_MANIFEST, error: 'Knowledge runtime manifest is unavailable' }
   }

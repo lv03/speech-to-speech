@@ -233,8 +233,10 @@ export class RuntimeManager {
   }
 
   private selectedProfile(preference = this.retrievalPreference): RetrievalProfile | null {
+    if (preference === 'vec-only') return this.retrievalProfiles.vecOnly
     if (preference === 'hybrid') return this.retrievalProfiles.hybrid
-    return this.retrievalProfiles.vecOnly
+    // auto = 已批准的最佳档：hybrid（BM25+向量+重排）优先，未批准/资产缺失时回落 vec-only
+    return this.retrievalProfiles.hybrid ?? this.retrievalProfiles.vecOnly
   }
 
   private availableModes(): RetrievalMode[] {
