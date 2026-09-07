@@ -26,8 +26,10 @@ MAX_CONTENT_CHARS = 15_000
 REQUEST_TIMEOUT_SECONDS = 10.0
 
 _COLLECTION_ID = re.compile(r"col_[a-f0-9]{32}\Z")
-_HANDLE = re.compile(r"doc_[a-f0-9]{64}\Z")
+_DOCID = re.compile(r"doc_[a-f0-9]{64}\Z")
 _DRIVE_PATH = re.compile(r"[A-Za-z]:[\\/]")
+_FILE_URL = re.compile(r"file://(?:localhost)?/[^\x00\s]+", re.IGNORECASE)
+_HOME_PATH = re.compile(r"(?<![\w~])~[\\/][^\x00\s]+")
 _ABSOLUTE_PATH = re.compile(
     r"(?<![\w:/\\])(?:[A-Za-z]:[\\/](?:[^\\/\s]+[\\/])*[^\\/\s]+|\\\\[^\\/\s]+[\\/](?:[^\\/\s]+[\\/])*[^\\/\s]+|/(?:[^/\s]+/)*[^/\s]+)"
 )
@@ -48,7 +50,7 @@ _ERROR_MESSAGES = {
     "knowledge_not_ready": "Knowledge base is not ready",
     "knowledge_indexing": "Knowledge base is indexing",
     "no_results": "No knowledge results found",
-    "document_not_allowed": "Document handle is not allowed",
+    "document_not_allowed": "Document id is not allowed",
     "proxy_unavailable": "Knowledge service is unavailable",
     "invalid_request": "Invalid knowledge request",
 }
@@ -91,9 +93,9 @@ TOOLS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "handle": {
+                "docid": {
                     "type": "string",
-                    "description": "Opaque document handle returned by search_knowledge.",
+                    "description": "Opaque document id returned by search_knowledge.",
                     "pattern": r"^doc_[a-f0-9]{64}$",
                 },
                 "start_line": {
@@ -109,7 +111,7 @@ TOOLS: list[dict[str, Any]] = [
                     "default": MAX_DOCUMENT_LINES,
                 },
             },
-            "required": ["handle"],
+            "required": ["docid"],
             "additionalProperties": False,
         },
     },
@@ -138,8 +140,8 @@ def _valid_collection_id(value: Any) -> bool:
     return value is None or isinstance(value, str) and _COLLECTION_ID.fullmatch(value) is not None
 
 
-def _valid_handle(value: Any) -> bool:
-    return isinstance(value, str) and _HANDLE.fullmatch(value) is not None
+def _valid_docid(value: Any) -> bool:
+    return isinstance(value, str) and _DOCID.fullmatch(value) is not None
 
 
 def _valid_integer(value: Any) -> bool:
@@ -164,6 +166,8 @@ def _safe_source(value: Any) -> str | None:
 
 
 def _strip_absolute_paths(value: str) -> str:
+    value = _FILE_URL.sub("[path omitted]", value)
+    value = _HOME_PATH.sub("[path omitted]", value)
     return _ABSOLUTE_PATH.sub("[path omitted]", value)
 
 
@@ -265,8 +269,8 @@ def _validate_search(query: Any, collection_id: Any, top_k: Any) -> tuple[str, s
     return normalized_query, collection_id, top_k
 
 
-def _validate_document(handle: Any, start_line: Any, end_line: Any) -> tuple[str, int, int] | None:
-    if not _valid_handle(handle) or not _valid_integer(start_line):
+def _validate_document(docid: Any, start_line: Any, end_line: Any) -> tuple[str, int, int] | None:
+    if not _valid_docid(docid) or not _valid_integer(start_line):
         return None
     if end_line is None:
         end_line = start_line + MAX_DOCUMENT_LINES - 1
@@ -274,7 +278,7 @@ def _validate_document(handle: Any, start_line: Any, end_line: Any) -> tuple[str
         return None
     if start_line < 1 or end_line < start_line or end_line - start_line + 1 > MAX_DOCUMENT_LINES:
         return None
-    return handle, start_line, end_line
+    return docid, start_line, end_line
 
 
 def _bounded_search(results: list[dict[str, Any]]) -> str:
@@ -340,9 +344,9 @@ async def search_knowledge(
     for raw in raw_results:
         if not isinstance(raw, dict):
             continue
-        handle = raw.get("handle")
+        docid = raw.get("docid")
         source = _safe_source(raw.get("source"))
-        if not _valid_handle(handle) or source is None:
+        if not _valid_docid(docid) or source is None:
             continue
         raw_snippet = raw.get("snippet")
         snippet = raw_snippet if isinstance(raw_snippet, str) else ""
@@ -351,7 +355,7 @@ async def search_knowledge(
             score = 0.0
         results.append(
             {
-                "handle": handle,
+                "docid": docid,
                 "title": _safe_title(raw.get("title")),
                 "source": source,
                 "score": score,
@@ -364,18 +368,18 @@ async def search_knowledge(
 
 
 async def get_document(
-    handle: str,
+    docid: str,
     start_line: int = 1,
     end_line: int | None = None,
 ) -> str:
-    """Read a bounded document range through an opaque proxy handle."""
-    validated = _validate_document(handle, start_line, end_line)
+    """Read a bounded document range through a search-issued document id."""
+    validated = _validate_document(docid, start_line, end_line)
     if validated is None:
         return _error("invalid_request")
-    normalized_handle, normalized_start, normalized_end = validated
+    normalized_docid, normalized_start, normalized_end = validated
     payload, error_code = await _post(
         "/v1/document",
-        {"handle": normalized_handle, "start_line": normalized_start, "end_line": normalized_end},
+        {"docid": normalized_docid, "start_line": normalized_start, "end_line": normalized_end},
     )
     if error_code is not None:
         return _error(error_code)
@@ -383,7 +387,7 @@ async def get_document(
         return _error("proxy_unavailable")
     if payload.get("status") != "ok":
         return _error("proxy_unavailable")
-    if payload.get("handle") != normalized_handle:
+    if payload.get("docid") != normalized_docid:
         return _error("document_not_allowed")
     source = _safe_source(payload.get("source"))
     content = payload.get("content")
@@ -394,7 +398,7 @@ async def get_document(
     return _bounded_document(
         {
             "status": "ok",
-            "handle": normalized_handle,
+            "docid": normalized_docid,
             "title": _safe_title(payload.get("title")),
             "source": source,
             "content": _strip_absolute_paths(content),
@@ -415,10 +419,10 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> str:
             cast(int, arguments.get("top_k", 5)),
         )
     if name == "get_document":
-        if set(arguments) - {"handle", "start_line", "end_line"}:
+        if set(arguments) - {"docid", "start_line", "end_line"}:
             return _error("invalid_request")
         return await get_document(
-            cast(str, arguments.get("handle")),
+            cast(str, arguments.get("docid")),
             cast(int, arguments.get("start_line", 1)),
             cast(int | None, arguments.get("end_line")),
         )
