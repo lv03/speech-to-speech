@@ -1,11 +1,17 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:net'
-import { mkdir } from 'node:fs/promises'
+import { chmod, mkdir, open, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 export interface QmdEndpoint {
   baseUrl: string
   port: number
+}
+
+export interface QmdExitEvent {
+  unexpected: boolean
+  code: number | null
+  signal: NodeJS.Signals | null
 }
 
 export interface QmdChildProcess {
@@ -14,6 +20,7 @@ export interface QmdChildProcess {
   stdout?: { on(event: string, listener: (chunk: Buffer) => void): unknown } | null
   stderr?: { on(event: string, listener: (chunk: Buffer) => void): unknown } | null
   once(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown
+  once(event: 'error', listener: (error: Error) => void): unknown
   kill(signal?: NodeJS.Signals): boolean
 }
 
@@ -32,6 +39,8 @@ export interface QmdRuntimeOptions {
   probe?: (baseUrl: string, fetchImpl: typeof fetch) => Promise<boolean>
   startupTimeoutMs?: number
 }
+
+export type QmdExitListener = (event: QmdExitEvent) => void
 
 const MCP_PROTOCOL_VERSION = '2025-06-18'
 
@@ -107,7 +116,8 @@ export class QmdRuntime {
   private readonly probe: (baseUrl: string, fetchImpl: typeof fetch) => Promise<boolean>
   private readonly startupTimeoutMs: number
   private child: QmdChildProcess | null = null
-  private endpoint: QmdEndpoint | null = null
+  private endpointValue: QmdEndpoint | null = null
+  private readonly exitListeners = new Set<QmdExitListener>()
 
   constructor(options: QmdRuntimeOptions) {
     this.resourceRoot = options.resourceRoot
@@ -119,6 +129,15 @@ export class QmdRuntime {
     this.startupTimeoutMs = options.startupTimeoutMs ?? 10_000
   }
 
+  get endpoint(): QmdEndpoint | null {
+    return this.endpointValue
+  }
+
+  onExit(listener: QmdExitListener): () => void {
+    this.exitListeners.add(listener)
+    return () => this.exitListeners.delete(listener)
+  }
+
   private async environment(): Promise<NodeJS.ProcessEnv> {
     const qmdRoot = join(this.dataRoot, 'qmd')
     const home = join(qmdRoot, 'home')
@@ -126,12 +145,25 @@ export class QmdRuntime {
     const cache = join(qmdRoot, 'cache')
     const configDir = join(config, 'qmd')
     const indexPath = join(cache, 'qmd', 'index.sqlite')
-    await Promise.all([
-      mkdir(home, { recursive: true }),
-      mkdir(config, { recursive: true }),
-      mkdir(configDir, { recursive: true }),
-      mkdir(dirname(indexPath), { recursive: true }),
-    ])
+    const privateDirectories = [qmdRoot, home, config, configDir, cache, dirname(indexPath)]
+    await Promise.all(privateDirectories.map(async (directory) => {
+      await mkdir(directory, { recursive: true, mode: 0o700 })
+      await chmod(directory, 0o700)
+    }))
+    const index = await open(indexPath, 'a', 0o600)
+    try {
+      await chmod(indexPath, 0o600)
+    } finally {
+      await index.close()
+    }
+    const configPath = join(configDir, 'index.yml')
+    try {
+      await stat(configPath)
+      await chmod(configPath, 0o600)
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined
+      if (code !== 'ENOENT') throw error
+    }
     return {
       ...process.env,
       ELECTRON_RUN_AS_NODE: '1',
@@ -145,7 +177,7 @@ export class QmdRuntime {
   }
 
   async start(): Promise<QmdEndpoint> {
-    if (this.child && this.endpoint) return this.endpoint
+    if (this.child && this.endpointValue) return this.endpointValue
 
     const port = await this.portProvider()
     const entrypoint = qmdEntrypoint(this.resourceRoot)
@@ -157,21 +189,37 @@ export class QmdRuntime {
     this.child = child
     child.stdout?.on('data', () => undefined)
     child.stderr?.on('data', () => undefined)
-    child.once('exit', () => {
+    child.once('exit', (code, signal) => {
       if (this.child === child) {
         this.child = null
-        this.endpoint = null
+        this.endpointValue = null
+        for (const listener of this.exitListeners) {
+          listener({ unexpected: true, code, signal })
+        }
       }
     })
 
     try {
       if (child.exitCode !== null) throw new Error(`QMD process exited before probe (code=${child.exitCode})`)
       const endpoint = { baseUrl: `http://[::1]:${port}/mcp`, port }
+      const startupEvent = new Promise<
+        | { kind: 'error'; error: Error }
+        | { kind: 'exit'; code: number | null; signal: NodeJS.Signals | null }
+      >((resolveEvent) => {
+        child.once('error', (error) => resolveEvent({ kind: 'error', error }))
+        child.once('exit', (code, signal) => resolveEvent({ kind: 'exit', code, signal }))
+      })
       const deadline = Date.now() + this.startupTimeoutMs
       while (Date.now() < deadline) {
         if (child.exitCode !== null) throw new Error(`QMD process exited before probe (code=${child.exitCode})`)
-        if (await this.probe(endpoint.baseUrl, this.fetchImpl)) {
-          this.endpoint = endpoint
+        const result = await Promise.race([
+          this.probe(endpoint.baseUrl, this.fetchImpl).then((healthy) => ({ kind: 'probe' as const, healthy })),
+          startupEvent,
+        ])
+        if (result.kind === 'error') throw new Error('QMD process failed')
+        if (result.kind === 'exit') throw new Error(`QMD process exited before probe (code=${result.code})`)
+        if (result.healthy) {
+          this.endpointValue = endpoint
           return endpoint
         }
         await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
@@ -184,14 +232,14 @@ export class QmdRuntime {
   }
 
   async health(): Promise<boolean> {
-    if (!this.child || !this.endpoint || this.child.exitCode !== null) return false
-    return this.probe(this.endpoint.baseUrl, this.fetchImpl)
+    if (!this.child || !this.endpointValue || this.child.exitCode !== null) return false
+    return this.probe(this.endpointValue.baseUrl, this.fetchImpl)
   }
 
   async stop(): Promise<void> {
     const child = this.child
     this.child = null
-    this.endpoint = null
+    this.endpointValue = null
     if (!child || child.exitCode !== null || child.signalCode !== null) return
     await new Promise<void>((resolvePromise) => {
       let settled = false

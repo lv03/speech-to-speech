@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdir, realpath } from 'node:fs/promises'
+import { chmod, mkdir, open, realpath, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 
 const INCLUDE_PATTERN = '**/*.md'
@@ -8,14 +8,17 @@ const COLLECTION_NAME = /^kb_col_[a-f0-9]{32}$/
 export interface QmdIndexChildProcess {
   exitCode: number | null
   signalCode: NodeJS.Signals | null
+  stdout?: { on(event: 'data', listener: (chunk: Buffer) => void): unknown } | null
+  stderr?: { on(event: 'data', listener: (chunk: Buffer) => void): unknown } | null
   once(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown
+  once(event: 'error', listener: (error: Error) => void): unknown
   kill(signal?: NodeJS.Signals): boolean
 }
 
 export type QmdIndexProcessSpawner = (
   command: string,
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv; stdio: 'ignore' },
+  options: { cwd: string; env: NodeJS.ProcessEnv; stdio: ['ignore', 'pipe', 'pipe'] },
 ) => QmdIndexChildProcess
 
 export interface QmdIndexerOptions {
@@ -30,6 +33,13 @@ function spawnProcess(command: string, args: string[], options: Parameters<QmdIn
 
 function assertCollectionName(name: string): void {
   if (!COLLECTION_NAME.test(name)) throw new Error('Invalid QMD collection name')
+}
+
+export class QmdCollectionMissingError extends Error {
+  constructor() {
+    super('QMD collection is missing')
+    this.name = 'QmdCollectionMissingError'
+  }
 }
 
 export class QmdIndexer {
@@ -54,12 +64,24 @@ export class QmdIndexer {
     const cache = join(qmdRoot, 'cache')
     const configDir = join(config, 'qmd')
     const indexPath = join(cache, 'qmd', 'index.sqlite')
-    await Promise.all([
-      mkdir(home, { recursive: true, mode: 0o700 }),
-      mkdir(config, { recursive: true, mode: 0o700 }),
-      mkdir(configDir, { recursive: true, mode: 0o700 }),
-      mkdir(dirname(indexPath), { recursive: true, mode: 0o700 }),
-    ])
+    await Promise.all([qmdRoot, home, config, configDir, cache, dirname(indexPath)].map(async (directory) => {
+      await mkdir(directory, { recursive: true, mode: 0o700 })
+      await chmod(directory, 0o700)
+    }))
+    const index = await open(indexPath, 'a', 0o600)
+    try {
+      await chmod(indexPath, 0o600)
+    } finally {
+      await index.close()
+    }
+    const configPath = join(configDir, 'index.yml')
+    try {
+      await stat(configPath)
+      await chmod(configPath, 0o600)
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined
+      if (code !== 'ENOENT') throw error
+    }
     return {
       ...process.env,
       ELECTRON_RUN_AS_NODE: '1',
@@ -73,19 +95,37 @@ export class QmdIndexer {
   }
 
   private async run(args: string[]): Promise<void> {
+    let output = ''
     const child = this.spawnProcess(process.execPath, [this.entrypoint(), ...args], {
       cwd: this.resourceRoot,
       env: await this.environment(),
-      stdio: 'ignore',
+      stdio: ['ignore', 'pipe', 'pipe'],
     })
-    const exitCode = await new Promise<number | null>((resolveExit) => {
+    const capture = (chunk: Buffer) => {
+      if (output.length < 8192) output += chunk.toString('utf8').slice(0, 8192 - output.length)
+    }
+    child.stdout?.on('data', capture)
+    child.stderr?.on('data', capture)
+    const result = await new Promise<{ exitCode: number | null } | { error: Error }>((resolveProcess) => {
+      let settled = false
+      const settle = (result: { exitCode: number | null } | { error: Error }) => {
+        if (settled) return
+        settled = true
+        resolveProcess(result)
+      }
       if (child.exitCode !== null) {
-        resolveExit(child.exitCode)
+        settle({ exitCode: child.exitCode })
         return
       }
-      child.once('exit', (code) => resolveExit(code))
+      child.once('error', (error) => settle({ error }))
+      child.once('exit', (code) => settle({ exitCode: code }))
     })
-    if (exitCode !== 0) throw new Error('QMD index operation failed')
+    if ('error' in result) throw new Error('QMD index operation failed')
+    const exitCode = result.exitCode
+    if (exitCode !== 0) {
+      if (/collection\s+not\s+found/i.test(output)) throw new QmdCollectionMissingError()
+      throw new Error('QMD index operation failed')
+    }
   }
 
   async add(internalName: string, root: string, include: string): Promise<void> {
@@ -104,10 +144,17 @@ export class QmdIndexer {
     await this.run(['embed'])
   }
 
-  async reindex(internalName: string): Promise<void> {
+  async reindex(internalName: string, root?: string, include = INCLUDE_PATTERN): Promise<void> {
     assertCollectionName(internalName)
-    await this.run(['update'])
-    await this.run(['embed', '--force'])
+    try {
+      await this.run(['update'])
+      await this.run(['embed', '--force'])
+    } catch (error) {
+      if (!(error instanceof QmdCollectionMissingError) || !root) throw error
+      await this.add(internalName, root, include)
+      await this.run(['update'])
+      await this.run(['embed', '--force'])
+    }
   }
 
   async deleteIndex(internalName: string): Promise<void> {

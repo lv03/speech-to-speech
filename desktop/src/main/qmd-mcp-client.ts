@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 
 import { KnowledgeError } from './qmd-service'
-import type { QmdSearchResult, QmdStatus } from './runtime-types'
+import type { QmdSearchResult, QmdStatus, RetrievalMode } from './runtime-types'
 
 export interface QmdMcpClientOptions {
   endpoint: string | (() => string)
@@ -10,8 +10,9 @@ export interface QmdMcpClientOptions {
 }
 
 export interface QmdClient {
+  reset(): void
   initialize(): Promise<{ version: string }>
-  query(query: string, collection: string, limit: number): Promise<QmdSearchResult[]>
+  query(query: string, collection: string, limit: number, mode?: RetrievalMode): Promise<QmdSearchResult[]>
   get(docid: string, startLine: number, maxLines: number): Promise<string>
   status(): Promise<QmdStatus>
 }
@@ -116,11 +117,18 @@ export class QmdMcpClient implements QmdClient {
   private readonly timeoutMs: number
   private sessionId: string | null = null
   private initializePromise: Promise<{ version: string }> | null = null
+  private generation = 0
 
   constructor(options: QmdMcpClientOptions) {
     this.endpoint = options.endpoint
     this.fetchImpl = options.fetch ?? globalThis.fetch
     this.timeoutMs = options.timeoutMs ?? 10_000
+  }
+
+  reset(): void {
+    this.generation += 1
+    this.initializePromise = null
+    this.sessionId = null
   }
 
   private url(): string {
@@ -134,10 +142,14 @@ export class QmdMcpClient implements QmdClient {
     if (!['http:', 'https:'].includes(parsed.protocol)) {
       throw new KnowledgeError('proxy_unavailable', 'Knowledge service is unavailable')
     }
+    if (!['127.0.0.1', '[::1]'].includes(parsed.hostname) || parsed.username || parsed.password || parsed.pathname !== '/mcp') {
+      throw new KnowledgeError('proxy_unavailable', 'Knowledge service is unavailable')
+    }
     return parsed.href
   }
 
   private async post(body: Record<string, unknown>): Promise<McpEnvelope> {
+    const generation = this.generation
     try {
       const headers: Record<string, string> = {
         Accept: 'application/json, text/event-stream',
@@ -152,7 +164,7 @@ export class QmdMcpClient implements QmdClient {
       })
       if (!response.ok) throw new Error(`QMD MCP HTTP ${response.status}`)
       const sessionId = response.headers.get('mcp-session-id')
-      if (sessionId) this.sessionId = sessionId
+      if (sessionId && generation === this.generation) this.sessionId = sessionId
       const envelope = parseSse(await response.text())
       if (envelope.error) throw new Error(typeof envelope.error.message === 'string' ? envelope.error.message : 'QMD MCP error')
       return envelope
@@ -163,7 +175,9 @@ export class QmdMcpClient implements QmdClient {
   }
 
   async initialize(): Promise<{ version: string }> {
-    this.initializePromise ??= this.post({
+    if (this.initializePromise) return this.initializePromise
+    const generation = this.generation
+    const promise = this.post({
       jsonrpc: '2.0',
       id: `speech-to-speech-${randomBytes(8).toString('hex')}`,
       method: 'initialize',
@@ -183,10 +197,13 @@ export class QmdMcpClient implements QmdClient {
       }
       return { version }
     }).catch((error) => {
-      this.initializePromise = null
+      if (generation === this.generation && this.initializePromise === promise) {
+        this.initializePromise = null
+      }
       throw error
     })
-    return this.initializePromise
+    this.initializePromise = promise
+    return promise
   }
 
   private async callTool(name: 'query' | 'get' | 'status', arguments_: Record<string, unknown>): Promise<McpResult | undefined> {
@@ -200,12 +217,12 @@ export class QmdMcpClient implements QmdClient {
     return envelope.result
   }
 
-  async query(query: string, collection: string, limit: number): Promise<QmdSearchResult[]> {
+  async query(query: string, collection: string, limit: number, mode: RetrievalMode = 'vec-only'): Promise<QmdSearchResult[]> {
     const result = await this.callTool('query', {
-      searches: [{ type: 'vec', query }],
+      searches: mode === 'hybrid' ? [{ type: 'lex', query }, { type: 'vec', query }] : [{ type: 'vec', query }],
       collections: [collection],
       limit,
-      rerank: false,
+      rerank: mode === 'hybrid',
     })
     return searchResults(resultPayload(result))
   }

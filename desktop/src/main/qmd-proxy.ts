@@ -20,6 +20,7 @@ export interface QmdProxyOptions {
   maxQueryLength?: number
   maxTopK?: number
   maxBodyBytes?: number
+  maxResponseBytes?: number
   maxDocumentLines?: number
   handleTtlMs?: number
   maxHandles?: number
@@ -27,7 +28,8 @@ export interface QmdProxyOptions {
 }
 
 const MAX_CONTENT_BYTES = 64 * 1024
-const HANDLE_PATTERN = /^doc_[a-f0-9]{64}$/
+const MAX_RESPONSE_BYTES = 64 * 1024
+const DOCID_PATTERN = /^doc_[a-f0-9]{64}$/
 
 function defaultErrorMessage(code: string): string {
   const messages: Record<string, string> = {
@@ -35,11 +37,12 @@ function defaultErrorMessage(code: string): string {
     knowledge_not_ready: 'Knowledge base is not ready',
     knowledge_indexing: 'Knowledge base is indexing',
     no_results: 'No knowledge results found',
-    document_not_allowed: 'Document handle is not allowed',
+    document_not_allowed: 'Document id is not allowed',
     proxy_unavailable: 'Knowledge service is unavailable',
     invalid_request: 'Invalid knowledge request',
     collection_invalid: 'Knowledge collection is invalid',
     collection_exists: 'Knowledge collection already exists',
+    collection_limit: 'The maximum number of knowledge collections has been reached',
   }
   return messages[code] ?? 'Knowledge request failed'
 }
@@ -47,7 +50,7 @@ function defaultErrorMessage(code: string): string {
 function statusForError(code: string): number {
   if (code === 'document_not_allowed') return 403
   if (code === 'proxy_unavailable' || code === 'knowledge_not_ready') return 503
-  if (code === 'invalid_request' || code === 'collection_invalid' || code === 'collection_exists') return 400
+  if (code === 'invalid_request' || code === 'collection_invalid' || code === 'collection_exists' || code === 'collection_limit') return 400
   return 200
 }
 
@@ -60,7 +63,26 @@ function truncateUtf8(value: string, maxBytes: number): string {
     if (Buffer.byteLength(value.slice(0, middle), 'utf8') <= maxBytes) low = middle
     else high = middle - 1
   }
-  return value.slice(0, low)
+  const truncated = value.slice(0, low)
+  return truncated.length > 0 && /[\uD800-\uDBFF]/.test(truncated.at(-1) ?? '')
+    ? truncated.slice(0, -1)
+    : truncated
+}
+
+function fitDocumentContent(base: Record<string, unknown>, content: string, maxResponseBytes: number): string {
+  const bounded = truncateUtf8(content, MAX_CONTENT_BYTES)
+  if (Buffer.byteLength(JSON.stringify({ ...base, content: bounded }), 'utf8') <= maxResponseBytes) return bounded
+
+  const codePoints = Array.from(bounded)
+  let low = 0
+  let high = codePoints.length
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2)
+    const candidate = codePoints.slice(0, middle).join('')
+    if (Buffer.byteLength(JSON.stringify({ ...base, content: candidate }), 'utf8') <= maxResponseBytes) low = middle
+    else high = middle - 1
+  }
+  return codePoints.slice(0, low).join('')
 }
 
 function hasPublicRelativeFile(value: unknown): value is string {
@@ -75,6 +97,14 @@ function hasPublicCollectionName(value: unknown): value is string {
     !/[\u0000-\u001f\u007f]/.test(value)
 }
 
+function publicTitle(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') return fallback
+  const title = value.trim()
+  if (!title || title.length > 240 || isAbsolute(title) || title.startsWith('qmd:') || title.startsWith('file:') ||
+    title.includes('\\') || /[\u0000-\u001f\u007f]/.test(title)) return fallback
+  return title
+}
+
 export class QmdProxy {
   private readonly service: KnowledgeService
   private readonly host: '127.0.0.1' | '::1'
@@ -82,12 +112,13 @@ export class QmdProxy {
   private readonly maxQueryLength: number
   private readonly maxTopK: number
   private readonly maxBodyBytes: number
+  private readonly maxResponseBytes: number
   private readonly maxDocumentLines: number
-  private readonly handleTtlMs: number
-  private readonly maxHandles: number
+  private readonly docidTtlMs: number
+  private readonly maxDocids: number
   private readonly now: () => number
   private readonly token: string
-  private readonly issuedHandles = new Map<string, number>()
+  private readonly issuedDocids = new Map<string, number>()
   private server: Server | null = null
   private endpoint: QmdProxyEndpoint | null = null
 
@@ -100,9 +131,10 @@ export class QmdProxy {
     this.maxQueryLength = options.maxQueryLength ?? 2000
     this.maxTopK = options.maxTopK ?? 8
     this.maxBodyBytes = options.maxBodyBytes ?? 128 * 1024
+    this.maxResponseBytes = options.maxResponseBytes ?? MAX_RESPONSE_BYTES
     this.maxDocumentLines = options.maxDocumentLines ?? 80
-    this.handleTtlMs = options.handleTtlMs ?? 30 * 60 * 1000
-    this.maxHandles = options.maxHandles ?? 1024
+    this.docidTtlMs = options.handleTtlMs ?? 30 * 60 * 1000
+    this.maxDocids = options.maxHandles ?? 1024
     this.now = options.now ?? (() => Date.now())
     this.token = options.token ?? randomBytes(32).toString('hex')
   }
@@ -133,9 +165,13 @@ export class QmdProxy {
     const server = this.server
     this.server = null
     this.endpoint = null
-    this.issuedHandles.clear()
+    this.issuedDocids.clear()
     if (!server) return
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+  }
+
+  invalidateHandles(): void {
+    this.issuedDocids.clear()
   }
 
   private authorized(request: IncomingMessage): boolean {
@@ -171,9 +207,22 @@ export class QmdProxy {
   }
 
   private send(response: ServerResponse, status: number, body: Record<string, unknown>): void {
+    let payload = JSON.stringify(body)
+    if (Buffer.byteLength(payload, 'utf8') > this.maxResponseBytes) {
+      status = 503
+      payload = JSON.stringify({
+        status: 'error',
+        code: 'proxy_unavailable',
+        message: 'Knowledge response is too large',
+      })
+    }
+    if (Buffer.byteLength(payload, 'utf8') > this.maxResponseBytes) {
+      payload = JSON.stringify({ status: 'error', code: 'proxy_unavailable' })
+    }
     response.statusCode = status
     response.setHeader('Content-Type', 'application/json; charset=utf-8')
-    response.end(JSON.stringify(body))
+    response.setHeader('Content-Length', Buffer.byteLength(payload, 'utf8'))
+    response.end(payload)
   }
 
   private async readyForSearch(): Promise<void> {
@@ -188,21 +237,21 @@ export class QmdProxy {
     }
   }
 
-  private rememberHandle(handle: string): void {
-    if (!HANDLE_PATTERN.test(handle)) return
-    this.issuedHandles.set(handle, this.now() + this.handleTtlMs)
-    while (this.issuedHandles.size > this.maxHandles) {
-      const oldest = this.issuedHandles.keys().next().value
+  private rememberDocid(docid: string): void {
+    if (!DOCID_PATTERN.test(docid)) return
+    this.issuedDocids.set(docid, this.now() + this.docidTtlMs)
+    while (this.issuedDocids.size > this.maxDocids) {
+      const oldest = this.issuedDocids.keys().next().value
       if (typeof oldest !== 'string') break
-      this.issuedHandles.delete(oldest)
+      this.issuedDocids.delete(oldest)
     }
   }
 
-  private takeHandle(handle: string): boolean {
-    if (!HANDLE_PATTERN.test(handle)) return false
-    const expiresAt = this.issuedHandles.get(handle)
+  private takeDocid(docid: string): boolean {
+    if (!DOCID_PATTERN.test(docid)) return false
+    const expiresAt = this.issuedDocids.get(docid)
     if (expiresAt === undefined || expiresAt <= this.now()) {
-      this.issuedHandles.delete(handle)
+      this.issuedDocids.delete(docid)
       return false
     }
     return true
@@ -238,13 +287,13 @@ export class QmdProxy {
         }
         await this.readyForSearch()
         const hits = (await this.service.search(query, collectionId, topK)).filter((hit) =>
-          HANDLE_PATTERN.test(hit.handle) && hasPublicCollectionName(hit.collectionName) && hasPublicRelativeFile(hit.relativeFile))
-        hits.forEach((hit) => this.rememberHandle(hit.handle))
+          DOCID_PATTERN.test(hit.docid) && hasPublicCollectionName(hit.collectionName) && hasPublicRelativeFile(hit.relativeFile))
+        hits.forEach((hit) => this.rememberDocid(hit.docid))
         this.send(response, 200, {
           status: hits.length > 0 ? 'ok' : 'no_results',
           results: hits.map((hit) => ({
-            handle: hit.handle,
-            title: hit.title,
+            docid: hit.docid,
+            title: publicTitle(hit.title, hit.relativeFile),
             source: `${hit.collectionName}/${hit.relativeFile}`,
             score: hit.score,
             snippet: hit.snippet,
@@ -255,7 +304,7 @@ export class QmdProxy {
       }
       if (url.pathname === '/v1/document' && request.method === 'POST') {
         const body = await this.readJson(request)
-        const handle = typeof body.handle === 'string' ? body.handle : ''
+        const docid = typeof body.docid === 'string' ? body.docid : ''
         const startLine = body.start_line === undefined ? 1 : typeof body.start_line === 'number' ? body.start_line : Number.NaN
         const endLine = body.end_line === undefined ? startLine + this.maxDocumentLines - 1 : typeof body.end_line === 'number' ? body.end_line : Number.NaN
         if (
@@ -264,21 +313,23 @@ export class QmdProxy {
         ) {
           throw new KnowledgeError('invalid_request', 'Knowledge document range is invalid')
         }
-        if (!this.takeHandle(handle)) {
-          throw new KnowledgeError('document_not_allowed', 'Document handle is not allowed')
+        if (!this.takeDocid(docid)) {
+          throw new KnowledgeError('document_not_allowed', 'Document id is not allowed')
         }
-        const document = await this.service.getDocument(handle, { startLine, endLine })
-        if (!HANDLE_PATTERN.test(document.handle) || document.handle !== handle ||
+        const document = await this.service.getDocument(docid, { startLine, endLine })
+        if (!DOCID_PATTERN.test(document.docid) || document.docid !== docid ||
           !hasPublicCollectionName(document.collectionName) || !hasPublicRelativeFile(document.relativeFile)) {
-          throw new KnowledgeError('document_not_allowed', 'Document handle is not allowed')
+          throw new KnowledgeError('document_not_allowed', 'Document id is not allowed')
         }
-        this.send(response, 200, {
+        const documentResponse = {
           status: 'ok',
-          handle: document.handle,
-          title: document.title,
+          docid: document.docid,
+          title: publicTitle(document.title, document.relativeFile),
           source: `${document.collectionName}/${document.relativeFile}`,
-          content: truncateUtf8(document.content, MAX_CONTENT_BYTES),
-        })
+          content: '',
+        }
+        documentResponse.content = fitDocumentContent(documentResponse, document.content, this.maxResponseBytes)
+        this.send(response, 200, documentResponse)
         return
       }
       this.send(response, 404, { status: 'error', code: 'not_found', message: 'Not found' })
