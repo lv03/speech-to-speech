@@ -19,6 +19,7 @@ packages it drags in.
 | `INTEGRATION_NOTES.md` | What voicemem would introduce: deps, models, network, storage, risk |
 | `GATES.md` | The seven gates: status, evidence, and the work each one still needs |
 | `PRIOR_ART.md` | How qwen-audio-agent integrates VoiceMem, and what we should copy |
+| `INTEGRATION_PLAN.md` | Upstream study: version drift, streaming prefetch, config, injection boundary, staged plan |
 
 ## Run the tests (no install, ~0.02 s)
 
