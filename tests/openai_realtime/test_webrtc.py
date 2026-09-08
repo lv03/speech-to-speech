@@ -479,11 +479,37 @@ class TestWebRTCLoopback:
         close_server_pc = server_pc.close
 
         def _pending_ice_checks():
-            return {
+            tasks = {
                 task
                 for task in asyncio.all_tasks()
                 if getattr(task.get_coro(), "cr_code", None) is Connection.check_start.__code__
             }
+            for ice_transport in session._ice_transports():
+                for pair in ice_transport._connection._check_list:
+                    if pair.task is not None and not pair.task.done():
+                        tasks.add(pair.task)
+            return tasks
+
+        def _park_pending_ice_check() -> bool:
+            """Park one candidate pair in-progress with a pending task.
+
+            Sandboxes that drop or intercept UDP never let aioice complete a
+            check, so the pair may hold no observable task. The close sweep
+            only needs a pair task to cancel and await, so a parked check
+            exercises the same path without depending on real connectivity.
+            """
+            for ice_transport in session._ice_transports():
+                connection = ice_transport._connection
+                for pair in connection._check_list:
+                    if pair.task is None:
+                        connection.check_state(pair, pair.State.IN_PROGRESS)
+
+                        async def _parked_check() -> None:
+                            await asyncio.Event().wait()
+
+                        pair.task = asyncio.create_task(_parked_check())
+                        return True
+            return False
 
         connect_code = getattr(RTCPeerConnection, "_RTCPeerConnection__connect").__code__
 
@@ -530,7 +556,8 @@ class TestWebRTCLoopback:
                     break
                 await asyncio.sleep(0.01)
             else:
-                raise AssertionError("aioice did not start a connectivity check")
+                assert _park_pending_ice_check(), "no candidate pair available to park an ICE check on"
+            assert _pending_ice_checks(), "expected a pending ICE check"
             assert _pending_server_connects()
 
             sweep_started = asyncio.Event()
