@@ -24,6 +24,7 @@ import json
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol, runtime_checkable
@@ -100,6 +101,7 @@ class SessionWriter:
         self._state_path = Path(state_path).expanduser() if state_path else None
         self._lock = threading.RLock()
         self._buffers: dict[str, _SessionBuffer] = {}
+        self._inflight: set[threading.Thread] = set()
         self._seen_order: list[str] = []
         self._seen: set[str] = set()
         self._load_state()
@@ -155,7 +157,7 @@ class SessionWriter:
         return SubmitResult(True)
 
     def flush(self, session_id: str | None = None) -> int:
-        """Write buffered turns now. Returns the number of batches written."""
+        """Write buffered turns now and wait for in-flight writes to land."""
         with self._lock:
             sessions = [session_id] if session_id is not None else list(self._buffers)
         written = 0
@@ -165,6 +167,7 @@ class SessionWriter:
             if entries:
                 self._write(name, entries)
                 written += 1
+        self._wait_inflight()
         return written
 
     def pending(self, session_id: str | None = None) -> int:
@@ -219,8 +222,32 @@ class SessionWriter:
                 self._on_error(exc)
             else:
                 self._mark_seen([entry.key for entry in entries])
+            finally:
+                with self._lock:
+                    self._inflight.discard(threading.current_thread())
 
-        self._spawn(run)
+        spawned = self._spawn(run)
+        if isinstance(spawned, threading.Thread):
+            with self._lock:
+                self._inflight.add(spawned)
+
+    def _wait_inflight(self, timeout_s: float | None = None) -> None:
+        """Join worker threads so flush/close mean "written", not "queued"."""
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
+        while True:
+            with self._lock:
+                threads = list(self._inflight)
+            if not threads:
+                return
+            for thread in threads:
+                remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+                thread.join(remaining)
+            with self._lock:
+                self._inflight = {thread for thread in self._inflight if thread.is_alive()}
+                if not self._inflight:
+                    return
+            if deadline is not None and time.monotonic() >= deadline:
+                return
 
     def _requeue(self, session_id: str, entries: list[_Entry]) -> None:
         """Put failed turns back so the next submit or flush retries them."""

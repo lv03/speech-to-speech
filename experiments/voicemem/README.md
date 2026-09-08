@@ -15,8 +15,11 @@ packages it drags in.
 | `session.py` | Batched write path: dedup (persisted), sensitive filter, debounce, worker thread |
 | `prefetch.py` | Text-only speculative prefetch (`feed_partial` → `turn_over`) |
 | `injection.py` | Gated per-response memory injection policy |
+| `sidecar.py` | JSONL process boundary: the product never imports voicemem |
+| `client.py` | Parent-side sidecar client: ids, timeouts, stderr tail, restart-aware |
 | `tests/test_adapter.py` | 15 mock-based tests for the adapter |
 | `tests/test_pipeline.py` | 22 mock-based tests for batching, prefetch and injection |
+| `tests/test_sidecar.py` | 9 tests spawning `sidecar.py --backend fake` |
 | `check_env.py` | Gate 1: what a voicemem install would change here (zero-install) |
 | `zh_smoke.py` | Gate 5: Chinese ingest/search smoke (needs the venv + a key) |
 | `prefetch_probe.py` | Real prefetch timing probe (needs the venv + a key) |
@@ -26,7 +29,24 @@ packages it drags in.
 | `PRIOR_ART.md` | How qwen-audio-agent integrates VoiceMem, and what we should copy |
 | `INTEGRATION_PLAN.md` | Upstream study, the shape decision, and staged progress |
 
-## Run the tests (no install, ~0.02 s)
+## Run the sidecar
+
+The product talks to voicemem only through this JSONL boundary, so torch,
+transformers, funasr and mem0 never enter the voice process. Tests use the fake
+backend and need nothing installed:
+
+```bash
+PYTHONPATH=.:src ./.venv/bin/python -m pytest experiments/voicemem/tests/test_sidecar.py -q
+
+# real backend, dedicated venv
+"$HOME/.cache/speech-to-speech/voicemem-venv/bin/python" \
+  experiments/voicemem/sidecar.py --memory-root /tmp/voicemem-sidecar --backend real
+```
+
+The session starts **locked**; the parent must send `set_permission
+{"unlocked": true}` after the voiceprint gate opens.
+
+## Run the tests (no install, ~0.4 s)
 
 ```bash
 PYTHONPATH=.:src ./.venv/bin/python -m pytest experiments/voicemem/tests -q

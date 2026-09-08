@@ -148,11 +148,26 @@ not use.
 3. **Read path** (`prefetch.py`, `injection.py`) — **done**: text-only
    `feed_partial` / `feed_final` with staleness handling, plus the gated
    per-response injection policy.
-4. **Process boundary** — **next**: move the backend behind a JSONL sidecar with
-   timeouts, stderr capture and `health()` (qwen-audio-agent's shape). Until
-   then the adapter runs in-process, which is fine for the experiment and wrong
-   for the product (torch/transformers must not enter the voice process).
+4. **Process boundary** (`sidecar.py`, `client.py`) — **done**: JSONL over
+   stdio with `health` / `set_permission` / `recall` / `observe` / `flush` /
+   `close`; the sidecar owns the lock state (starts locked), the client owns
+   request ids, per-method timeouts (30 s interactive, 120 s background), a
+   stderr tail and exit handling. 9 tests spawn `--backend fake`, so the test
+   suite needs no voicemem. Real-backend end-to-end on 2026-09-08:
+
+   ```text
+   health: backend=real unlocked=False
+   observe: accepted=[t1, t2] pending=2 ms=1
+   flush:   batches=1 ms=41610      # two turns, one extraction
+   recall:  hits=3 context_chars=38 ms=93
+   result: SIDECAR_OK
+   ```
+
 5. **Gate re-check** — re-run `GATES.md` 1–7 whenever the pinned SHA moves.
+
+Remaining before product wiring: decide how the parent maps our realtime events
+onto `observe` (batching already joins them) and where the injected block enters
+`audio_client.py`; that is product code, not experiment code.
 
 ### Real prefetch evidence (`prefetch_probe.py`, 2026-09-08)
 
