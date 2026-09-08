@@ -421,6 +421,8 @@ VoiceMem 不进入 v1 的 Python runtime、默认工具列表或发布依赖。P
 
 Phase 5 推荐保持独立进程和 app-private storage。若需要 fork VoiceMem 来拆分 embedding endpoint，fork commit、补丁范围和回归测试必须随 runtime manifest 固定；在此之前不得把 VoiceMem 作为“已选定方案”写入 v1 架构。
 
+**2026-09-08 预研记录**：维护者决定当前不追求正式发布，因此门槛 1–7 的**预研**不再等待 Task 8 发布门槛。预研只落在独立目录 `experiments/voicemem/`（适配层 + mock 单测 + 环境核对脚本 + 中文冒烟脚本 + 引入清单与门槛记录），不引入任何依赖、模型、网络调用或记忆目录，也不改动 `src/`、桌面端或 v1 工具列表。7 条门槛的当前状态与证据见 `experiments/voicemem/GATES.md`，引入清单与风险见 `experiments/voicemem/INTEGRATION_NOTES.md`。正式 Phase 5 实施仍需 7 条门槛全部通过，并对引入清单 §7 的四个开关做显式决策。
+
 ## 11. 分阶段实施计划
 
 本节是执行顺序。每个 Task 都必须遵循“失败测试 -> 最小实现 -> focused 验证 -> `git diff --check` -> 独立提交”；已有工作树改动可以复用，但不能把已有 mock 测试当作真实安装包验收。后续任务只能依赖前序任务写明的接口。
@@ -730,6 +732,8 @@ npm --prefix desktop run verify:package -- \
 ### Phase 5：VoiceMem 独立实验
 
 只有 Task 8 的发布门槛全部通过后才开始。建立独立 venv/进程、独立 runtime profile 和独立验收，不改动 v1 的 Python runtime、默认工具列表或完成定义。VoiceMem 实验失败不能阻塞 KB v1。
+
+例外（2026-09-08）：维护者明确当前不追求正式发布，因此只做**预研**（`experiments/voicemem/`，见 §10 的预研记录），不启动 Phase 5 实施。预研阶段的边界固定为：不安装 voicemem、不下载模型、不出网、不写记忆目录、不接入语音进程。
 
 ## 12. 文件级变更清单
 
