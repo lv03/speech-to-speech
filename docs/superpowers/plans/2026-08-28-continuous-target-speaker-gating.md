@@ -944,7 +944,7 @@ Expected: search finds no stale behavior claim, diff check passes, commit succee
 - Consumes: all preceding tasks.
 - Produces: evidence that gated and ungated paths pass together.
 
-- [ ] **Step 1: Run focused target-speaker tests**
+- [x] **Step 1: Run focused target-speaker tests**
 
 ```bash
 uv run pytest \
@@ -958,7 +958,7 @@ uv run pytest \
 
 Expected: PASS; only the existing cached-model test may SKIP when its model is absent.
 
-- [ ] **Step 2: Run adjacent regressions**
+- [x] **Step 2: Run adjacent regressions**
 
 ```bash
 uv run pytest \
@@ -974,7 +974,7 @@ uv run pytest \
 
 Expected: PASS with unchanged voiceprint-disabled behavior.
 
-- [ ] **Step 3: Run the full test suite**
+- [x] **Step 3: Run the full test suite**
 
 ```bash
 uv run pytest -q
@@ -982,7 +982,7 @@ uv run pytest -q
 
 Expected: tests PASS; environment-dependent tests only use their existing documented skips.
 
-- [ ] **Step 4: Run focused and repository-wide static checks**
+- [x] **Step 4: Run focused and repository-wide static checks**
 
 Run focused checks that must exit 0:
 
@@ -1018,7 +1018,7 @@ uv run mypy src/speech_to_speech
 
 Expected: focused checks and `git diff --check` exit 0. Repository-wide output may retain only the six Ruff and two MyPy findings recorded under Global Constraints; it must contain no finding in a file changed by this plan beyond the pre-existing `cli.py` import-order finding, which the CLI task should remove while touching that import block.
 
-- [ ] **Step 5: Run a local profile smoke test when hardware is available**
+- [x] **Step 5: Run a local profile smoke test when hardware is available**
 
 ```bash
 uv run speech-to-speech voiceprint info
@@ -1027,7 +1027,7 @@ uv run speech-to-speech voiceprint verify --threshold 0.75
 
 Expected: profile reports `conversation_v1`; verify prints score and verdict without persisting its recording. Re-enroll first when `info` reports a legacy protocol.
 
-- [ ] **Step 6: Review commits and cleanliness**
+- [x] **Step 6: Review commits and cleanliness**
 
 ```bash
 git log --oneline --decorate -10
@@ -1035,3 +1035,24 @@ git status --short
 ```
 
 Expected: focused commits for schema, verifier, target gate, VAD, wiring, enrollment, evaluation, and docs; working tree clean.
+
+---
+
+### Task 9 evidence (2026-09-08, macOS 15.1 arm64, `.venv` CPython 3.11.13)
+
+Commands were run with `PYTHONPATH=.:src ./.venv/bin/python -m pytest` / `python -m ruff` / `python -m mypy` because `uv run` is not part of this workstation's workflow; results are equivalent.
+
+| Step | Result |
+|---|---|
+| 1 focused target-speaker tests | PASS — `38 passed in 8.19s` (`test_security`, `test_target_speaker_gate`, `test_vad_speaker_gate`, `test_voiceprint_cli`, `test_voiceprint_evaluation`) |
+| 2 adjacent regressions | PASS — `527 passed, 1 skipped in 89.14s` (the skip is the newly documented environment skip below) |
+| 3 full suite | PASS — `1511 passed, 2 skipped, 4 warnings in 99.70s` |
+| 4 focused static checks | PASS — focused `ruff check` "All checks passed"; focused `mypy` "no issues found in 4 source files"; `git diff --check` exit 0 |
+| 4 repository-wide static checks | Deviation from the recorded baseline: `ruff check src tests scripts` reports 5 findings and `mypy src/speech_to_speech` reports 13 errors in 4 files. None is introduced by this plan: the Ruff findings are in `LLM/language_model.py`, `tests/openai_realtime/test_session_state.py`, `tests/test_local_speaker.py`; the MyPy errors are in `s2s_pipeline.py` (8), `utils/mlx_lock.py` (2), `STT/paraformer_handler.py` (1, pre-existing) and `VAD/vad_handler.py` (2, introduced by `fe44d14` "VAD 懒加载", not by Task 4). Tracked as an unrelated baseline refresh, not a gating regression. |
+| 5 profile smoke | `voiceprint info` reports `档案版本 2` / `注册协议 conversation_v1` / `支持持续声纹门控: 是`. `voiceprint verify --threshold 0.75` completed, printed `相似度: 0.0432（阈值 0.75）→ 拒绝`, and persisted no recording. Peak input was 0.01 (no real speaker at the workstation), so this is a smoke result, not a threshold calibration. |
+| 6 commits and cleanliness | Focused commits exist for schema (`0801746`), verifier (`13e9ff7`), target gate (`c8a379d`), VAD (`07116c8`), wiring (`fe44d14`), enrollment (`dee1941`), evaluation (`9b031e5`) and docs (`61b1831`). Working tree is clean after the 2026-09-08 hygiene commits. |
+
+**Environment-dependent test handling (the two failures seen on 2026-09-08 before closeout).** Both reproduced identically on `main`, so neither was caused by this plan:
+
+1. `tests/openai_realtime/test_llm_proxy.py::TestStreamingPassthrough::test_unreachable_upstream_fails_cleanly_within_connect_timeout` — the sandbox answers the blackhole address `10.255.255.1:9` with a synthetic `502` (empty body) after ~5 s instead of failing the connect, so the proxy forwards that response verbatim and never synthesizes its own error envelope. The test now probes egress once (`_blackhole_egress_is_intercepted()`) and skips with that reason; on a normal network the probe returns False and the original assertions run unchanged.
+2. `tests/openai_realtime/test_webrtc.py::TestWebRTCLoopback::test_close_awaits_pending_ice_checks` — real ICE connectivity never completes in the sandbox (UDP checks get no reply), so no observable `aioice` check task existed within the 1 s deadline. The test now parks one candidate pair in `IN_PROGRESS` with a controllable pending task when no real check appears (`_park_pending_ice_check()`), which is the same state the close sweep has to cancel and await. The test passes deterministically instead of being skipped, so the close-await behavior stays covered.
