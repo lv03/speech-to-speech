@@ -215,33 +215,38 @@ class _VoicememBackend:
         self._memory_root.mkdir(parents=True, exist_ok=True)
         resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
         resolved_base_url = base_url or os.environ.get("OPENAI_BASE_URL")
-        resolved_model = os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+        resolved_model = os.environ.get("OPENAI_MODEL") or os.environ.get("VOICEMEM_CHAT_MODEL")
+        memory_language = (os.environ.get("VOICEMEM_MEMORY_LANGUAGE") or "zh").strip().lower()
 
         # build_kwargs wires the components; the audio/emotion switches are then
         # forced off because this project feeds voicemem its own STT text and v1
-        # excludes the emotion graph (text_mode would otherwise enable emotion).
-        kwargs = build_kwargs(
-            {
-                "api_key": resolved_key,
-                "base_url": resolved_base_url,
-                "mode": "text_mode",
-                "memory_root": str(self._memory_root),
-                "user_id": user_id,
-                # Embeddings stay local (intfloat/multilingual-e5-small): the chat
-                # and embedding endpoints are configured independently, which is
-                # what gate 5 asks about.
-                "embedding": {"provider": "local"},
-                "slots": {"provider": "local"},
-                "llm": {
-                    "provider": "openai",
-                    "config": {
-                        "model": resolved_model,
-                        "api_key": resolved_key,
-                        "base_url": resolved_base_url,
-                    },
+        # excludes the emotion graph.
+        config: dict = {
+            "api_key": resolved_key,
+            "base_url": resolved_base_url,
+            "mode": "leftbrain_only",
+            "memory_root": str(self._memory_root),
+            "user_id": user_id,
+            # voicemem main defaults memory text to English; the product stores
+            # Chinese facts, so the language must be pinned explicitly.
+            "memory_language": memory_language,
+            # Embeddings stay local (intfloat/multilingual-e5-small): the chat
+            # and embedding endpoints are configured independently, which is
+            # what gate 5 asks about.
+            "embedding": {"provider": "local"},
+            "slots": {"provider": "local"},
+            "llm": {
+                "provider": "openai",
+                "config": {
+                    "model": resolved_model,
+                    "api_key": resolved_key,
+                    "base_url": resolved_base_url,
                 },
-            }
-        )
+            },
+        }
+        if resolved_model:
+            config["models"] = {"chat": resolved_model}
+        kwargs = build_kwargs(config)
         kwargs.update(
             enable_scene=False,
             enable_music=False,

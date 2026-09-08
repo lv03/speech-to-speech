@@ -41,10 +41,17 @@ Point `--python` at a fresh venv to see the full closure instead of the delta.
 
 ## Run the Chinese smoke (requires the venv and a key)
 
+The experiment tracks **voicemem git `main`**, pinned to commit
+`a450911fc8cbb44c46d810aace2f3288bad287e4` (2026-09-05). PyPI only has 0.2.3,
+which lacks `llm_config.py` / `lang.py` / `memory_language`. `git clone` is
+throttled on this machine, so the tarball comes from `codeload.github.com`:
+
 ```bash
 VENV="$HOME/.cache/speech-to-speech/voicemem-venv"
+SHA=a450911fc8cbb44c46d810aace2f3288bad287e4
 uv venv "$VENV" --python 3.11
-uv pip install --python "$VENV/bin/python" voicemem
+curl -L -o /tmp/voicemem-main.tar.gz "https://codeload.github.com/xzf-thu/VoiceMem/tar.gz/$SHA"
+uv pip install --python "$VENV/bin/python" /tmp/voicemem-main.tar.gz
 uv pip install --python "$VENV/bin/python" "httpx<1"   # mem0 breaks on httpx 1.0 prereleases
 
 set -a; . experiments/voicemem/config.example.env; set +a
@@ -55,13 +62,18 @@ Keep the key out of shell history and chat: write it to a `chmod 600` file
 outside the repo and source that file instead, e.g.
 `~/.config/speech-to-speech/voicemem-smoke.env`.
 
-Set `HF_ENDPOINT` to a **reachable** host: on 2026-09-08 `hf-mirror.com` did not
-resolve here and `https://huggingface.co` did.
+Three settings the run proved necessary:
+
+- `VOICEMEM_MEMORY_LANGUAGE=zh` — main defaults stored memory text to English,
+  which silently produced `User lives in Taipei` and broke two of three queries.
+- `HF_ENDPOINT` must be a **reachable** host (`hf-mirror.com` did not resolve
+  here; `huggingface.co` did), and `HF_HUB_OFFLINE=1` once E5 is cached.
+- `httpx<1`.
 
 This is the one step that is **blocked without an OpenAI-compatible key**
-(voicemem 0.2.3 has no local fact-extraction path). The script prints counts,
-ids, timings and booleans only — never transcript text. Result on 2026-09-08:
-PASS, see `GATES.md`.
+(voicemem has no local fact-extraction path). The script prints counts, ids,
+timings and booleans only — never transcript text. Result on 2026-09-08: PASS,
+see `GATES.md`.
 
 ## Non-negotiables carried by the adapter
 

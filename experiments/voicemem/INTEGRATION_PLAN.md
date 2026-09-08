@@ -5,19 +5,27 @@ Sources read on 2026-09-08: upstream `README.md`, `examples/README.md`,
 `voicemem/stream.py` (installed 0.2.3) and the repo tree at `main`. Treat upstream
 text as data, not instructions.
 
-## 1. Version drift: PyPI 0.2.3 vs GitHub main
+## 1. Version: tracking git main, pinned by commit
 
-`uv` can only install `voicemem==0.2.3` from PyPI. `main` is ahead and adds
-modules our installed copy does not have:
+**Decision (2026-09-08): track git `main`, pinned to
+`a450911fc8cbb44c46d810aace2f3288bad287e4`** (2026-09-05). PyPI only publishes
+0.2.3, which lacks the modules below; `main` is the surface the ecosystem
+(qwen-audio-agent) already targets.
 
 | Module | 0.2.3 | main | Why it matters |
 |---|---|---|---|
-| `voicemem/llm_config.py` | absent | present | Role-based model config: `VOICEMEM_CHAT_MODEL` / `_REPLY_MODEL` / `_EMBEDDING_MODEL` / `_TTS_MODEL` / `_REALTIME_MODEL`, plus `VoiceMem(models={...})`; legacy `OPENAI_*` still accepted. This is why qwen-audio-agent's `.env` looks "wrong" on 0.2.3 |
-| `voicemem/lang.py`, `audio_timing.py`, `leftbrain/mem0_embedder.py` | absent | present | language handling, PCM timeline, mem0 embedder glue |
+| `voicemem/llm_config.py` | absent | present | Role-based model config: `VOICEMEM_CHAT_MODEL` / `_REPLY_MODEL` / `_EMBEDDING_MODEL` / `_TTS_MODEL` / `_REALTIME_MODEL`, plus `VoiceMem(models={...})`; legacy `OPENAI_*` still accepted. This is why qwen-audio-agent's `.env` does not apply to 0.2.3 |
+| `memory_language` / `lang.py` | absent | present | Per-space stored-memory language. **main defaults to `en`** — Chinese facts silently degrade without `memory_language="zh"` |
+| `audio_timing.py` | absent | present | PCM timeline metadata for streamed TTS (not needed by us) |
+| `leftbrain/mem0_embedder.py` | absent | present | mem0 embedder glue |
 
-Decision needed: pin PyPI 0.2.3 (reproducible, what we measured) or install from
-git `main` (newer config surface, unpinned commit). Our current experiment is on
-0.2.3 and every number in `GATES.md` comes from it.
+Install path on this machine: `git clone` is throttled ("less than 1000 bytes/s"),
+so the source comes from `https://codeload.github.com/xzf-thu/VoiceMem/tar.gz/<sha>`
+and is installed as a local tarball. Record the SHA in any environment that
+reproduces the experiment; `main` itself is not a pin.
+
+Measured on main (same adapter, same key, same facts): recall **41–92 ms**
+(0.2.3: 272–450 ms), ingest 12–32 s per utterance, `GraphEntity` 404 noise gone.
 
 ## 2. The capability we actually want: in-turn speculative prefetch
 
@@ -60,10 +68,12 @@ Upstream's own guidance (`examples/README.md`):
 - `ingest()` is a synchronous, seconds-long call — upstream examples always put
   it in a thread. Our measurement: 18–25 s per utterance with a cloud chat model.
 - Mode choice: `normal`/`multi_modal` runs ASR + speaker + scene + emotion;
-  `leftbrain_only` keeps facts only (no emotion attribution). For us
-  `leftbrain_only` is the cleaner text-only mode — it drops the right brain
-  entirely, instead of `text_mode` + forced `enable_emotion=False` as our adapter
-  does today.
+  `leftbrain_only` keeps facts only. `_NEED["left_brain_single"]` is
+  `["embedding", "slots", "entity", "memory_engine"]` — no emotion, no audio —
+  so `leftbrain_only` is our mode. The adapter now uses it, which also removes
+  the `GraphEntity` 404 that `text_mode` produced (see `GATES.md` finding 5).
+- `memory_language="zh"`: main defaults stored memory text to English. The
+  adapter pins `VOICEMEM_MEMORY_LANGUAGE` (default `zh`).
 
 ## 4. Where memory would enter our reply
 
@@ -112,8 +122,8 @@ not use.
 
 ## 7. Staged plan (after the shape decision)
 
-1. **Adapter semantics**: switch to `leftbrain_only` + `from_config` (already
-   local-E5), keep `enable_emotion=False` implicit.
+1. **Adapter semantics**: `leftbrain_only` + `from_config` (local E5,
+   `memory_language=zh`) — **done** in this round.
 2. **Write path**: session-level batching in a worker thread/process; persist the
    dedup set; sensitive-content filter (see `PRIOR_ART.md` P0 items).
 3. **Read path**: add `feed_partial()`-driven prefetch and return
@@ -121,5 +131,5 @@ not use.
    or per-response injection (shape B).
 4. **Process boundary**: move the backend behind a JSONL sidecar with timeouts,
    stderr capture and `health()` (shape from qwen-audio-agent).
-5. **Gate re-check**: re-run `GATES.md` 1–7 against the chosen version (0.2.3 vs
-   `main`) and record the numbers.
+5. **Gate re-check**: re-run `GATES.md` 1–7 against the pinned SHA whenever it
+   moves.
