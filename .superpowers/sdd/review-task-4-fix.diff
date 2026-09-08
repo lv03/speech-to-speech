@@ -1,0 +1,1682 @@
+# Review package: 6693ea2..41beba0
+
+## Commits
+41beba0 fix(desktop): harden qmd public metadata boundary
+320ddd2 feat(desktop): add isolated qmd knowledge service
+
+## Files changed
+ desktop/src/main/qmd-mcp-client.ts        | 229 +++++++++++++++
+ desktop/src/main/qmd-proxy.ts             | 297 +++++++++++++++++++
+ desktop/src/main/qmd-service.ts           | 467 ++++++++++++++++++++++++++++++
+ desktop/src/main/runtime-types.ts         |  40 +++
+ desktop/tests/qmd-mcp-client.test.mjs     | 115 ++++++++
+ desktop/tests/qmd-proxy-contract.test.mjs | 270 +++++++++++++++++
+ desktop/tests/qmd-service.test.mjs        | 196 +++++++++++++
+ 7 files changed, 1614 insertions(+)
+
+## Diff
+diff --git a/desktop/src/main/qmd-mcp-client.ts b/desktop/src/main/qmd-mcp-client.ts
+new file mode 100644
+index 0000000..41e6753
+--- /dev/null
++++ b/desktop/src/main/qmd-mcp-client.ts
+@@ -0,0 +1,229 @@
++import { randomBytes } from 'node:crypto'
++
++import { KnowledgeError } from './qmd-service'
++import type { QmdSearchResult, QmdStatus } from './runtime-types'
++
++export interface QmdMcpClientOptions {
++  endpoint: string | (() => string)
++  fetch?: typeof fetch
++  timeoutMs?: number
++}
++
++export interface QmdClient {
++  initialize(): Promise<{ version: string }>
++  query(query: string, collection: string, limit: number): Promise<QmdSearchResult[]>
++  get(docid: string, startLine: number, maxLines: number): Promise<string>
++  status(): Promise<QmdStatus>
++}
++
++interface McpResult {
++  structuredContent?: unknown
++  content?: Array<{ type?: unknown; text?: unknown; resource?: { text?: unknown } }>
++  protocolVersion?: unknown
++  serverInfo?: { name?: unknown; version?: unknown }
++}
++
++interface McpEnvelope {
++  result?: McpResult
++  error?: { message?: unknown }
++}
++
++function parseSse(body: string): McpEnvelope {
++  const messages: string[] = []
++  let dataLines: string[] = []
++  for (const line of body.split(/\r?\n/)) {
++    if (line === '') {
++      if (dataLines.length > 0) messages.push(dataLines.join('\n'))
++      dataLines = []
++      continue
++    }
++    if (line.startsWith('data:')) dataLines.push(line.slice('data:'.length).trimStart())
++  }
++  if (dataLines.length > 0) messages.push(dataLines.join('\n'))
++  const raw = messages.at(-1) || body.trim()
++  if (!raw) throw new Error('QMD MCP returned an empty response')
++  return JSON.parse(raw) as McpEnvelope
++}
++
++function asRecord(value: unknown): Record<string, unknown> | null {
++  return typeof value === 'object' && value !== null && !Array.isArray(value)
++    ? value as Record<string, unknown>
++    : null
++}
++
++function resultPayload(result: McpResult | undefined): unknown {
++  if (result?.structuredContent !== undefined) return result.structuredContent
++  const text = result?.content?.find((item) => typeof item.text === 'string')?.text
++  if (typeof text === 'string') {
++    try {
++      return JSON.parse(text)
++    } catch {
++      return undefined
++    }
++  }
++  return undefined
++}
++
++function resultText(result: McpResult | undefined): string | undefined {
++  const resource = result?.content?.find((item) => item.type === 'resource')?.resource?.text
++  if (typeof resource === 'string') return resource
++  const text = result?.content?.find((item) => typeof item.text === 'string')?.text
++  return typeof text === 'string' ? text : undefined
++}
++
++function searchResults(value: unknown): QmdSearchResult[] {
++  const record = asRecord(value)
++  const items = Array.isArray(value) ? value : record?.results
++  if (!Array.isArray(items)) return []
++  return items.flatMap((item): QmdSearchResult[] => {
++    const raw = asRecord(item)
++    if (!raw || typeof raw.docid !== 'string' || typeof raw.file !== 'string') return []
++    const score = typeof raw.score === 'number' && Number.isFinite(raw.score) ? raw.score : 0
++    return [{
++      docid: raw.docid,
++      file: raw.file,
++      title: typeof raw.title === 'string' && raw.title ? raw.title : raw.file,
++      score,
++      snippet: typeof raw.snippet === 'string' ? raw.snippet : '',
++      ...(typeof raw.line === 'number' && Number.isInteger(raw.line) && raw.line > 0 ? { line: raw.line } : {}),
++    }]
++  })
++}
++
++function qmdStatus(value: unknown): QmdStatus {
++  const raw = asRecord(value)
++  if (!raw || typeof raw.totalDocuments !== 'number' || typeof raw.needsEmbedding !== 'number' || typeof raw.hasVectorIndex !== 'boolean') {
++    throw new Error('QMD MCP returned an invalid status')
++  }
++  const collections = Array.isArray(raw.collections)
++    ? raw.collections.flatMap((item) => {
++      const collection = asRecord(item)
++      if (!collection || typeof collection.name !== 'string' || typeof collection.documents !== 'number') return []
++      return [{ name: collection.name, documents: collection.documents }]
++    })
++    : []
++  return {
++    totalDocuments: raw.totalDocuments,
++    needsEmbedding: raw.needsEmbedding,
++    hasVectorIndex: raw.hasVectorIndex,
++    collections,
++  }
++}
++
++export class QmdMcpClient implements QmdClient {
++  private readonly endpoint: string | (() => string)
++  private readonly fetchImpl: typeof fetch
++  private readonly timeoutMs: number
++  private sessionId: string | null = null
++  private initializePromise: Promise<{ version: string }> | null = null
++
++  constructor(options: QmdMcpClientOptions) {
++    this.endpoint = options.endpoint
++    this.fetchImpl = options.fetch ?? globalThis.fetch
++    this.timeoutMs = options.timeoutMs ?? 10_000
++  }
++
++  private url(): string {
++    const value = typeof this.endpoint === 'function' ? this.endpoint() : this.endpoint
++    let parsed: URL
++    try {
++      parsed = new URL(value)
++    } catch {
++      throw new KnowledgeError('proxy_unavailable', 'Knowledge service is unavailable')
++    }
++    if (!['http:', 'https:'].includes(parsed.protocol)) {
++      throw new KnowledgeError('proxy_unavailable', 'Knowledge service is unavailable')
++    }
++    return parsed.href
++  }
++
++  private async post(body: Record<string, unknown>): Promise<McpEnvelope> {
++    try {
++      const headers: Record<string, string> = {
++        Accept: 'application/json, text/event-stream',
++        'Content-Type': 'application/json',
++      }
++      if (this.sessionId) headers['Mcp-Session-Id'] = this.sessionId
++      const response = await this.fetchImpl(this.url(), {
++        method: 'POST',
++        headers,
++        body: JSON.stringify(body),
++        signal: AbortSignal.timeout(this.timeoutMs),
++      })
++      if (!response.ok) throw new Error(`QMD MCP HTTP ${response.status}`)
++      const sessionId = response.headers.get('mcp-session-id')
++      if (sessionId) this.sessionId = sessionId
++      const envelope = parseSse(await response.text())
++      if (envelope.error) throw new Error(typeof envelope.error.message === 'string' ? envelope.error.message : 'QMD MCP error')
++      return envelope
++    } catch (error) {
++      if (error instanceof KnowledgeError) throw error
++      throw new KnowledgeError('proxy_unavailable', 'Knowledge service is unavailable')
++    }
++  }
++
++  async initialize(): Promise<{ version: string }> {
++    this.initializePromise ??= this.post({
++      jsonrpc: '2.0',
++      id: `speech-to-speech-${randomBytes(8).toString('hex')}`,
++      method: 'initialize',
++      params: {
++        protocolVersion: '2025-06-18',
++        capabilities: {},
++        clientInfo: { name: 'speech-to-speech', version: '0.1.0' },
++      },
++    }).then((envelope) => {
++      const version = envelope.result?.serverInfo?.version
++      if (
++        envelope.result?.protocolVersion !== '2025-06-18' ||
++        envelope.result.serverInfo?.name !== 'qmd' ||
++        typeof version !== 'string'
++      ) {
++        throw new KnowledgeError('proxy_unavailable', 'Knowledge service is unavailable')
++      }
++      return { version }
++    }).catch((error) => {
++      this.initializePromise = null
++      throw error
++    })
++    return this.initializePromise
++  }
++
++  private async callTool(name: 'query' | 'get' | 'status', arguments_: Record<string, unknown>): Promise<McpResult | undefined> {
++    await this.initialize()
++    const envelope = await this.post({
++      jsonrpc: '2.0',
++      id: `speech-to-speech-${randomBytes(8).toString('hex')}`,
++      method: 'tools/call',
++      params: { name, arguments: arguments_ },
++    })
++    return envelope.result
++  }
++
++  async query(query: string, collection: string, limit: number): Promise<QmdSearchResult[]> {
++    const result = await this.callTool('query', {
++      searches: [{ type: 'vec', query }],
++      collections: [collection],
++      limit,
++      rerank: false,
++    })
++    return searchResults(resultPayload(result))
++  }
++
++  async get(docid: string, startLine: number, maxLines: number): Promise<string> {
++    const result = await this.callTool('get', {
++      file: docid,
++      fromLine: startLine,
++      maxLines,
++      lineNumbers: false,
++    })
++    const content = resultText(result)
++    if (content === undefined) throw new KnowledgeError('proxy_unavailable', 'Knowledge service is unavailable')
++    return content
++  }
++
++  async status(): Promise<QmdStatus> {
++    const result = await this.callTool('status', {})
++    return qmdStatus(resultPayload(result))
++  }
++}
+diff --git a/desktop/src/main/qmd-proxy.ts b/desktop/src/main/qmd-proxy.ts
+new file mode 100644
+index 0000000..2d34c57
+--- /dev/null
++++ b/desktop/src/main/qmd-proxy.ts
+@@ -0,0 +1,297 @@
++import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
++import { randomBytes, timingSafeEqual } from 'node:crypto'
++import { isAbsolute } from 'node:path'
++
++import {
++  KnowledgeError,
++  type KnowledgeService,
++} from './qmd-service'
++
++export interface QmdProxyEndpoint {
++  url: string
++  token: string
++}
++
++export interface QmdProxyOptions {
++  service: KnowledgeService
++  host?: '127.0.0.1' | '::1'
++  portProvider?: () => Promise<number>
++  token?: string
++  maxQueryLength?: number
++  maxTopK?: number
++  maxBodyBytes?: number
++  maxDocumentLines?: number
++  handleTtlMs?: number
++  maxHandles?: number
++  now?: () => number
++}
++
++const MAX_CONTENT_BYTES = 64 * 1024
++const HANDLE_PATTERN = /^doc_[a-f0-9]{64}$/
++
++function defaultErrorMessage(code: string): string {
++  const messages: Record<string, string> = {
++    no_collection: 'No knowledge collection is configured',
++    knowledge_not_ready: 'Knowledge base is not ready',
++    knowledge_indexing: 'Knowledge base is indexing',
++    no_results: 'No knowledge results found',
++    document_not_allowed: 'Document handle is not allowed',
++    proxy_unavailable: 'Knowledge service is unavailable',
++    invalid_request: 'Invalid knowledge request',
++    collection_invalid: 'Knowledge collection is invalid',
++    collection_exists: 'Knowledge collection already exists',
++  }
++  return messages[code] ?? 'Knowledge request failed'
++}
++
++function statusForError(code: string): number {
++  if (code === 'document_not_allowed') return 403
++  if (code === 'proxy_unavailable' || code === 'knowledge_not_ready') return 503
++  if (code === 'invalid_request' || code === 'collection_invalid' || code === 'collection_exists') return 400
++  return 200
++}
++
++function truncateUtf8(value: string, maxBytes: number): string {
++  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value
++  let low = 0
++  let high = value.length
++  while (low < high) {
++    const middle = Math.ceil((low + high) / 2)
++    if (Buffer.byteLength(value.slice(0, middle), 'utf8') <= maxBytes) low = middle
++    else high = middle - 1
++  }
++  return value.slice(0, low)
++}
++
++function hasPublicRelativeFile(value: unknown): value is string {
++  return typeof value === 'string' && value.length > 0 && !isAbsolute(value) &&
++    !value.includes('\0') && !value.includes('\\') &&
++    !value.split('/').some((part) => part === '..' || part === '')
++}
++
++function hasPublicCollectionName(value: unknown): value is string {
++  return typeof value === 'string' && value.length > 0 && value.length <= 120 &&
++    !value.includes('\0') && !value.includes('/') && !value.includes('\\') &&
++    !/[\u0000-\u001f\u007f]/.test(value)
++}
++
++export class QmdProxy {
++  private readonly service: KnowledgeService
++  private readonly host: '127.0.0.1' | '::1'
++  private readonly portProvider: () => Promise<number>
++  private readonly maxQueryLength: number
++  private readonly maxTopK: number
++  private readonly maxBodyBytes: number
++  private readonly maxDocumentLines: number
++  private readonly handleTtlMs: number
++  private readonly maxHandles: number
++  private readonly now: () => number
++  private readonly token: string
++  private readonly issuedHandles = new Map<string, number>()
++  private server: Server | null = null
++  private endpoint: QmdProxyEndpoint | null = null
++
++  constructor(options: QmdProxyOptions) {
++    this.service = options.service
++    const host = options.host ?? '127.0.0.1'
++    if (host !== '127.0.0.1' && host !== '::1') throw new Error('Knowledge proxy must bind to loopback')
++    this.host = host
++    this.portProvider = options.portProvider ?? (async () => 0)
++    this.maxQueryLength = options.maxQueryLength ?? 2000
++    this.maxTopK = options.maxTopK ?? 8
++    this.maxBodyBytes = options.maxBodyBytes ?? 128 * 1024
++    this.maxDocumentLines = options.maxDocumentLines ?? 80
++    this.handleTtlMs = options.handleTtlMs ?? 30 * 60 * 1000
++    this.maxHandles = options.maxHandles ?? 1024
++    this.now = options.now ?? (() => Date.now())
++    this.token = options.token ?? randomBytes(32).toString('hex')
++  }
++
++  async start(): Promise<QmdProxyEndpoint> {
++    if (this.endpoint && this.server) return this.endpoint
++    const requestedPort = await this.portProvider()
++    const server = createServer((request, response) => {
++      void this.handle(request, response)
++    })
++    await new Promise<void>((resolve, reject) => {
++      server.once('error', reject)
++      server.listen(requestedPort, this.host, () => resolve())
++    })
++    const address = server.address()
++    const port = typeof address === 'object' && address !== null ? address.port : requestedPort
++    if (!port) {
++      await new Promise<void>((resolve) => server.close(() => resolve()))
++      throw new Error('Unable to allocate a loopback port for knowledge proxy')
++    }
++    this.server = server
++    const formattedHost = this.host.includes(':') ? `[${this.host}]` : this.host
++    this.endpoint = { url: `http://${formattedHost}:${port}`, token: this.token }
++    return this.endpoint
++  }
++
++  async stop(): Promise<void> {
++    const server = this.server
++    this.server = null
++    this.endpoint = null
++    this.issuedHandles.clear()
++    if (!server) return
++    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
++  }
++
++  private authorized(request: IncomingMessage): boolean {
++    const header = request.headers.authorization ?? ''
++    const prefix = 'Bearer '
++    if (!header.startsWith(prefix)) return false
++    const provided = Buffer.from(header.slice(prefix.length))
++    const expected = Buffer.from(this.token)
++    return provided.length === expected.length && timingSafeEqual(provided, expected)
++  }
++
++  private async readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
++    const lengthHeader = request.headers['content-length']
++    const length = typeof lengthHeader === 'string' ? Number(lengthHeader) : 0
++    if (Number.isFinite(length) && length > this.maxBodyBytes) {
++      throw new KnowledgeError('invalid_request', 'Knowledge request body is too large')
++    }
++    const chunks: Buffer[] = []
++    let bytes = 0
++    for await (const chunk of request) {
++      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
++      bytes += buffer.length
++      if (bytes > this.maxBodyBytes) throw new KnowledgeError('invalid_request', 'Knowledge request body is too large')
++      chunks.push(buffer)
++    }
++    try {
++      const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
++      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
++      return parsed as Record<string, unknown>
++    } catch {
++      throw new KnowledgeError('invalid_request', 'Knowledge request body is invalid')
++    }
++  }
++
++  private send(response: ServerResponse, status: number, body: Record<string, unknown>): void {
++    response.statusCode = status
++    response.setHeader('Content-Type', 'application/json; charset=utf-8')
++    response.end(JSON.stringify(body))
++  }
++
++  private async readyForSearch(): Promise<void> {
++    const snapshot = await this.service.snapshot()
++    const name = snapshot.state.name
++    if (name === 'no_collection') throw new KnowledgeError('no_collection', 'Knowledge collection is not configured')
++    if (name === 'indexing' || name === 'downloading' || name === 'installing' || name === 'needs_consent') {
++      throw new KnowledgeError('knowledge_indexing', 'Knowledge index is not ready')
++    }
++    if (name !== 'ready_vec' && name !== 'ready_hybrid') {
++      throw new KnowledgeError('knowledge_not_ready', 'Knowledge service is not ready')
++    }
++  }
++
++  private rememberHandle(handle: string): void {
++    if (!HANDLE_PATTERN.test(handle)) return
++    this.issuedHandles.set(handle, this.now() + this.handleTtlMs)
++    while (this.issuedHandles.size > this.maxHandles) {
++      const oldest = this.issuedHandles.keys().next().value
++      if (typeof oldest !== 'string') break
++      this.issuedHandles.delete(oldest)
++    }
++  }
++
++  private takeHandle(handle: string): boolean {
++    if (!HANDLE_PATTERN.test(handle)) return false
++    const expiresAt = this.issuedHandles.get(handle)
++    if (expiresAt === undefined || expiresAt <= this.now()) {
++      this.issuedHandles.delete(handle)
++      return false
++    }
++    return true
++  }
++
++  private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
++    try {
++      if (!this.authorized(request)) {
++        this.send(response, 401, { status: 'error', code: 'unauthorized', message: 'Unauthorized' })
++        return
++      }
++      const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
++      if (url.pathname === '/v1/health' && request.method === 'GET') {
++        const snapshot = await this.service.snapshot()
++        this.send(response, 200, {
++          status: 'ok',
++          state: snapshot.state.name,
++          collections: snapshot.collections.filter((collection) => collection.enabled).length,
++        })
++        return
++      }
++      if (url.pathname === '/v1/search' && request.method === 'POST') {
++        const body = await this.readJson(request)
++        const query = typeof body.query === 'string' ? body.query.trim() : ''
++        const collectionId = body.collection_id === undefined
++          ? undefined
++          : typeof body.collection_id === 'string' && /^col_[a-f0-9]{32}$/.test(body.collection_id)
++            ? body.collection_id
++            : null
++        const topK = body.top_k === undefined ? 5 : typeof body.top_k === 'number' ? body.top_k : Number.NaN
++        if (!query || query.length > this.maxQueryLength || collectionId === null || !Number.isInteger(topK) || topK < 1 || topK > this.maxTopK) {
++          throw new KnowledgeError('invalid_request', 'Knowledge search request is invalid')
++        }
++        await this.readyForSearch()
++        const hits = (await this.service.search(query, collectionId, topK)).filter((hit) =>
++          HANDLE_PATTERN.test(hit.handle) && hasPublicCollectionName(hit.collectionName) && hasPublicRelativeFile(hit.relativeFile))
++        hits.forEach((hit) => this.rememberHandle(hit.handle))
++        this.send(response, 200, {
++          status: hits.length > 0 ? 'ok' : 'no_results',
++          results: hits.map((hit) => ({
++            handle: hit.handle,
++            title: hit.title,
++            source: `${hit.collectionName}/${hit.relativeFile}`,
++            score: hit.score,
++            snippet: hit.snippet,
++            ...(hit.line !== undefined ? { line: hit.line } : {}),
++          })),
++        })
++        return
++      }
++      if (url.pathname === '/v1/document' && request.method === 'POST') {
++        const body = await this.readJson(request)
++        const handle = typeof body.handle === 'string' ? body.handle : ''
++        const startLine = body.start_line === undefined ? 1 : typeof body.start_line === 'number' ? body.start_line : Number.NaN
++        const endLine = body.end_line === undefined ? startLine + this.maxDocumentLines - 1 : typeof body.end_line === 'number' ? body.end_line : Number.NaN
++        if (
++          !Number.isInteger(startLine) || !Number.isInteger(endLine) ||
++          startLine < 1 || endLine < startLine || endLine - startLine + 1 > this.maxDocumentLines
++        ) {
++          throw new KnowledgeError('invalid_request', 'Knowledge document range is invalid')
++        }
++        if (!this.takeHandle(handle)) {
++          throw new KnowledgeError('document_not_allowed', 'Document handle is not allowed')
++        }
++        const document = await this.service.getDocument(handle, { startLine, endLine })
++        if (!HANDLE_PATTERN.test(document.handle) || document.handle !== handle ||
++          !hasPublicCollectionName(document.collectionName) || !hasPublicRelativeFile(document.relativeFile)) {
++          throw new KnowledgeError('document_not_allowed', 'Document handle is not allowed')
++        }
++        this.send(response, 200, {
++          status: 'ok',
++          handle: document.handle,
++          title: document.title,
++          source: `${document.collectionName}/${document.relativeFile}`,
++          content: truncateUtf8(document.content, MAX_CONTENT_BYTES),
++        })
++        return
++      }
++      this.send(response, 404, { status: 'error', code: 'not_found', message: 'Not found' })
++    } catch (error) {
++      if (error instanceof KnowledgeError) {
++        this.send(response, statusForError(error.code), {
++          status: 'error',
++          code: error.code,
++          message: defaultErrorMessage(error.code),
++        })
++        return
++      }
++      this.send(response, 503, { status: 'error', code: 'proxy_unavailable', message: defaultErrorMessage('proxy_unavailable') })
++    }
++  }
++}
+diff --git a/desktop/src/main/qmd-service.ts b/desktop/src/main/qmd-service.ts
+new file mode 100644
+index 0000000..1d7bf7e
+--- /dev/null
++++ b/desktop/src/main/qmd-service.ts
+@@ -0,0 +1,467 @@
++import { randomBytes } from 'node:crypto'
++import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises'
++import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
++
++import type { QmdClient } from './qmd-mcp-client'
++import type {
++  CollectionRecord,
++  KnowledgeDocument,
++  KnowledgeSearchHit,
++  KnowledgeSnapshot,
++  LineRange,
++  RuntimeState,
++  RuntimeStateName,
++} from './runtime-types'
++
++export type KnowledgeErrorCode =
++  | 'no_collection'
++  | 'knowledge_not_ready'
++  | 'knowledge_indexing'
++  | 'no_results'
++  | 'document_not_allowed'
++  | 'proxy_unavailable'
++  | 'invalid_request'
++  | 'collection_invalid'
++  | 'collection_exists'
++
++export class KnowledgeError extends Error {
++  readonly code: KnowledgeErrorCode
++
++  constructor(code: KnowledgeErrorCode, message: string) {
++    super(message)
++    this.name = 'KnowledgeError'
++    this.code = code
++  }
++}
++
++export interface QmdIndexRunner {
++  add(internalName: string, root: string, include: string): Promise<void>
++  remove(internalName: string): Promise<void>
++  reindex(internalName: string): Promise<void>
++  deleteIndex(internalName: string): Promise<void>
++}
++
++export interface KnowledgeService {
++  snapshot(): Promise<KnowledgeSnapshot>
++  search(query: string, collectionId?: string, topK?: number): Promise<KnowledgeSearchHit[]>
++  getDocument(handle: string, range: LineRange): Promise<KnowledgeDocument>
++}
++
++export interface QmdServiceOptions {
++  metadataPath: string
++  client?: QmdClient
++  runner?: QmdIndexRunner
++  now?: () => Date
++  handleTtlMs?: number
++  maxHandles?: number
++}
++
++const INCLUDE_PATTERN = '**/*.md' as const
++const HANDLE_PATTERN = /^doc_[a-f0-9]{64}$/
++const MAX_DOCUMENT_LINES = 80
++
++interface HandleRecord {
++  handle: string
++  collectionId: string
++  collectionName: string
++  qmdDocid: string
++  relativeFile: string
++  title: string
++  expiresAt: number
++  indexedAt: string | null
++}
++
++function state(name: RuntimeStateName, now: () => Date, collectionId?: string, reason?: string): RuntimeState {
++  return {
++    name,
++    ...(collectionId ? { collectionId } : {}),
++    ...(reason ? { reason } : {}),
++    updatedAt: now().toISOString(),
++  }
++}
++
++function isInside(root: string, target: string): boolean {
++  const child = relative(root, target)
++  return child !== '' && !child.startsWith('..') && !isAbsolute(child)
++}
++
++function normalizeSourcePath(file: string): string {
++  return file.split(sep).join('/')
++}
++
++function validDisplayName(value: string): boolean {
++  return value.length > 0 && value.length <= 120 && !value.includes('\0') &&
++    !value.includes('/') && !value.includes('\\') && !/[\u0000-\u001f\u007f]/.test(value)
++}
++
++function validPersistedRecord(value: unknown): value is CollectionRecord {
++  if (!value || typeof value !== 'object') return false
++  const record = value as Partial<CollectionRecord>
++  return (
++    typeof record.collectionId === 'string' && /^col_[a-f0-9]{32}$/.test(record.collectionId) &&
++    typeof record.displayName === 'string' && validDisplayName(record.displayName) &&
++    typeof record.root === 'string' && isAbsolute(record.root) &&
++    record.include === INCLUDE_PATTERN &&
++    typeof record.enabled === 'boolean' &&
++    (record.lastIndexedAt === null || typeof record.lastIndexedAt === 'string') &&
++    (record.indexState === 'pending' || record.indexState === 'indexing' || record.indexState === 'ready' || record.indexState === 'failed')
++  )
++}
++
++export class QmdService implements KnowledgeService {
++  private readonly metadataPath: string
++  private readonly client: QmdClient | undefined
++  private readonly runner: QmdIndexRunner | undefined
++  private readonly now: () => Date
++  private readonly handleTtlMs: number
++  private readonly maxHandles: number
++  private readonly loaded: Promise<void>
++  private readonly handles = new Map<string, HandleRecord>()
++  private readonly configuredCollections = new Set<string>()
++  private writeTail = Promise.resolve()
++  private records: CollectionRecord[] = []
++  private currentState: RuntimeState
++
++  constructor(options: QmdServiceOptions) {
++    this.metadataPath = options.metadataPath
++    this.client = options.client
++    this.runner = options.runner
++    this.now = options.now ?? (() => new Date())
++    this.handleTtlMs = options.handleTtlMs ?? 30 * 60 * 1000
++    this.maxHandles = options.maxHandles ?? 1024
++    this.currentState = state('no_collection', this.now)
++    this.loaded = this.load()
++  }
++
++  private async load(): Promise<void> {
++    try {
++      const parsed = JSON.parse(await readFile(this.metadataPath, 'utf8')) as unknown
++      if (Array.isArray(parsed)) this.records = parsed.filter(validPersistedRecord).map((record) => ({ ...record }))
++    } catch {
++      this.records = []
++    }
++    this.recalculateState()
++  }
++
++  private async save(): Promise<void> {
++    await mkdir(dirname(this.metadataPath), { recursive: true, mode: 0o700 })
++    const temporary = `${this.metadataPath}.${randomBytes(8).toString('hex')}.tmp`
++    await writeFile(temporary, `${JSON.stringify(this.records, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
++    await rename(temporary, this.metadataPath)
++  }
++
++  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
++    const next = this.writeTail.then(operation, operation)
++    this.writeTail = next.then(() => undefined, () => undefined)
++    return next
++  }
++
++  private recalculateState(): void {
++    if (this.records.length === 0) {
++      this.currentState = state('no_collection', this.now)
++      return
++    }
++    const failed = this.records.find((record) => record.indexState === 'failed')
++    if (failed) {
++      this.currentState = state('failed', this.now, failed.collectionId)
++      return
++    }
++    const pending = this.records.find((record) => record.indexState !== 'ready')
++    if (pending) {
++      this.currentState = state('indexing', this.now, pending.collectionId)
++      return
++    }
++    this.currentState = state('ready_vec', this.now)
++  }
++
++  private record(collectionId: string): CollectionRecord {
++    const record = this.records.find((candidate) => candidate.collectionId === collectionId)
++    if (!record) throw new KnowledgeError('no_collection', 'Knowledge collection is not configured')
++    return record
++  }
++
++  private async runnerOrThrow(): Promise<QmdIndexRunner> {
++    if (!this.runner) throw new KnowledgeError('knowledge_not_ready', 'Knowledge indexing is not available')
++    return this.runner
++  }
++
++  private async canonicalDirectory(root: string): Promise<string> {
++    if (typeof root !== 'string' || !root.trim() || root.includes('\0')) {
++      throw new KnowledgeError('collection_invalid', 'Knowledge collection directory is invalid')
++    }
++    try {
++      const canonical = await realpath(root.trim())
++      const metadata = await stat(canonical)
++      if (!metadata.isDirectory()) throw new Error('not a directory')
++      return canonical
++    } catch {
++      throw new KnowledgeError('collection_invalid', 'Knowledge collection directory is unavailable')
++    }
++  }
++
++  private internalName(record: CollectionRecord): string {
++    return `kb_${record.collectionId}`
++  }
++
++  private invalidateCollectionHandles(collectionId: string): void {
++    for (const [handle, record] of this.handles) {
++      if (record.collectionId === collectionId) this.handles.delete(handle)
++    }
++  }
++
++  async addCollection(root: string, displayName?: string): Promise<CollectionRecord> {
++    return this.enqueue(async () => {
++      await this.loaded
++      const canonicalRoot = await this.canonicalDirectory(root)
++      if (this.records.some((record) => record.root === canonicalRoot)) {
++        throw new KnowledgeError('collection_exists', 'This knowledge collection is already configured')
++      }
++      const name = (typeof displayName === 'string' ? displayName.trim() : '') || basename(canonicalRoot)
++      if (!validDisplayName(name)) throw new KnowledgeError('collection_invalid', 'Knowledge collection name is invalid')
++      const collectionId = `col_${randomBytes(16).toString('hex')}`
++      const record: CollectionRecord = {
++        collectionId,
++        displayName: name.slice(0, 120),
++        root: canonicalRoot,
++        include: INCLUDE_PATTERN,
++        enabled: true,
++        lastIndexedAt: null,
++        indexState: 'pending',
++      }
++      const runner = await this.runnerOrThrow()
++      this.records.push(record)
++      this.recalculateState()
++      await this.save()
++      try {
++        await runner.add(this.internalName(record), record.root, record.include)
++        this.configuredCollections.add(collectionId)
++      } catch (error) {
++        this.records = this.records.filter((candidate) => candidate.collectionId !== collectionId)
++        this.recalculateState()
++        await this.save()
++        throw new KnowledgeError('knowledge_not_ready', `Knowledge collection could not be added: ${String(error)}`)
++      }
++      return { ...record }
++    })
++  }
++
++  async removeCollection(collectionId: string): Promise<void> {
++    return this.enqueue(async () => {
++      await this.loaded
++      const record = this.record(collectionId)
++      const runner = await this.runnerOrThrow()
++      await runner.remove(this.internalName(record))
++      this.configuredCollections.delete(collectionId)
++      this.invalidateCollectionHandles(collectionId)
++      this.records = this.records.filter((candidate) => candidate.collectionId !== collectionId)
++      this.recalculateState()
++      await this.save()
++    })
++  }
++
++  async reindex(collectionId: string): Promise<void> {
++    return this.enqueue(async () => {
++      await this.loaded
++      const record = this.record(collectionId)
++      const runner = await this.runnerOrThrow()
++      record.indexState = 'indexing'
++      this.invalidateCollectionHandles(collectionId)
++      this.recalculateState()
++      await this.save()
++      try {
++        if (!this.configuredCollections.has(collectionId)) {
++          await runner.add(this.internalName(record), record.root, record.include)
++          this.configuredCollections.add(collectionId)
++        }
++        await runner.reindex(this.internalName(record))
++        record.indexState = 'ready'
++        record.lastIndexedAt = this.now().toISOString()
++        this.recalculateState()
++        await this.save()
++      } catch (error) {
++        record.indexState = 'failed'
++        this.recalculateState()
++        await this.save()
++        throw new KnowledgeError('knowledge_not_ready', `Knowledge indexing failed: ${String(error)}`)
++      }
++    })
++  }
++
++  async deleteIndex(collectionId: string): Promise<void> {
++    return this.enqueue(async () => {
++      await this.loaded
++      const record = this.record(collectionId)
++      const runner = await this.runnerOrThrow()
++      await runner.deleteIndex(this.internalName(record))
++      this.configuredCollections.delete(collectionId)
++      this.invalidateCollectionHandles(collectionId)
++      record.indexState = 'pending'
++      record.lastIndexedAt = null
++      this.recalculateState()
++      await this.save()
++    })
++  }
++
++  async markReady(collectionId: string, mode: 'ready_vec' | 'ready_hybrid' = 'ready_vec'): Promise<void> {
++    return this.enqueue(async () => {
++      await this.loaded
++      const record = this.record(collectionId)
++      record.indexState = 'ready'
++      record.lastIndexedAt = record.lastIndexedAt ?? this.now().toISOString()
++      this.currentState = state(mode, this.now)
++      await this.save()
++    })
++  }
++
++  async snapshot(): Promise<KnowledgeSnapshot> {
++    await this.loaded
++    this.recalculateState()
++    return {
++      state: { ...this.currentState },
++      collections: this.records.map((record) => ({ ...record })),
++    }
++  }
++
++  private recordsFor(collectionId?: string): CollectionRecord[] {
++    const records = collectionId
++      ? [this.record(collectionId)]
++      : this.records.filter((record) => record.enabled)
++    if (records.length === 0 || records.some((record) => !record.enabled)) {
++      throw new KnowledgeError('no_collection', 'No enabled knowledge collection is configured')
++    }
++    if (records.some((record) => record.indexState !== 'ready')) {
++      throw new KnowledgeError('knowledge_indexing', 'Knowledge index is not ready')
++    }
++    return records
++  }
++
++  private async safeFile(record: CollectionRecord, rawFile: unknown): Promise<string | null> {
++    if (typeof rawFile !== 'string' || !rawFile || rawFile.includes('\0') || rawFile.includes('\\')) return null
++    let file = rawFile
++    if (file.startsWith('qmd://')) {
++      try {
++        const parsed = new URL(file)
++        if (parsed.protocol !== 'qmd:' || parsed.hostname !== this.internalName(record)) return null
++        file = decodeURIComponent(parsed.pathname).replace(/^\//, '')
++      } catch {
++        return null
++      }
++    }
++    if (!file || isAbsolute(file)) return null
++    const candidate = resolve(record.root, file)
++    if (!isInside(record.root, candidate)) return null
++    try {
++      const realRoot = await realpath(record.root)
++      const realFile = await realpath(candidate)
++      if (!isInside(realRoot, realFile)) return null
++      return normalizeSourcePath(relative(realRoot, realFile))
++    } catch {
++      return null
++    }
++  }
++
++  private issueHandle(record: CollectionRecord, qmdDocid: string, relativeFile: string, title: string): string {
++    const handle = `doc_${randomBytes(32).toString('hex')}`
++    this.handles.set(handle, {
++      handle,
++      collectionId: record.collectionId,
++      collectionName: record.displayName,
++      qmdDocid,
++      relativeFile,
++      title,
++      expiresAt: this.now().getTime() + this.handleTtlMs,
++      indexedAt: record.lastIndexedAt,
++    })
++    while (this.handles.size > this.maxHandles) {
++      const oldest = this.handles.keys().next().value
++      if (typeof oldest !== 'string') break
++      this.handles.delete(oldest)
++    }
++    return handle
++  }
++
++  async search(query: string, collectionId?: string, topK = 5): Promise<KnowledgeSearchHit[]> {
++    await this.loaded
++    const cleanQuery = typeof query === 'string' ? query.trim() : ''
++    if (!cleanQuery) throw new KnowledgeError('invalid_request', 'Knowledge query is empty')
++    if (cleanQuery.length > 2000 || !Number.isInteger(topK) || topK < 1 || topK > 8) {
++      throw new KnowledgeError('invalid_request', 'Knowledge query is invalid')
++    }
++    const records = this.recordsFor(collectionId)
++    if (!this.client) throw new KnowledgeError('knowledge_not_ready', 'Knowledge search is not ready')
++
++    const hits: KnowledgeSearchHit[] = []
++    for (const record of records) {
++      let results
++      try {
++        results = await this.client.query(cleanQuery, this.internalName(record), topK)
++      } catch (error) {
++        if (error instanceof KnowledgeError) throw error
++        throw new KnowledgeError('proxy_unavailable', 'Knowledge service is unavailable')
++      }
++      for (const raw of results) {
++        if (typeof raw.docid !== 'string' || !raw.docid) continue
++        const relativeFile = await this.safeFile(record, raw.file)
++        if (!relativeFile) continue
++        const title = typeof raw.title === 'string' && raw.title ? raw.title : relativeFile
++        const handle = this.issueHandle(record, raw.docid, relativeFile, title)
++        hits.push({
++          handle,
++          collectionId: record.collectionId,
++          collectionName: record.displayName,
++          relativeFile,
++          title,
++          score: typeof raw.score === 'number' && Number.isFinite(raw.score) ? raw.score : 0,
++          snippet: typeof raw.snippet === 'string' ? raw.snippet : '',
++          ...(typeof raw.line === 'number' && Number.isInteger(raw.line) && raw.line > 0 ? { line: raw.line } : {}),
++        })
++      }
++    }
++    return hits.sort((left, right) => right.score - left.score).slice(0, topK)
++  }
++
++  async getDocument(handle: string, range: LineRange): Promise<KnowledgeDocument> {
++    await this.loaded
++    if (typeof handle !== 'string' || !HANDLE_PATTERN.test(handle)) {
++      throw new KnowledgeError('document_not_allowed', 'Document handle is not allowed')
++    }
++    if (
++      !Number.isInteger(range?.startLine) || !Number.isInteger(range?.endLine) ||
++      range.startLine < 1 || range.endLine < range.startLine ||
++      range.endLine - range.startLine + 1 > MAX_DOCUMENT_LINES
++    ) {
++      throw new KnowledgeError('invalid_request', 'Document range is invalid')
++    }
++    const stored = this.handles.get(handle)
++    if (!stored || stored.expiresAt <= this.now().getTime()) {
++      this.handles.delete(handle)
++      throw new KnowledgeError('document_not_allowed', 'Document handle is no longer valid')
++    }
++    const record = this.records.find((candidate) => candidate.collectionId === stored.collectionId)
++    if (!record || !record.enabled || record.indexState !== 'ready' || record.lastIndexedAt !== stored.indexedAt) {
++      this.handles.delete(handle)
++      throw new KnowledgeError('document_not_allowed', 'Document handle is no longer valid')
++    }
++    const relativeFile = await this.safeFile(record, stored.relativeFile)
++    if (!relativeFile || relativeFile !== stored.relativeFile) {
++      this.handles.delete(handle)
++      throw new KnowledgeError('document_not_allowed', 'Document handle is not allowed')
++    }
++    if (!this.client) throw new KnowledgeError('knowledge_not_ready', 'Knowledge search is not ready')
++    let content: string
++    try {
++      content = await this.client.get(stored.qmdDocid, range.startLine, range.endLine - range.startLine + 1)
++    } catch (error) {
++      if (error instanceof KnowledgeError) throw error
++      throw new KnowledgeError('proxy_unavailable', 'Knowledge service is unavailable')
++    }
++    if (typeof content !== 'string') throw new KnowledgeError('proxy_unavailable', 'Knowledge service is unavailable')
++    return {
++      handle,
++      collectionName: record.displayName,
++      relativeFile,
++      title: stored.title,
++      content,
++    }
++  }
++}
+diff --git a/desktop/src/main/runtime-types.ts b/desktop/src/main/runtime-types.ts
+index e56b570..27282fe 100644
+--- a/desktop/src/main/runtime-types.ts
++++ b/desktop/src/main/runtime-types.ts
+@@ -50,10 +50,50 @@ export interface CollectionRecord {
+   include: '**/*.md'
+   enabled: boolean
+   lastIndexedAt: string | null
+   indexState: 'pending' | 'indexing' | 'ready' | 'failed'
+ }
+ 
+ export interface KnowledgeSnapshot {
+   state: RuntimeState
+   collections: CollectionRecord[]
+ }
++
++export interface QmdSearchResult {
++  docid: string
++  file: string
++  title: string
++  score: number
++  snippet: string
++  line?: number
++}
++
++export interface QmdStatus {
++  totalDocuments: number
++  needsEmbedding: number
++  hasVectorIndex: boolean
++  collections: Array<{ name: string; documents: number }>
++}
++
++export interface LineRange {
++  startLine: number
++  endLine: number
++}
++
++export interface KnowledgeSearchHit {
++  handle: string
++  collectionId: string
++  collectionName: string
++  relativeFile: string
++  title: string
++  score: number
++  snippet: string
++  line?: number
++}
++
++export interface KnowledgeDocument {
++  handle: string
++  collectionName: string
++  relativeFile: string
++  title: string
++  content: string
++}
+diff --git a/desktop/tests/qmd-mcp-client.test.mjs b/desktop/tests/qmd-mcp-client.test.mjs
+new file mode 100644
+index 0000000..dbcbac9
+--- /dev/null
++++ b/desktop/tests/qmd-mcp-client.test.mjs
+@@ -0,0 +1,115 @@
++import { expect, test } from 'vitest'
++
++import { QmdMcpClient } from '../src/main/qmd-mcp-client'
++
++function sse(result, headers = {}) {
++  return new Response(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: 'test', result })}\n\n`, {
++    status: 200,
++    headers: { 'content-type': 'text/event-stream', ...headers },
++  })
++}
++
++test('initializes QMD 2.8.3 from SSE without requiring a session header', async () => {
++  const requests = []
++  const client = new QmdMcpClient({
++    endpoint: 'http://[::1]:8321/mcp',
++    fetch: async (_url, init) => {
++      const request = JSON.parse(init.body)
++      requests.push({ request, headers: new Headers(init.headers) })
++      if (request.method === 'initialize') {
++        return sse({
++          protocolVersion: '2025-06-18',
++          serverInfo: { name: 'qmd', version: '2.8.3' },
++        })
++      }
++      if (request.params.name === 'query') {
++        return sse({ structuredContent: { results: [{
++          docid: '#internal-docid',
++          file: 'safe.md',
++          title: 'Safe',
++          score: 0.8,
++          snippet: 'hit',
++          line: 3,
++        }] } })
++      }
++      if (request.params.name === 'get') {
++        return sse({ content: [{ type: 'resource', resource: { text: 'body' } }] })
++      }
++      return sse({ structuredContent: {
++        totalDocuments: 2,
++        needsEmbedding: 0,
++        hasVectorIndex: true,
++        collections: [{ name: 'kb_col', path: '/private/notes', documents: 2 }],
++      } })
++    },
++  })
++
++  await expect(client.initialize()).resolves.toEqual({ version: '2.8.3' })
++  await expect(client.query('hello', 'kb_col', 5)).resolves.toEqual([
++    expect.objectContaining({ docid: '#internal-docid', file: 'safe.md' }),
++  ])
++  await expect(client.get('#internal-docid', 2, 10)).resolves.toBe('body')
++  await expect(client.status()).resolves.toEqual({
++    totalDocuments: 2,
++    needsEmbedding: 0,
++    hasVectorIndex: true,
++    collections: [{ name: 'kb_col', documents: 2 }],
++  })
++
++  expect(requests.map(({ request }) => request.method)).toEqual([
++    'initialize',
++    'tools/call',
++    'tools/call',
++    'tools/call',
++  ])
++  expect(requests[0].request.params.protocolVersion).toBe('2025-06-18')
++  expect(requests[1].request.params).toEqual({
++    name: 'query',
++    arguments: {
++      searches: [{ type: 'vec', query: 'hello' }],
++      collections: ['kb_col'],
++      limit: 5,
++      rerank: false,
++    },
++  })
++  expect(requests[2].request.params).toEqual({
++    name: 'get',
++    arguments: { file: '#internal-docid', fromLine: 2, maxLines: 10, lineNumbers: false },
++  })
++  expect(requests[3].request.params).toEqual({ name: 'status', arguments: {} })
++  expect(requests.every(({ headers }) => headers.get('mcp-session-id') === null)).toBe(true)
++})
++
++test('stores an MCP session header and sends it on later allowlisted tool calls', async () => {
++  const headers = []
++  const client = new QmdMcpClient({
++    endpoint: 'http://[::1]:8321/mcp',
++    fetch: async (_url, init) => {
++      const request = JSON.parse(init.body)
++      headers.push(new Headers(init.headers))
++      if (request.method === 'initialize') {
++        return sse({ protocolVersion: '2025-06-18', serverInfo: { name: 'qmd', version: '2.8.3' } }, {
++          'mcp-session-id': 'session-123',
++        })
++      }
++      return sse({ structuredContent: { results: [] } })
++    },
++  })
++
++  await client.query('hello', 'kb_col', 1)
++
++  expect(headers[0].get('mcp-session-id')).toBeNull()
++  expect(headers[1].get('mcp-session-id')).toBe('session-123')
++})
++
++test('maps unreachable QMD to a sanitized availability error', async () => {
++  const client = new QmdMcpClient({
++    endpoint: 'http://[::1]:8321/mcp',
++    fetch: async () => { throw new Error('/Users/private/index.sqlite refused connection') },
++  })
++
++  await expect(client.initialize()).rejects.toMatchObject({
++    code: 'proxy_unavailable',
++    message: 'Knowledge service is unavailable',
++  })
++})
+diff --git a/desktop/tests/qmd-proxy-contract.test.mjs b/desktop/tests/qmd-proxy-contract.test.mjs
+new file mode 100644
+index 0000000..8f8203f
+--- /dev/null
++++ b/desktop/tests/qmd-proxy-contract.test.mjs
+@@ -0,0 +1,270 @@
++import { Buffer } from 'node:buffer'
++import { expect, test } from 'vitest'
++
++import { QmdProxy } from '../src/main/qmd-proxy'
++import { KnowledgeError } from '../src/main/qmd-service'
++
++const HANDLE = `doc_${'1'.repeat(64)}`
++
++function service(overrides = {}) {
++  return {
++    snapshot: async () => ({
++      state: { name: 'ready_vec', updatedAt: '2026-09-05T00:00:00.000Z' },
++      collections: [{
++        collectionId: 'col_123',
++        displayName: 'Notes',
++        root: '/Users/private/secret-notes',
++        include: '**/*.md',
++        enabled: true,
++        lastIndexedAt: null,
++        indexState: 'ready',
++      }],
++    }),
++    search: async () => [{
++      handle: HANDLE,
++      collectionId: 'col_123',
++      collectionName: 'Notes',
++      relativeFile: 'safe.md',
++      title: 'Safe note',
++      score: 0.81,
++      snippet: 'safe snippet',
++    }],
++    getDocument: async (handle) => ({
++      handle,
++      collectionName: 'Notes',
++      relativeFile: 'safe.md',
++      title: 'Safe note',
++      content: 'trusted content',
++    }),
++    ...overrides,
++  }
++}
++
++async function withProxy(options, run) {
++  const proxy = new QmdProxy({ service: service(), portProvider: async () => 0, ...options })
++  const endpoint = await proxy.start()
++  try {
++    await run(endpoint)
++  } finally {
++    await proxy.stop()
++  }
++}
++
++function headers(token) {
++  return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
++}
++
++test('requires the bearer token and rejects arbitrary routes, methods, and MCP payloads', async () => {
++  await withProxy({}, async ({ url, token }) => {
++    const noToken = await fetch(`${url}/v1/search`, { method: 'POST', body: '{}' })
++    expect(noToken.status).toBe(401)
++
++    const wrongToken = await fetch(`${url}/v1/search`, {
++      method: 'POST',
++      headers: headers('wrong'),
++      body: JSON.stringify({ query: 'hello' }),
++    })
++    expect(wrongToken.status).toBe(401)
++
++    for (const [path, method, body] of [
++      ['/mcp', 'POST', { method: 'tools/call', params: { name: 'multi_get' } }],
++      ['/v1/search', 'PUT', { query: 'hello' }],
++      ['/v1/arbitrary', 'POST', { query: 'hello' }],
++    ]) {
++      const response = await fetch(`${url}${path}`, {
++        method,
++        headers: headers(token),
++        body: JSON.stringify(body),
++      })
++      expect(response.status).toBe(404)
++    }
++  })
++})
++
++test('enforces body, query, top_k, and document range limits before delegation', async () => {
++  let searches = 0
++  let documents = 0
++  await withProxy({
++    service: service({
++      search: async () => { searches += 1; return [] },
++      getDocument: async () => { documents += 1; throw new Error('must not run') },
++    }),
++    maxBodyBytes: 40,
++    maxQueryLength: 10,
++    maxTopK: 2,
++    maxDocumentLines: 3,
++  }, async ({ url, token }) => {
++    const requestHeaders = headers(token)
++    const invalidSearches = [
++      { query: '' },
++      { query: '01234567890' },
++      { query: 'ok', top_k: 0 },
++      { query: 'ok', top_k: 3 },
++      { query: 'ok', top_k: 1.5 },
++    ]
++    for (const body of invalidSearches) {
++      const response = await fetch(`${url}/v1/search`, { method: 'POST', headers: requestHeaders, body: JSON.stringify(body) })
++      expect(response.status).toBe(400)
++    }
++    const oversized = await fetch(`${url}/v1/search`, {
++      method: 'POST',
++      headers: requestHeaders,
++      body: JSON.stringify({ query: 'x'.repeat(80) }),
++    })
++    expect(oversized.status).toBe(400)
++    const malformed = await fetch(`${url}/v1/search`, { method: 'POST', headers: requestHeaders, body: '{' })
++    expect(malformed.status).toBe(400)
++    expect(searches).toBe(0)
++    expect(documents).toBe(0)
++  })
++})
++
++test('checks no-collection and indexing states before search and sanitizes daemon failures', async () => {
++  for (const [state, code] of [['no_collection', 'no_collection'], ['indexing', 'knowledge_indexing']]) {
++    let searches = 0
++    await withProxy({
++      service: service({
++        snapshot: async () => ({ state: { name: state, updatedAt: '/private/time' }, collections: [] }),
++        search: async () => { searches += 1; return [] },
++      }),
++    }, async ({ url, token }) => {
++      const response = await fetch(`${url}/v1/search`, {
++        method: 'POST',
++        headers: headers(token),
++        body: JSON.stringify({ query: 'hello' }),
++      })
++      expect(response.status).toBe(200)
++      await expect(response.json()).resolves.toEqual({ status: 'error', code, message: expect.any(String) })
++      expect(searches).toBe(0)
++    })
++  }
++
++  await withProxy({
++    service: service({ search: async () => { throw new Error('/Users/private/qmd.sock failed') } }),
++  }, async ({ url, token }) => {
++    const response = await fetch(`${url}/v1/search`, {
++      method: 'POST',
++      headers: headers(token),
++      body: JSON.stringify({ query: 'hello' }),
++    })
++    expect(response.status).toBe(503)
++    const body = await response.text()
++    expect(body).toContain('proxy_unavailable')
++    expect(body).not.toContain('/Users/private')
++  })
++})
++
++test('uses only opaque handles and rejects unknown, expired, and capacity-evicted handles', async () => {
++  let now = 1_000
++  let nextHandle = 1
++  const handles = () => `doc_${String(nextHandle++).padStart(64, '0')}`
++  await withProxy({
++    now: () => now,
++    handleTtlMs: 10,
++    maxHandles: 1,
++    service: service({
++      search: async () => [{
++        handle: handles(), collectionId: 'col', collectionName: 'Notes', relativeFile: 'safe.md',
++        title: 'Safe', score: 1, snippet: '',
++      }],
++    }),
++  }, async ({ url, token }) => {
++    const requestHeaders = headers(token)
++    const search = async () => (await (await fetch(`${url}/v1/search`, {
++      method: 'POST', headers: requestHeaders, body: JSON.stringify({ query: 'hello' }),
++    })).json()).results[0].handle
++    const first = await search()
++    const second = await search()
++
++    expect(first).toMatch(/^doc_[a-f0-9]{64}$/)
++    expect(second).not.toBe(first)
++    for (const handle of [first, '#qmd-docid', '/etc/passwd', '../safe.md', 'safe.md\0x']) {
++      const response = await fetch(`${url}/v1/document`, {
++        method: 'POST', headers: requestHeaders, body: JSON.stringify({ handle }),
++      })
++      expect(response.status).toBe(403)
++    }
++    now += 11
++    const expired = await fetch(`${url}/v1/document`, {
++      method: 'POST', headers: requestHeaders, body: JSON.stringify({ handle: second }),
++    })
++    expect(expired.status).toBe(403)
++  })
++})
++
++test('returns sanitized health and never leaks absolute paths in public responses', async () => {
++  await withProxy({}, async ({ url, token }) => {
++    const response = await fetch(`${url}/v1/health`, { headers: headers(token) })
++    expect(response.status).toBe(200)
++    expect(await response.json()).toEqual({ status: 'ok', state: 'ready_vec', collections: 1 })
++  })
++})
++
++test('filters path-like collection names and non-opaque handles at the public boundary', async () => {
++  await withProxy({
++    service: service({
++      search: async () => [{
++        handle: '#qmd-docid',
++        collectionId: 'col_123',
++        collectionName: '/Users/private/notes',
++        relativeFile: 'safe.md',
++        title: 'Safe',
++        score: 1,
++        snippet: 'safe',
++      }],
++    }),
++  }, async ({ url, token }) => {
++    const response = await fetch(`${url}/v1/search`, {
++      method: 'POST',
++      headers: headers(token),
++      body: JSON.stringify({ query: 'hello' }),
++    })
++    const body = await response.text()
++    expect(body).not.toContain('/Users/private/notes')
++    expect(body).not.toContain('#qmd-docid')
++    expect(JSON.parse(body)).toMatchObject({ status: 'no_results', results: [] })
++  })
++})
++
++test('truncates document content to at most 64 KiB without corrupting UTF-8', async () => {
++  const content = '你'.repeat(30_000)
++  await withProxy({
++    service: service({
++      getDocument: async (handle) => ({
++        handle,
++        collectionName: 'Notes',
++        relativeFile: 'safe.md',
++        title: 'Safe',
++        content,
++      }),
++    }),
++  }, async ({ url, token }) => {
++    const requestHeaders = headers(token)
++    await fetch(`${url}/v1/search`, { method: 'POST', headers: requestHeaders, body: JSON.stringify({ query: 'hello' }) })
++    const response = await fetch(`${url}/v1/document`, {
++      method: 'POST',
++      headers: requestHeaders,
++      body: JSON.stringify({ handle: HANDLE, start_line: 1, end_line: 80 }),
++    })
++    expect(response.status).toBe(200)
++    const body = await response.json()
++    expect(body.handle).toBe(HANDLE)
++    expect(body).not.toHaveProperty('docid')
++    expect(Buffer.byteLength(body.content, 'utf8')).toBeLessThanOrEqual(64 * 1024)
++    expect(body.content).not.toContain('\uFFFD')
++  })
++})
++
++test('maps stable service errors without leaking their private messages', async () => {
++  await withProxy({
++    service: service({ search: async () => { throw new KnowledgeError('knowledge_not_ready', '/private/index missing') } }),
++  }, async ({ url, token }) => {
++    const response = await fetch(`${url}/v1/search`, {
++      method: 'POST', headers: headers(token), body: JSON.stringify({ query: 'hello' }),
++    })
++    expect(response.status).toBe(503)
++    expect(await response.json()).toEqual({
++      status: 'error', code: 'knowledge_not_ready', message: 'Knowledge base is not ready',
++    })
++  })
++})
+diff --git a/desktop/tests/qmd-service.test.mjs b/desktop/tests/qmd-service.test.mjs
+new file mode 100644
+index 0000000..942ff0c
+--- /dev/null
++++ b/desktop/tests/qmd-service.test.mjs
+@@ -0,0 +1,196 @@
++import { mkdtemp, mkdir, readFile, realpath, symlink, writeFile } from 'node:fs/promises'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { expect, test } from 'vitest'
++
++import { QmdService } from '../src/main/qmd-service'
++
++function runner(calls = []) {
++  return {
++    add: async (...args) => { calls.push(['add', ...args]) },
++    remove: async (...args) => { calls.push(['remove', ...args]) },
++    reindex: async (...args) => { calls.push(['reindex', ...args]) },
++    deleteIndex: async (...args) => { calls.push(['delete-index', ...args]) },
++  }
++}
++
++async function fixture(options = {}) {
++  const root = await mkdtemp(join(tmpdir(), 's2s-qmd-service-'))
++  const notes = join(root, 'notes')
++  await mkdir(notes)
++  await writeFile(join(notes, 'safe.md'), '# safe\n')
++  const calls = []
++  const clientCalls = []
++  const client = options.client ?? {
++    initialize: async () => ({ version: '2.8.3' }),
++    query: async (...args) => {
++      clientCalls.push(['query', ...args])
++      return [{ docid: '#internal-docid', file: 'safe.md', title: 'Safe', score: 0.81, snippet: 'hit', line: 1 }]
++    },
++    get: async (...args) => {
++      clientCalls.push(['get', ...args])
++      return 'trusted content'
++    },
++    status: async () => ({ totalDocuments: 1, needsEmbedding: 0, hasVectorIndex: true, collections: [] }),
++  }
++  const service = new QmdService({
++    metadataPath: join(root, 'collections.json'),
++    runner: options.runner ?? runner(calls),
++    client,
++    now: options.now,
++    handleTtlMs: options.handleTtlMs,
++    maxHandles: options.maxHandles,
++  })
++  return { root, notes, calls, clientCalls, service }
++}
++
++test('canonicalizes roots, rejects duplicate directories, and rebuilds a deleted index without deleting sources', async () => {
++  const { root, notes, calls, service } = await fixture()
++  const alias = join(root, 'notes-alias')
++  await symlink(notes, alias)
++
++  const first = await service.addCollection(notes, 'My notes')
++  expect(first.root).toBe(await realpath(notes))
++  expect(first.collectionId).toMatch(/^col_[a-f0-9]{32}$/)
++  await expect(service.addCollection(alias, 'Duplicate')).rejects.toMatchObject({ code: 'collection_exists' })
++
++  await service.deleteIndex(first.collectionId)
++  expect((await service.snapshot()).collections[0]).toMatchObject({ indexState: 'pending', lastIndexedAt: null })
++  await service.reindex(first.collectionId)
++
++  expect(calls.map((call) => call[0])).toEqual(['add', 'delete-index', 'add', 'reindex'])
++  expect((await service.snapshot()).collections[0].indexState).toBe('ready')
++  await expect(readFile(join(notes, 'safe.md'), 'utf8')).resolves.toBe('# safe\n')
++})
++
++test('uses a single-writer queue for collection mutations', async () => {
++  const root = await mkdtemp(join(tmpdir(), 's2s-qmd-queue-'))
++  const firstRoot = join(root, 'first')
++  const secondRoot = join(root, 'second')
++  await Promise.all([mkdir(firstRoot), mkdir(secondRoot)])
++  let active = 0
++  let maximumActive = 0
++  const service = new QmdService({
++    metadataPath: join(root, 'collections.json'),
++    runner: {
++      ...runner(),
++      add: async () => {
++        active += 1
++        maximumActive = Math.max(maximumActive, active)
++        await new Promise((resolve) => setTimeout(resolve, 10))
++        active -= 1
++      },
++    },
++  })
++
++  await Promise.all([
++    service.addCollection(firstRoot),
++    service.addCollection(secondRoot),
++  ])
++
++  expect(maximumActive).toBe(1)
++})
++
++test('issues opaque handles, rejects unsafe result paths, and sends only the mapped QMD docid to get', async () => {
++  const outsideRoot = await mkdtemp(join(tmpdir(), 's2s-qmd-outside-'))
++  const outsideFile = join(outsideRoot, 'outside.md')
++  await writeFile(outsideFile, 'outside')
++  const clientCalls = []
++  const client = {
++    initialize: async () => ({ version: '2.8.3' }),
++    query: async (...args) => {
++      clientCalls.push(['query', ...args])
++      return [
++        { docid: '#internal-docid', file: 'safe.md', title: 'Safe', score: 0.9, snippet: 'good' },
++        { docid: '#traversal', file: '../outside.md', title: 'Bad', score: 0.8, snippet: 'bad' },
++        { docid: '#nul', file: 'safe.md\0outside', title: 'Bad', score: 0.7, snippet: 'bad' },
++        { docid: '#absolute', file: outsideFile, title: 'Bad', score: 0.6, snippet: 'bad' },
++        { docid: '#symlink', file: 'escape.md', title: 'Bad', score: 0.5, snippet: 'bad' },
++      ]
++    },
++    get: async (...args) => {
++      clientCalls.push(['get', ...args])
++      return 'trusted content'
++    },
++    status: async () => ({ totalDocuments: 1, needsEmbedding: 0, hasVectorIndex: true, collections: [] }),
++  }
++  const { notes, service } = await fixture({ client })
++  await symlink(outsideFile, join(notes, 'escape.md'))
++  const collection = await service.addCollection(notes, 'Notes')
++  await service.reindex(collection.collectionId)
++
++  const hits = await service.search('safe', collection.collectionId, 5)
++
++  expect(hits).toEqual([expect.objectContaining({
++    handle: expect.stringMatching(/^doc_[a-f0-9]{64}$/),
++    collectionId: collection.collectionId,
++    collectionName: 'Notes',
++    relativeFile: 'safe.md',
++  })])
++  expect(hits[0]).not.toHaveProperty('qmdDocid')
++  expect(JSON.stringify(hits)).not.toContain(notes)
++  await expect(service.getDocument(hits[0].handle, { startLine: 2, endLine: 4 })).resolves.toEqual({
++    handle: hits[0].handle,
++    collectionName: 'Notes',
++    relativeFile: 'safe.md',
++    title: 'Safe',
++    content: 'trusted content',
++  })
++  expect(clientCalls).toContainEqual(['query', 'safe', `kb_${collection.collectionId}`, 5])
++  expect(clientCalls).toContainEqual(['get', '#internal-docid', 2, 3])
++})
++
++test('rejects no collection, indexing, daemon failure, and unknown or expired handles', async () => {
++  let now = 1_000
++  const { notes, service } = await fixture({ now: () => new Date(now), handleTtlMs: 10 })
++  await expect(service.search('query')).rejects.toMatchObject({ code: 'no_collection' })
++
++  const collection = await service.addCollection(notes)
++  await expect(service.search('query')).rejects.toMatchObject({ code: 'knowledge_indexing' })
++  await service.reindex(collection.collectionId)
++  const [hit] = await service.search('query')
++
++  await expect(service.getDocument('doc_' + '0'.repeat(64), { startLine: 1, endLine: 1 }))
++    .rejects.toMatchObject({ code: 'document_not_allowed' })
++  now += 11
++  await expect(service.getDocument(hit.handle, { startLine: 1, endLine: 1 }))
++    .rejects.toMatchObject({ code: 'document_not_allowed' })
++
++  const unavailable = await fixture({
++    client: {
++      initialize: async () => ({ version: '2.8.3' }),
++      query: async () => { throw new Error('/private/qmd socket failed') },
++      get: async () => '',
++      status: async () => ({ totalDocuments: 0, needsEmbedding: 0, hasVectorIndex: true, collections: [] }),
++    },
++  })
++  const unavailableCollection = await unavailable.service.addCollection(unavailable.notes)
++  await unavailable.service.reindex(unavailableCollection.collectionId)
++  await expect(unavailable.service.search('query')).rejects.toMatchObject({
++    code: 'proxy_unavailable',
++    message: 'Knowledge service is unavailable',
++  })
++})
++
++test('evicts the oldest handle when the bounded handle store is full', async () => {
++  let sequence = 0
++  const { notes, service } = await fixture({
++    maxHandles: 1,
++    client: {
++      initialize: async () => ({ version: '2.8.3' }),
++      query: async () => [{ docid: `#internal-${++sequence}`, file: 'safe.md', title: 'Safe', score: 1, snippet: '' }],
++      get: async () => 'content',
++      status: async () => ({ totalDocuments: 1, needsEmbedding: 0, hasVectorIndex: true, collections: [] }),
++    },
++  })
++  const collection = await service.addCollection(notes)
++  await service.reindex(collection.collectionId)
++  const [first] = await service.search('first')
++  const [second] = await service.search('second')
++
++  await expect(service.getDocument(first.handle, { startLine: 1, endLine: 1 }))
++    .rejects.toMatchObject({ code: 'document_not_allowed' })
++  await expect(service.getDocument(second.handle, { startLine: 1, endLine: 1 })).resolves.toMatchObject({
++    handle: second.handle,
++  })
++})
