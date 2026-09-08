@@ -160,6 +160,27 @@ class VoiceMemAdapter:
         if self._backend is not None and hasattr(self._backend, "flush"):
             self._backend.flush()
 
+    def open_prefetch(self, *, min_chars: int | None = None):
+        """Open a text-only speculative prefetch stream on this memory store.
+
+        Returns a `prefetch.PrefetchStream`; callers feed partial transcriptions
+        and read `memory_context` at turn end. Requires the same unlock and
+        consent gates as any other read.
+        """
+        self._require_unlocked()
+        backend = self._ensure_backend()
+        opener = getattr(backend, "open_stream", None)
+        if opener is None:
+            raise MemoryNotConfiguredError("this backend does not support streaming prefetch")
+        try:
+            import prefetch as prefetch_module
+        except ImportError as exc:  # pragma: no cover - depends on sys.path
+            raise MemoryNotConfiguredError(
+                "experiments/voicemem must be on sys.path to import prefetch"
+            ) from exc
+        kwargs = {} if min_chars is None else {"min_chars": min_chars}
+        return prefetch_module.PrefetchStream(opener(), **kwargs)
+
     # ── gates ────────────────────────────────────────────────────────────────
 
     def set_permission(self, is_unlocked: Callable[[], bool]) -> None:
@@ -303,6 +324,16 @@ class _VoicememBackend:
 
     def flush(self) -> None:
         self._vm.Flush()
+
+    def open_stream(self):
+        """Text-only speculative prefetch stream over this instance's VoiceMem."""
+        try:
+            import prefetch as prefetch_module
+        except ImportError as exc:  # pragma: no cover - depends on sys.path
+            raise MemoryNotConfiguredError(
+                "experiments/voicemem must be on sys.path to import prefetch"
+            ) from exc
+        return prefetch_module.VoicememPrefetchStream(self._vm)
 
 
 def _as_float(value: object) -> float | None:

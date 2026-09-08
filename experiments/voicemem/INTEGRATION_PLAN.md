@@ -97,7 +97,24 @@ two possible shapes:
 | **A. `recall_memory` tool only** | v1-compatible (tools only) | retrieval happens after the turn | loses the prefetch advantage; still needs a tool contract + security review |
 | **B. Streaming prefetch + per-response injection** | **changes the v1 boundary** | memory ready at end-of-turn (~0 added) | upstream's intended shape; needs a product decision and new acceptance criteria |
 
-This is the decision that gates the rest of the design.
+**Decision (2026-09-08): shape B, with a gated injection.** Prefetch is pure
+upside — local, ~10 ms, changes nothing the user sees — so it is always on. The
+boundary-changing part is the injection, so it is separated into a policy
+(`injection.py`) that must pass four gates before a block reaches a request:
+
+1. memory enabled by the user;
+2. session unlocked (voiceprint / security gate);
+3. a non-empty prefetch context;
+4. a user turn in a normal response (not a tool result).
+
+The block is emitted as its own system message immediately before the latest user
+message, **per response, never session-level** (session-level instructions were
+measurably ignored for the turn). It is capped at 1200 chars, trimmed on a line
+boundary, and only its size is logged — never its content.
+
+This keeps the v1 "no automatic RAG" boundary intact in the default
+configuration: turning memory off (or leaving the session locked) degrades to
+shape A, and the same prefetch can feed a `recall_memory` tool instead.
 
 ## 5. Cloud vs local split
 
@@ -120,16 +137,36 @@ A text-only, no-audio-perception path needs **only `embedding/`** (E5, already
 cached on this machine). Everything else belongs to the audio-native mode we do
 not use.
 
-## 7. Staged plan (after the shape decision)
+## 7. Staged plan and progress
 
 1. **Adapter semantics**: `leftbrain_only` + `from_config` (local E5,
-   `memory_language=zh`) — **done** in this round.
-2. **Write path**: session-level batching in a worker thread/process; persist the
-   dedup set; sensitive-content filter (see `PRIOR_ART.md` P0 items).
-3. **Read path**: add `feed_partial()`-driven prefetch and return
-   `memory_context` at `turn_over`; expose it either as a tool result (shape A)
-   or per-response injection (shape B).
-4. **Process boundary**: move the backend behind a JSONL sidecar with timeouts,
-   stderr capture and `health()` (shape from qwen-audio-agent).
-5. **Gate re-check**: re-run `GATES.md` 1–7 against the pinned SHA whenever it
-   moves.
+   `memory_language=zh`) — **done**.
+2. **Write path** (`session.py`) — **done**: per-session batching (one ingest per
+   session instead of one per turn), persisted `(session, turn, revision)` dedup
+   marked only after a successful write, sensitive-content filter, debounce, and
+   a worker thread. 20 tests in `tests/test_pipeline.py`.
+3. **Read path** (`prefetch.py`, `injection.py`) — **done**: text-only
+   `feed_partial` / `feed_final` with staleness handling, plus the gated
+   per-response injection policy.
+4. **Process boundary** — **next**: move the backend behind a JSONL sidecar with
+   timeouts, stderr capture and `health()` (qwen-audio-agent's shape). Until
+   then the adapter runs in-process, which is fine for the experiment and wrong
+   for the product (torch/transformers must not enter the voice process).
+5. **Gate re-check** — re-run `GATES.md` 1–7 whenever the pinned SHA moves.
+
+### Real prefetch evidence (`prefetch_probe.py`, 2026-09-08)
+
+Against voicemem main in the dedicated venv, DeepSeek chat, local E5:
+
+```text
+ingest 3 facts: 13.6 s / 44.3 s / 28.9 s
+partials: 2/4/6/8 chars → no context yet (speculation is async)
+[speculate] '我对什么食物过敏？' -> 4 hits  140 ms
+turn_over: context_chars=178, final_ms=140
+result: PREFETCH_OK
+```
+
+So at end-of-turn the memory block is already there and the residual work is
+~140 ms — versus 272–450 ms for the cold `recall()` path measured on 0.2.3.
+Ingestion remains 13–44 s per utterance, which is why the write path is batched
+and off-thread.

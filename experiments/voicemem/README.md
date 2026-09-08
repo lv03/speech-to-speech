@@ -12,14 +12,19 @@ packages it drags in.
 | File | Purpose |
 |---|---|
 | `adapter.py` | The three fixed interfaces over a memory backend, fail-closed |
-| `tests/test_adapter.py` | 15 mock-based tests; no voicemem install needed |
+| `session.py` | Batched write path: dedup (persisted), sensitive filter, debounce, worker thread |
+| `prefetch.py` | Text-only speculative prefetch (`feed_partial` → `turn_over`) |
+| `injection.py` | Gated per-response memory injection policy |
+| `tests/test_adapter.py` | 15 mock-based tests for the adapter |
+| `tests/test_pipeline.py` | 22 mock-based tests for batching, prefetch and injection |
 | `check_env.py` | Gate 1: what a voicemem install would change here (zero-install) |
 | `zh_smoke.py` | Gate 5: Chinese ingest/search smoke (needs the venv + a key) |
-| `config.example.env` | Env template: endpoint, mirror, app-private storage, telemetry off |
+| `prefetch_probe.py` | Real prefetch timing probe (needs the venv + a key) |
+| `config.example.env` | Env template: endpoint, language, mirror, storage, telemetry off |
 | `INTEGRATION_NOTES.md` | What voicemem would introduce: deps, models, network, storage, risk |
 | `GATES.md` | The seven gates: status, evidence, and the work each one still needs |
 | `PRIOR_ART.md` | How qwen-audio-agent integrates VoiceMem, and what we should copy |
-| `INTEGRATION_PLAN.md` | Upstream study: version drift, streaming prefetch, config, injection boundary, staged plan |
+| `INTEGRATION_PLAN.md` | Upstream study, the shape decision, and staged progress |
 
 ## Run the tests (no install, ~0.02 s)
 
