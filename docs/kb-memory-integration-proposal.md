@@ -10,10 +10,10 @@
 
 **Spec:** 本文件是 `speech-to-speech` 知识库 v1 的唯一实施基线；`docs/qmd-local-kb-plan.md` 和 `docs/research/phase0-qmd-voicemem-findings.md` 仅作为调研记录。
 
-- **版本：** v4.8
-- **方案状态：** 已按评审收敛为可执行的 v1 实施基线。
-- **交付状态：** Task 1–7 和 Task 8 verifier 已在当前工作树实现；本地真实 QMD/macOS 15+ arm64 app staging 已通过 verifier，但正式发布 runtime bundle、签名 manifest 和发布验收仍未完成。
-- **评审结论：** KB vec-only 检索进入 v1；hybrid 和 VoiceMem 均不进入 v1 完成定义。
+- **版本：** v4.9
+- **方案状态：** 已按评审收敛为可执行的 v1 实施基线；本版补齐 2026-09-07 的 hybrid/三档检索增量（见 5.4）并更新 `approvedProfiles` 口径。
+- **交付状态：** Task 1–8 已在当前工作树实现；本地真实 QMD/macOS 15+ arm64 app staging 已通过 verifier，但正式发布 runtime bundle、签名 manifest 和发布验收仍未完成。2026-09-07 增量（hybrid profile 批准、三档检索、embedding 镜像修正）已在开发/staging manifest 上跑通本机 E2E。
+- **评审结论：** KB vec-only 检索进入 v1 完成定义；hybrid/full 已实现并在开发/staging manifest 批准，但只有签名发布 manifest 明确批准后才可用于发行版；VoiceMem 不进入 v1 完成定义。
 
 ## 全局约束
 
@@ -40,6 +40,8 @@
 本轮已生成并同步到本地 `desktop/build/runtime/wheelhouse` 的 CPython 3.11 macOS arm64 候选 wheelhouse：锁定 base closure 的 resolver report 与 wheelhouse 校验均通过，共 `126` 个 wheel（`125` 个锁定基础包加应用 wheel），且不包含 `funasr`、`kaldiio`、`aiortc`、`google-crc32c` 或重复 `soxr`。该目录是可复现的本地 staging 资产，但尚未成为正式发布 bundle。许可证报告只剩 `espeakng-loader 0.2.4`；对应 macOS arm64 wheel SHA-256 为 `d27cdca31112226e7299d8562e889d3e38a1e48055c9ee381b45d669072ee59f`，其 wrapper 源码提交为 `thewh1teagle/espeakng-loader@146599e29be31bf17d99f0bcb7dbb2f92aef3d95`，嵌入的 eSpeak NG 子模块为 `espeak-ng/espeak-ng@4870adfa25b1a32b4361592f1be8a40337c58d6c`（`1.52.0`，GPLv3）。该 wheel 没有许可证 metadata 或随包许可证文件，必须先确认精确构建资产、许可证文本、源码提供义务和再分发权限，不能仅凭 wrapper 仓库的许可证标识自动放行。正式发布的可信 HTTPS 资产地址、CI 固定公钥/私钥、Apple code signing/notarization 和许可证法律审查仍未完成，因此当前工作树仍不是发布候选。
 
 本轮实施补充了三个发布前不变量：manifest 构建阶段必须同时包含 `python-runtime`、`wheelhouse`、`qmd` 和 `embedding`，`userData` 模型只能携带预声明的 `size/sha256` 而不能携带 bundle `path`，并在构建阶段拒绝 `localhost`、`.invalid` 和本地回环 HTTPS 地址。QMD fingerprint 变更也已改为单一写队列，避免 profile 切换与 reindex 之间形成互相等待。
+
+本轮（2026-09-07）在 v1 基线上增加了一个可选检索增量：`hybrid` profile 在开发/staging manifest 上被批准，并把执行档细分为 `vec-only` / `hybrid` / `full`（见 5.4）。实现落在 `desktop/src/main/retrieval-profile.ts`（profile 派生）、`desktop/src/main/runtime-manager.ts`（`executionMode()` 分离 profile 与查询风格）、`desktop/src/main/qmd-mcp-client.ts`（三种 query 形态）、`desktop/src/main/settings.ts` 与 `desktop/src/renderer/settings.html/.ts`（四档设置项）、`desktop/scripts/make-hybrid-manifest.mjs`（hybrid 批准版 manifest）。该增量只改变检索语义与可选档位，不改变 v1 的安装包、签名和发布门槛；发行版能否启用 hybrid 仍只由签名发布 manifest 的 `approvedProfiles` 决定。
 
 本方案的状态判断固定为：代码实现完成不等于发布完成；本地 staging 通过不等于发布候选通过；只有 Task 8.0 preflight、干净环境矩阵、签名/公证和完整 verifier 全部通过，才可把 v1 标记为发布候选。
 
@@ -70,8 +72,8 @@ v1 明确不交付：
 | 首发平台 | macOS 15+ arm64。其他平台只保留构建接口，不宣称可用 |
 | QMD | 固定 `2.8.3`，构建期打包，不要求用户安装 Node/npm |
 | embedding | `Qwen3-Embedding-0.6B-Q8_0.gguf`，由发布资产提供 SHA-256 |
-| v1 检索模式 | `vec-only`；使用 embedding 建立向量索引和查询，不依赖未验收的 reranker/generator |
-| 后续 profile | `hybrid` 只作为 manifest 可描述的可选能力，必须通过独立资源、质量、内存和安装包门槛后再启用 |
+| v1 检索模式 | 发行版默认 `vec-only`：签名发布 manifest 只批准 `vec-only` 时，设置页只暴露向量档；开发/staging manifest 已批准 hybrid，可选档位见 5.4 |
+| 后续 profile | `hybrid` 已实现并在开发/staging manifest 批准；发行版启用仍需签名 manifest 的 `approvedProfiles` 批准，并满足 5.4 的资源、质量、内存和安装包门槛 |
 | 语音工具 | 仅 `search_knowledge`、`get_document` |
 | QMD 生命周期 | Electron 主进程统一启动、健康检查、重启和停止 |
 | QMD 数据目录 | `app.getPath('userData')` 下的 app-private 目录，不使用用户全局 QMD 数据 |
@@ -80,15 +82,18 @@ v1 明确不交付：
 | API key | 使用 Electron `safeStorage`；设置 JSON 不保存明文 key |
 | VoiceMem | 默认关闭，不进入 v1 runtime；通过独立 venv/进程和单独验收门槛推进 |
 
-检索 profile 由 manifest 的 `model` asset role 派生，而不是由 renderer 传入任意模型路径。v1 的选择规则固定为：
+检索 profile 由 manifest 的 `model` asset role 派生，而不是由 renderer 传入任意模型路径。当前规则为：
 
 ```text
-vec-only = embedding
-auto     = v1 manifest 下的 vec-only
-hybrid   = 后续 profile；必须同时具备 embedding + reranker + generator
+vec-only profile = embedding
+hybrid   profile = embedding + reranker + generator（要求 approvedProfiles 含 hybrid）
+执行档（RetrievalMode）：
+  vec-only = 仅向量查询
+  hybrid   = 结构化 lex + vec + rerank（不做查询扩展）
+  full     = 纯文本 query，交给 QMD 完整管线（查询扩展 → lex/vec/hyde → RRF → rerank）
 ```
 
-`hybrid` 缺任一依赖时不能伪装成 hybrid。profile 是否可以在发行版中使用，不由“manifest 恰好包含三类模型”自动决定，而由签名发布元数据中的 `approvedProfiles` 决定；v1 只允许 `vec-only`，因此 `auto` 固定落到 vec-only。未来 manifest 即使包含 hybrid 资产，若 `approvedProfiles` 不含 `hybrid`，设置页仍必须显示不可用；不能让 `auto` 静默改变检索语义。无论将来启用哪个 profile，模型下载、磁盘占用和进度都必须按该 profile 的全部 asset 求和，不能用固定的单模型 `0` 字节占位值。
+`hybrid` 缺任一依赖时不能伪装成 hybrid。profile 是否可以在发行版中使用，不由“manifest 恰好包含三类模型”自动决定，而由签名发布元数据中的 `approvedProfiles` 决定；`full` 不是独立 profile，而是 hybrid profile 上的一种执行档，因此 manifest schema 只承认 `vec-only` 和 `hybrid` 两个 profile 名。若 `approvedProfiles` 不含 `hybrid`，设置页必须把 `hybrid` 和 `full` 都显示为不可用，且 `auto` 固定落到 vec-only；不能让 `auto` 静默改变检索语义。无论启用哪个 profile，模型下载、磁盘占用和进度都必须按该 profile 的全部 asset 求和，不能用固定的单模型 `0` 字节占位值。
 
 ## 3. 当前约束与实施前提
 
@@ -204,6 +209,48 @@ v1 构建期必须把 standalone Python、wheelhouse 和 manifest 作为同一�
 v1 只打包默认语音 profile，其他 STT/TTS 后端改为可选 runtime asset。每个 profile 必须在安装测试中报告：安装包大小、首次下载大小、索引模型大小、空闲 RSS、语音运行时 RSS 和 QMD 热 daemon RSS。
 
 如果某平台无法在 CI 中生成可复现的 profile bundle，就不列入该版本支持平台，不通过“用户自行安装依赖”绕过门槛。
+
+### 5.4 hybrid/full 执行档与启用门槛
+
+**批准机制**
+
+- `approvedProfiles` 只承认 `vec-only` 和 `hybrid` 两个 profile 名；`full` 不是独立 profile，而是 hybrid profile 上的一种执行档，因此不写入 `approvedProfiles`。
+- 发行版（`app.isPackaged`）只加载包内 `runtime-manifest.json`，并要求用随包固定的公钥验证 detached signature；只有开发模式才允许 `RUNTIME_MANIFEST_PATH`，或自动加载 `build/runtime-manifest.hybrid.json`（由 `desktop/scripts/make-hybrid-manifest.mjs` 生成、未签名、仅开发用）。
+- 因此“开发 manifest 批准 hybrid”不改变发行版行为：发行版启用 hybrid 仍需发布方签名一个 `approvedProfiles: ["vec-only","hybrid"]` 且包含 embedding/reranker/generator 三类资产的 manifest。
+
+**查询形态**（`desktop/src/main/qmd-mcp-client.ts`）
+
+| 执行档 | MCP query 形态 | QMD 内部行为 |
+|---|---|---|
+| `vec-only` | `searches:[{type:'vec'}]`、`rerank:false` | 仅向量检索 |
+| `hybrid` | `searches:[{type:'lex'},{type:'vec'}]`、`rerank:true` | 结构化混合 + 重排，无查询扩展 |
+| `full` | 纯文本 `query`、`rerank:true` | 完整管线：查询扩展 → lex/vec/hyde → RRF → 重排 |
+
+`RuntimeManager.executionMode()` 把“profile 选择”和“查询风格”分开：`auto` 在存在已批准 hybrid profile 时执行 `full`，否则执行 `vec-only`；`hybrid` 与 `full` 之间切换不改变 profile 与 index fingerprint，因此不会丢弃已有索引，而 `vec-only ↔ hybrid` 仍会触发重新索引。
+
+**资源预算**（staging manifest 实测值）
+
+| 资产 | 版本 | 大小 |
+|---|---|---|
+| embedding | `qwen3-embedding-0.6b-q8_0` | 639,150,592 B（约 610 MiB） |
+| reranker | `qwen3-reranker-0.6b-q8_0` | 639,153,184 B（约 610 MiB） |
+| generator | `qmd-query-expansion-1.7b-q4_k_m` | 1,282,438,912 B（约 1.19 GiB） |
+| hybrid 合计 | — | 2,560,742,688 B（约 2.38 GiB） |
+
+下载、磁盘占用、进度和取消都按所选 profile 的全部 asset 聚合；QMD daemon 整树常驻内存约 1 GB（见 `docs/kb-knowledge-usage.md`）。
+
+**延迟与质量证据**（2026-09-07 本机实测，口径见 `docs/research/latency-benchmark-2026-09-07.md`）
+
+- 检索段：`vec-only` 约 0.25 s（daemon 热查 80–110 ms 加链路）；`hybrid` 首问约 2.5 s（重排开销）；`full` 新问题 2.53 s、冷启动含模型加载 4.8 s；同问题命中缓存 0.1–0.3 s。
+- 端到端（串行相加估算）：`vec-only` 约 3.6 s，`hybrid`/`full` 约 5.8 s，命中缓存后回到约 3.6 s。
+- packaged clean-root verifier 的 20 次热查询 P50/P95 为 27.1/27.9 ms，但该口径只覆盖 `vec-only` 的向量查询。
+
+**发行版启用 hybrid/full 前仍缺的证据**（缺任一项都不得在发行版打开 hybrid）
+
+1. 打包 verifier 与 CI smoke 目前固定 `approvedProfiles: ["vec-only"]`（`desktop/tests/verify-package.test.mjs`、`.github/workflows/ci.yml`），需要补 hybrid 的打包链路验证：三模型安装、native addon 与 rerank 路径。
+2. 三档 query 形态缺少 `qmd-mcp-client` 单测（现有断言只覆盖 `vec-only` 形态），`executionMode()` 的 `full`/`hybrid` 分支也没有直接测试。
+3. hybrid/full 的中文 Top-1/Top-3 与无答案误召回对比数据、reranker/generator 的 RSS 峰值、首次下载与磁盘占用，需要在发布环境复测。
+4. 热查询 P95 ≤ 300 ms 的门槛目前只在 `vec-only` 和“命中缓存”的 hybrid/full 上满足；hybrid/full 首问约 2.5 s 是已知代价，必须由预热/缓存策略或产品文案承接。
 
 ## 6. QMD 服务与安全边界
 
@@ -604,7 +651,7 @@ RuntimeManager.stop(): Promise<void>
 
 **出口条件**：所有 renderer 状态来自 `PublicKnowledgeSnapshot`；知识 metadata/index 更新不重启 voice；QMD、voice、gateway 任一失败都能显示降级状态并安全退出。
 
-设置页必须提供 `auto / hybrid / vec-only` 检索模式选择和预热开关；v1 发布 manifest 中 `approvedProfiles` 只包含 `vec-only`，`auto` 固定等价于 `vec-only`。`hybrid` 只有同时具备三类真实模型资产且被签名发布元数据批准后才可选。若 hybrid 资产仅存在于开发或验收 manifest，renderer 必须显示不可用，不能让 auto 静默切换。保存后由主进程同步到 `RuntimeManager`。保存设置本身不会自动下载模型；实际 profile 变化会清空旧索引状态，直到显式重新索引完成。
+设置页必须提供 `auto / vec-only / hybrid / full` 检索模式选择和预热开关；可选性只来自主进程快照的 `availableModes`，而 `availableModes` 来自当前已加载 manifest 的 `approvedProfiles`。发行版只加载签名 manifest，因此 `hybrid`/`full` 只有在发布方签名的 manifest 批准 hybrid 后才可选，否则 renderer 必须把两者显示为不可用，`auto` 固定等价于 `vec-only`。开发模式会加载未签名的 `build/runtime-manifest.hybrid.json`，此时 renderer 允许选择 `hybrid`/`full`——这是刻意的开发期行为（`!app.isPackaged` 分支），不是发行版批准。保存后由主进程同步到 `RuntimeManager`。保存设置本身不会自动下载模型；实际 profile 变化会清空旧索引状态，直到显式重新索引完成；`hybrid` 与 `full` 之间切换不改变 profile，不触发重新索引。详见 5.4。
 
 ```bash
 npx --prefix desktop vitest run tests/runtime-manager.test.mjs tests/lifecycle.test.mjs tests/model-store.test.mjs tests/qmd-runtime.test.mjs
@@ -733,8 +780,8 @@ docs/                                  # 使用、隐私、发布和实施基线
 | QMD native 模块在 Electron 打包后不可用 | 阻塞 | 测试完整 mcp/embed/query/get，不接受 version smoke test |
 | 全局 QMD 配置污染或索引冲突 | 阻塞 | app-private HOME/XDG，写入路径测试不通过则停止 |
 | 任意文件读取或文档提示注入 | 阻塞 | 代理授权、docid-only、恶意文档测试 |
-| QMD 模型占用约 1GB RSS | 高 | 显式下载和资源提示；记录 profile 预算 |
-| 中文 BM25 无法工作 | 中 | v1 采用 vec-only；缺 embedding 时明确不可用，hybrid 另设门槛 |
+| QMD 模型占用约 1GB RSS | 高 | 显式下载和资源提示；记录 profile 预算；hybrid 三资产合计约 2.38 GiB，按 profile 聚合下载/磁盘/进度 |
+| 中文 BM25 无法工作 | 中 | 发行版默认 vec-only；缺 embedding 时明确不可用；hybrid/full 已在开发 manifest 批准并跑通本机 E2E，发行版启用前仍须满足 5.4 的四项门槛 |
 | MCP 协议或 QMD 参数变化 | 中 | 固定版本、SSE/session adapter、query/get/status 合约测试 |
 | Python 依赖体积和平台差异 | 高 | CI 生成 profile bundle，运行期禁止无锁解析 |
 | runtime manifest 被替换或 profile 被未授权打开 | 阻塞 | Ed25519 signature、固定公钥、版本/平台/profile 校验和 key rotation policy |
@@ -748,6 +795,8 @@ docs/                                  # 使用、隐私、发布和实施基线
 > 用户在没有系统 Python、Node、npm 和仓库目录的 macOS 15+ arm64 机器上安装应用，选择一个 Markdown vault，明确同意模型下载后，应用能在 app-private 目录中完成索引；语音助手通过受限工具回答检索问题并给出来源；工具不能读取 vault 之外的文件，不能被 Markdown 中的指令诱导越权；QMD、voice、gateway 任一进程失败时，应用显示准确的降级状态并能安全退出。
 
 VoiceMem 不属于上述完成定义。
+
+`hybrid`/`full` 执行档同样不属于 v1 完成定义：它们是已实现并在开发/staging manifest 验证过的可选能力，发行版启用需要单独通过 5.4 的四项门槛，并由发布方签名一个批准 hybrid 的 manifest。
 
 ## 15. 参考记录
 
