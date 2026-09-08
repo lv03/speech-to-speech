@@ -1,0 +1,70 @@
+# experiments/voicemem — Phase 5 pre-research (NOT part of v1)
+
+VoiceMem is a **post-v1, optional experiment** in the KB baseline
+(`docs/kb-memory-integration-proposal.md` §10). This directory exists to answer
+the seven Phase 5 gates **without** pulling voicemem into the product: nothing
+under `src/`, `desktop/` or `gateway/` imports it, and voicemem itself is
+imported lazily so the repository's own environment never needs the 112
+packages it drags in.
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `adapter.py` | The three fixed interfaces over a memory backend, fail-closed |
+| `tests/test_adapter.py` | 15 mock-based tests; no voicemem install needed |
+| `check_env.py` | Gate 1: what a voicemem install would change here (zero-install) |
+| `zh_smoke.py` | Gate 5: Chinese ingest/search smoke (needs the venv + a key) |
+| `config.example.env` | Env template: endpoint, mirror, app-private storage, telemetry off |
+| `INTEGRATION_NOTES.md` | What voicemem would introduce: deps, models, network, storage, risk |
+| `GATES.md` | The seven gates: status, evidence, and the work each one still needs |
+
+## Run the tests (no install, ~0.02 s)
+
+```bash
+PYTHONPATH=.:src ./.venv/bin/python -m pytest experiments/voicemem/tests -q
+```
+
+CI is scoped to `tests/` (`.github/workflows/ci.yml` runs `uv run pytest tests/ -x -q`),
+so these stay opt-in and never couple the v1 suite to the experiment. A bare
+local `pytest -q` will collect them; they are dependency-free.
+
+## Check what an install would do (no install, no download)
+
+```bash
+./.venv/bin/python experiments/voicemem/check_env.py --python .venv/bin/python
+```
+
+Point `--python` at a fresh venv to see the full closure instead of the delta.
+
+## Run the Chinese smoke (requires the venv and a key)
+
+```bash
+uv venv /tmp/voicemem-venv --python 3.11
+uv pip install --python /tmp/voicemem-venv/bin/python voicemem
+
+set -a; . experiments/voicemem/config.example.env; set +a
+/tmp/voicemem-venv/bin/python experiments/voicemem/zh_smoke.py --memory-root /tmp/voicemem-smoke
+```
+
+This is the one step that is **blocked without an OpenAI-compatible key**
+(voicemem 0.2.3 has no local fact-extraction path). The script prints counts,
+ids, timings and booleans only — never transcript text.
+
+## Non-negotiables carried by the adapter
+
+- `memory_root` must be explicit and app-private (voicemem otherwise writes into
+  the process working directory).
+- Reads and writes require an unlocked session (`set_permission(...)`); the
+  default reports locked.
+- Cloud extraction requires `allow_cloud_extraction=True`; without it the
+  adapter stays inert rather than uploading silently.
+- Only final transcriptions are accepted, deduplicated by
+  `(turn_id, turn_revision)`.
+- `MEM0_TELEMETRY` is forced to `false` (mem0 defaults it on).
+
+## What is explicitly out of scope
+
+- Wiring the adapter into the voice process, the tool list, or the desktop app.
+- The right-brain emotion graph (v1 excludes it; `audio_native=False`).
+- Production packaging, model provisioning, license review for the new deps.
