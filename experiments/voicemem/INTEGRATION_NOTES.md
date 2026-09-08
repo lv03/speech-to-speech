@@ -58,9 +58,19 @@ must live in a dedicated venv and process.
 - The embedding leg can stay local (`embedding.provider=local`), and chat and
   embeddings are configured independently — the endpoint-separation question in
   gate 5 is therefore an architecture/config question, not a code change.
+- **But one path ignores that split:** `Orchestrator._embed_uncached`
+  (`orchestrator.py:561`) calls the OpenAI **embeddings** API
+  (`OPENAI_EMBEDDING_MODEL`, default `text-embedding-3-small`) against the same
+  `base_url` used for chat. With a chat-only provider such as DeepSeek this
+  returns `404`, so the left-brain slot→entity graph link silently degrades on
+  every ingest. Facts and retrieval are unaffected. Verified 2026-09-08; see
+  `GATES.md` finding 3.
 - `mem0` telemetry defaults to **on** and posts to `https://us.i.posthog.com`
   (`mem0/memory/telemetry.py`, `MEM0_TELEMETRY`). The adapter refuses to build a
   backend while it is truthy and otherwise forces `MEM0_TELEMETRY=false`.
+- Dependency pinning matters: `uv` resolved a prerelease `httpx==1.0.dev6`,
+  which breaks `mem0`'s import (`module 'httpx' has no attribute 'AsyncClient'`).
+  The experiment venv pins `httpx<1` (0.28.1).
 
 ## 5. Local storage
 

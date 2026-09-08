@@ -40,16 +40,26 @@ Point `--python` at a fresh venv to see the full closure instead of the delta.
 ## Run the Chinese smoke (requires the venv and a key)
 
 ```bash
-uv venv /tmp/voicemem-venv --python 3.11
-uv pip install --python /tmp/voicemem-venv/bin/python voicemem
+VENV="$HOME/.cache/speech-to-speech/voicemem-venv"
+uv venv "$VENV" --python 3.11
+uv pip install --python "$VENV/bin/python" voicemem
+uv pip install --python "$VENV/bin/python" "httpx<1"   # mem0 breaks on httpx 1.0 prereleases
 
 set -a; . experiments/voicemem/config.example.env; set +a
-/tmp/voicemem-venv/bin/python experiments/voicemem/zh_smoke.py --memory-root /tmp/voicemem-smoke
+"$VENV/bin/python" experiments/voicemem/zh_smoke.py --memory-root /tmp/voicemem-smoke
 ```
+
+Keep the key out of shell history and chat: write it to a `chmod 600` file
+outside the repo and source that file instead, e.g.
+`~/.config/speech-to-speech/voicemem-smoke.env`.
+
+Set `HF_ENDPOINT` to a **reachable** host: on 2026-09-08 `hf-mirror.com` did not
+resolve here and `https://huggingface.co` did.
 
 This is the one step that is **blocked without an OpenAI-compatible key**
 (voicemem 0.2.3 has no local fact-extraction path). The script prints counts,
-ids, timings and booleans only — never transcript text.
+ids, timings and booleans only — never transcript text. Result on 2026-09-08:
+PASS, see `GATES.md`.
 
 ## Non-negotiables carried by the adapter
 
