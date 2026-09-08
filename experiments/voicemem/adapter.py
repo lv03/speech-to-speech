@@ -204,6 +204,7 @@ class _VoicememBackend:
         _force_telemetry_off()
         self._memory_root = Path(memory_root)
         try:
+            from voicemem.config import build_kwargs
             from voicemem.core import VoiceMem
         except ImportError as exc:  # pragma: no cover - depends on the venv
             raise MemoryBackendUnavailableError(
@@ -212,21 +213,44 @@ class _VoicememBackend:
             ) from exc
 
         self._memory_root.mkdir(parents=True, exist_ok=True)
-        self._vm = VoiceMem(
-            api_key=api_key or os.environ.get("OPENAI_API_KEY"),
-            base_url=base_url or os.environ.get("OPENAI_BASE_URL"),
-            memory_root=str(memory_root),
-            user_id=user_id,
-            mode="text_mode",
-            top_k=top_k,
-            # Audio-native perception stays off: this project feeds voicemem its
-            # own STT text, so it must not load ASR/voiceprint/emotion models.
+        resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
+        resolved_base_url = base_url or os.environ.get("OPENAI_BASE_URL")
+        resolved_model = os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+
+        # build_kwargs wires the components; the audio/emotion switches are then
+        # forced off because this project feeds voicemem its own STT text and v1
+        # excludes the emotion graph (text_mode would otherwise enable emotion).
+        kwargs = build_kwargs(
+            {
+                "api_key": resolved_key,
+                "base_url": resolved_base_url,
+                "mode": "text_mode",
+                "memory_root": str(self._memory_root),
+                "user_id": user_id,
+                # Embeddings stay local (intfloat/multilingual-e5-small): the chat
+                # and embedding endpoints are configured independently, which is
+                # what gate 5 asks about.
+                "embedding": {"provider": "local"},
+                "slots": {"provider": "local"},
+                "llm": {
+                    "provider": "openai",
+                    "config": {
+                        "model": resolved_model,
+                        "api_key": resolved_key,
+                        "base_url": resolved_base_url,
+                    },
+                },
+            }
+        )
+        kwargs.update(
             enable_scene=False,
             enable_music=False,
             enable_abnormal_sound=False,
             enable_voiceprint=False,
             enable_emotion=False,
+            top_k=top_k,
         )
+        self._vm = VoiceMem(**kwargs)
 
     def ingest(self, text: str, *, speaker: str) -> None:
         # Ingest is called synchronously on purpose: voicemem's Memory.remember()
