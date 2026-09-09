@@ -23,6 +23,7 @@ packages it drags in.
 | `check_env.py` | Gate 1: what a voicemem install would change here (zero-install) |
 | `zh_smoke.py` | Gate 5: Chinese ingest/search smoke (needs the venv + a key) |
 | `prefetch_probe.py` | Real prefetch timing probe (needs the venv + a key) |
+| `provision.py` | Reproducible, consent-driven setup of the sidecar venv + E5 model (`--dry-run`) |
 | `license_report.py` | Inventory the sidecar venv's dependencies and flag unresolved licenses |
 | `config.example.env` | Env template: endpoint, language, mirror, storage, telemetry off |
 | `DECISIONS.md` | The product decisions the implementation encodes + acceptance checklist |
@@ -31,6 +32,16 @@ packages it drags in.
 | `PRIOR_ART.md` | How qwen-audio-agent integrates VoiceMem, and what we should copy |
 | `INTEGRATION_PLAN.md` | Upstream study, the shape decision, and staged progress |
 | `WIRING_PLAN.md` | Executable product-wiring steps (CLI, voice loop, injection, desktop) |
+
+## Prepare the sidecar environment
+
+```bash
+./.venv/bin/python experiments/voicemem/provision.py --dry-run   # print the plan
+./.venv/bin/python experiments/voicemem/provision.py --yes       # create venv + install + E5
+```
+
+Every step is idempotent; nothing is downloaded until this runs. The script
+prints the exact values to paste into the app's 长期记忆（实验） section.
 
 ## Run the sidecar
 

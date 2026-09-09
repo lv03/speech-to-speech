@@ -151,9 +151,12 @@ Done: the product decisions are recorded in `DECISIONS.md` with an acceptance
 checklist, and `license_report.py` inventories the sidecar venv (112 packages,
 3 unresolved, 1 LGPL entry already present in the app wheelhouse).
 
-Open: move the sidecar implementation into the packaged tree, add its license
-inventory to the release report, and implement the consent-driven download of
-the sidecar venv + E5 model.
+Provisioning is now reproducible: `provision.py` prints a plan (`--dry-run`) and
+then creates the venv, installs the pinned voicemem commit, pins `httpx<1`, and
+downloads the E5 model — nothing runs until the operator asks for it.
+
+Open: move the sidecar implementation into the packaged tree and add the
+sidecar's license inventory (`license_report.py`) to the release report.
 
 Original scope:
 
