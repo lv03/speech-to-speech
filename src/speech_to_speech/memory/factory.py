@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 
-from .config import MemoryConfig
+from .config import VECTOR_STORE_SQLITE_VEC, MemoryConfig
 from .provider import MemoryProvider
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,9 @@ def build_memory_provider(
     extraction_model = extraction_model or os.environ.get("S2S_MEMORY_MODEL")
     embedder_backend = os.environ.get("S2S_MEMORY_EMBEDDER", "qmd").strip() or "qmd"
     embedder_base_url = os.environ.get("S2S_MEMORY_EMBEDDER_BASE_URL")
+    vector_store = (
+        os.environ.get("S2S_MEMORY_VECTOR_STORE") or VECTOR_STORE_SQLITE_VEC
+    ).strip() or VECTOR_STORE_SQLITE_VEC
     raw_chars = os.environ.get("S2S_MEMORY_MAX_CHARS")
     if raw_chars and raw_chars.isdigit():
         max_context_chars = int(raw_chars)
@@ -57,6 +60,7 @@ def build_memory_provider(
             extraction_model=extraction_model,
             embedder_backend=embedder_backend,
             embedder_base_url=embedder_base_url,
+            vector_store=vector_store,
             max_context_chars=int(max_context_chars),
             sidecar_backend=sidecar_backend,
         )

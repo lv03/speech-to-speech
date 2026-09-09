@@ -28,7 +28,8 @@ sys.path.insert(0, str(HERE.parents[1] / "src"))
 os.environ.setdefault("MEM0_TELEMETRY", "false")
 
 from adapter import VoiceMemAdapter  # noqa: E402
-from mem0_sqlite_vec import register  # noqa: E402
+
+from speech_to_speech.memory.stores.sqlite_vec import install_vector_store  # noqa: E402
 
 FACTS = [
     ("我对坚果过敏，尤其是花生", "t1"),
@@ -41,28 +42,6 @@ QUERIES = [
     ("我什么时候去健身房", ("周三", "健身房", "晚上")),
     ("我住哪里", ("台北", "内湖")),
 ]
-
-
-def patch_qdrant_to(provider: str) -> None:
-    """Rewrite mem0's vector-store provider without editing mem0 or voicemem.
-
-    VoiceMem hardcodes ``provider="qdrant"`` when it builds ``MemoryConfig``, so
-    the only no-fork seam is mem0's pydantic config class. Wrapping its
-    ``__init__`` also exercises the *validated* config path (see
-    ``mem0_sqlite_vec.register``), unlike constructing a store directly.
-    """
-    from mem0.vector_stores.configs import VectorStoreConfig
-
-    original_init = VectorStoreConfig.__init__
-
-    def patched_init(self, **data):  # noqa: ANN001 - pydantic passes **data
-        if data.get("provider") == "qdrant":
-            data = dict(data)
-            data["provider"] = provider
-            data["config"] = dict(data.get("config") or {})
-        original_init(self, **data)
-
-    VectorStoreConfig.__init__ = patched_init
 
 
 def describe_tree(root: Path) -> str:
@@ -84,8 +63,7 @@ def main() -> int:
         return 2
 
     if args.store == "sqlite_vec":
-        register()
-        patch_qdrant_to("sqlite_vec")
+        install_vector_store("sqlite_vec")
 
     root = Path(args.memory_root)
     shutil.rmtree(root, ignore_errors=True)

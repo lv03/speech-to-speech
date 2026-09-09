@@ -1,30 +1,37 @@
-"""Prototype: a mem0 vector store backed by SQLite + the sqlite-vec extension.
+"""mem0 vector store backed by SQLite + the sqlite-vec extension.
 
-Feasibility only. The question it answers: can the memory vector index live in a
-single SQLite file (same engine family QMD already uses) instead of mem0's local
-Qdrant, so the stack carries one fewer vector library?
+Replaces mem0's embedded Qdrant (``QdrantConfig(path=...)``) as the memory vector
+backend. Measured parity and the cost/benefit analysis are in
+``experiments/voicemem/STORE_SWAP.md``; the short version:
 
-mem0 has no sqlite-vec provider, but ``VectorStoreFactory.provider_to_class`` is
-a plain dict, so a custom store can be registered without forking mem0 (see
-``register()``). This module implements the subset mem0 2.0.20 actually calls.
+- one SQLite file instead of a Qdrant directory tree, with the same engine family
+  the app already uses for QMD's index and mem0's history;
+- no ``qdrant-client``/``grpcio`` (≈45 MB installed, ≈58 MB RSS);
+- SQLite allows concurrent connections, so the "Storage folder ... is already
+  accessed by another instance of Qdrant client" failure mode disappears;
+- retrieval is at parity (identical Top-1 rows, 0.9-1.2 ms vs 0.4-0.6 ms per
+  search, both far below the ~25 ms QMD embedding round trip).
 
-Interface notes verified against mem0 2.0.20 source, not assumed:
+mem0 2.0.20 has no sqlite-vec provider, so ``install_vector_store`` registers one
+through two public-ish dict hooks and redirects VoiceMem's hardcoded
+``provider="qdrant"``. See that function for the exact seam.
 
-- ``insert(vectors, payloads, ids)`` receives ``vectors=[embedding]`` (list of
-  vectors) while ``search(query, vectors, ...)`` receives a *flat* embedding
-  vector -- the two are not the same shape.
+Interface details verified against mem0 2.0.20 source, not assumed:
+
+- ``insert(vectors, payloads, ids)`` receives ``vectors=[embedding]`` (a list of
+  vectors) while ``search(query, vectors, ...)`` receives a *flat* vector;
 - ``search`` results are read as attributes (``mem.id`` / ``mem.payload`` /
-  ``mem.score``, with a ``.get`` fallback), so plain dicts would be silently
-  dropped as "no payload". Results therefore use ``SqliteVecHit``, which also
-  supports ``hit["id"]`` style access for the dict fallback path.
+  ``mem.score``, with a ``.get`` fallback), so plain dicts would be dropped as
+  "no payload";
 - ``keyword_search`` is deliberately *not* overridden: the inherited base method
   returns ``None``, and mem0 logs "this store does not support keyword search"
-  and disables BM25 scoring. Overriding it with an identical ``return None``
-  would hide that truthful warning.
+  and disables BM25. Overriding it with an identical ``return None`` would hide
+  that truthful warning.
 """
 
 from __future__ import annotations
 
+import builtins
 import json
 import sqlite3
 from dataclasses import dataclass, field
@@ -33,14 +40,18 @@ from typing import Any, Optional
 
 from mem0.vector_stores.base import VectorStoreBase
 
-# sqlite-vec's own default. 1024 rows x 1024 dims x 4 bytes is a ~4 MB file for an
-# empty collection; see create_col.
+#: sqlite-vec's own default. 1024 rows x 1024 dims x 4 bytes is a ~4 MB file for an
+#: empty collection; see create_col.
 DEFAULT_CHUNK_SIZE = 1024
 
 #: vec0 rejects ``k`` above 4096. VoiceMem asks mem0 for 10_000 candidates when it
 #: narrows by memory id, and mem0 multiplies that by 4 before calling the store,
 #: so the store has to clamp rather than forward the request.
 MAX_KNN_K = 4096
+
+#: Set while a process has already installed the provider (idempotence).
+_INSTALLED = False
+_REDIRECTED = False
 
 
 @dataclass
@@ -58,6 +69,11 @@ class SqliteVecHit:
 
     def get(self, key: str, default: Any = None) -> Any:
         return getattr(self, key, default)
+
+
+#: Module-level alias: inside the class body the method name ``list`` shadows the
+#: builtin in annotations.
+VecHits = list[SqliteVecHit]
 
 
 class SqliteVecStore(VectorStoreBase):
@@ -81,7 +97,7 @@ class SqliteVecStore(VectorStoreBase):
         if not path:
             raise ValueError("SqliteVecStore requires an explicit path")
         if str(distance).lower() not in ("cosine", "distance.cosine"):
-            raise ValueError("prototype supports cosine distance only")
+            raise ValueError("sqlite-vec store supports cosine distance only")
         self.collection_name = collection_name
         self.embedding_model_dims = int(embedding_model_dims)
         self.chunk_size = max(int(chunk_size), 1)
@@ -217,7 +233,7 @@ class SqliteVecStore(VectorStoreBase):
                 break
         return results
 
-    def list(self, filters: Optional[dict] = None, top_k: Optional[int] = None) -> list[SqliteVecHit]:
+    def list(self, filters: Optional[dict] = None, top_k: Optional[int] = None) -> VecHits:
         rows = self._rows(f"SELECT id, payload FROM {self.collection_name}_payload ORDER BY id")
         results: list[SqliteVecHit] = []
         for row in rows:
@@ -229,7 +245,7 @@ class SqliteVecStore(VectorStoreBase):
                 break
         return results
 
-    def list_cols(self) -> list[str]:
+    def list_cols(self) -> builtins.list[str]:
         return [self.collection_name]
 
     def delete_col(self) -> None:
@@ -287,6 +303,13 @@ def _matches(payload: dict, filters: Optional[dict]) -> bool:
     return True
 
 
+def _register_provider() -> None:
+    """Teach mem0's factory about this provider (no fork required)."""
+    from mem0.utils.factory import VectorStoreFactory
+
+    VectorStoreFactory.provider_to_class["sqlite_vec"] = "speech_to_speech.memory.stores.sqlite_vec.SqliteVecStore"
+
+
 def _register_config_model() -> None:
     """Make ``VectorStoreConfig(provider="sqlite_vec", ...)`` validate.
 
@@ -306,12 +329,13 @@ def _register_config_model() -> None:
         collection_name: str = Field("memories", description="Name of the collection")
         embedding_model_dims: Optional[int] = Field(1024, description="Dimensions of the embedding model")
         path: Optional[str] = Field("/tmp/sqlite-vec", description="Directory holding the SQLite file")
-        distance: str = Field("cosine", description="Distance metric (prototype: cosine only)")
+        distance: str = Field("cosine", description="Distance metric (cosine only)")
+        chunk_size: int = Field(DEFAULT_CHUNK_SIZE, description="vec0 rows preallocated per chunk")
         on_disk: Optional[bool] = Field(True, description="Accepted for signature parity with QdrantConfig")
 
     module_name = "mem0.configs.vector_stores.sqlite_vec"
     module = types.ModuleType(module_name)
-    module.SqliteVecConfig = SqliteVecConfig
+    setattr(module, "SqliteVecConfig", SqliteVecConfig)
     sys.modules[module_name] = module
 
     from mem0.vector_stores.configs import VectorStoreConfig
@@ -320,12 +344,66 @@ def _register_config_model() -> None:
     providers["sqlite_vec"] = "SqliteVecConfig"
 
 
-def register() -> None:
-    """Teach mem0 about this provider: factory entry + config model (no fork)."""
-    from mem0.utils.factory import VectorStoreFactory
+def _redirect_qdrant_to_sqlite_vec() -> None:
+    """Rewrite ``provider="qdrant"`` to ``sqlite_vec`` in mem0's config.
 
-    VectorStoreFactory.provider_to_class["sqlite_vec"] = "mem0_sqlite_vec.SqliteVecStore"
+    VoiceMem hardcodes ``VectorStoreConfig(provider="qdrant", ...)`` when it
+    builds ``MemoryConfig``, so there is no configuration seam above mem0's own
+    pydantic class. The path is unchanged (``<memory_root>/vectors``), which is
+    why only the provider name has to be rewritten.
+
+    Upstream fix to prefer: make the provider configurable in VoiceMem, after
+    which this shim can be deleted (see ``experiments/voicemem/STORE_SWAP.md``).
+    """
+    global _REDIRECTED
+    if _REDIRECTED:
+        return
+    from mem0.vector_stores.configs import VectorStoreConfig
+
+    original_init = VectorStoreConfig.__init__
+
+    def patched_init(self, **data):  # noqa: ANN001 - pydantic passes **data
+        if data.get("provider") == "qdrant":
+            data = dict(data)
+            data["provider"] = "sqlite_vec"
+            data["config"] = dict(data.get("config") or {})
+        original_init(self, **data)
+
+    VectorStoreConfig.__init__ = patched_init
+    _REDIRECTED = True
+
+
+def install_vector_store(provider: str) -> None:
+    """Make the mem0 store VoiceMem builds use ``provider``.
+
+    Idempotent. Must run before the first ``VoiceMem``/``mem0.Memory`` is
+    constructed in this process. ``"qdrant"`` is a no-op: VoiceMem already asks
+    for it.
+    """
+    global _INSTALLED
+    if provider != "sqlite_vec":
+        if provider != "qdrant":
+            raise ValueError(f"unsupported memory vector store: {provider!r}")
+        return
+    if _INSTALLED:
+        return
+    try:
+        import sqlite_vec  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            "the 'sqlite-vec' package is required for S2S_MEMORY_VECTOR_STORE=sqlite_vec; "
+            "install it in the sidecar venv (see experiments/voicemem/provision.py)"
+        ) from exc
+    _register_provider()
     _register_config_model()
+    _redirect_qdrant_to_sqlite_vec()
+    _INSTALLED = True
 
 
-__all__ = ["DEFAULT_CHUNK_SIZE", "MAX_KNN_K", "SqliteVecHit", "SqliteVecStore", "register"]
+__all__ = [
+    "DEFAULT_CHUNK_SIZE",
+    "MAX_KNN_K",
+    "SqliteVecHit",
+    "SqliteVecStore",
+    "install_vector_store",
+]

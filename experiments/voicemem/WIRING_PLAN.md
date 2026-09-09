@@ -202,6 +202,25 @@ Memory embeddings come from the QMD daemon, which already holds the model:
 Measured: fresh memory question 90-162 ms, repeat 8 ms, daemon-side 22-25 ms per
 embed. No second process, no compiled dependency, no second model instance.
 
+## Vector store wiring (adopted 2026-09-09)
+
+mem0 stores vectors in SQLite through the `sqlite-vec` extension instead of its
+embedded Qdrant (`STORE_SWAP.md`, `INTEGRATION_PLAN.md` §9):
+
+| Piece | Where | State |
+|---|---|---|
+| Store implementation + provider registration | `src/speech_to_speech/memory/stores/sqlite_vec.py` | done, tested |
+| Backend switch | `S2S_MEMORY_VECTOR_STORE` (default `sqlite_vec`, `qdrant` rollback) | done, tested |
+| Desktop child env | `voice-process.ts` pins `sqlite_vec` | done, tested |
+| Layout + migration gate | `src/speech_to_speech/memory/vector_store_layout.py`, `adapter._install_vector_store` | done, tested |
+| One-time migration | `experiments/voicemem/migrate_vectors.py` | done, tested |
+| Provisioning | `provision.py` installs `sqlite-vec==0.1.6`; `--embedder qmd` (default) downloads no model | done |
+
+Open: VoiceMem still hardcodes `provider="qdrant"`, so `install_vector_store`
+redirects it until upstream makes the provider configurable. BM25/hybrid remains
+unavailable (mem0's Qdrant path is in the same state here: fastembed is not
+installed).
+
 ## Open product questions
 
 1. Should injected memory be visible to the user (e.g. a "remembered" badge), or

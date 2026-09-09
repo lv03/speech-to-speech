@@ -33,17 +33,55 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence, runtime_checkable
 
+# The sidecar venv does not install this package; every consumer (sidecar,
+# smoke scripts, tests) gets src/ on the path the same way.
+_SRC = Path(__file__).resolve().parents[2] / "src"
+if _SRC.is_dir() and str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from speech_to_speech.memory.config import VECTOR_STORE_QDRANT, VECTOR_STORE_SQLITE_VEC  # noqa: E402
 from speech_to_speech.memory.embedder import EmbeddingUnavailableError, QmdEmbedder  # noqa: E402
-from speech_to_speech.memory.embedder import embed_cache_resolve as _embed_cache_resolve
+from speech_to_speech.memory.embedder import embed_cache_resolve as _embed_cache_resolve  # noqa: E402
+from speech_to_speech.memory.vector_store_layout import migration_hint, needs_migration  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOP_K = 5
+
+
+def _install_vector_store(memory_root: Path) -> None:
+    """Point mem0 at the configured vector backend before VoiceMem builds it.
+
+    Fails closed when switching to sqlite-vec would start from an empty store
+    while a Qdrant store still holds the only copy of the memories: silently
+    appearing to lose every memory is worse than refusing to start.
+    """
+    provider = (os.environ.get("S2S_MEMORY_VECTOR_STORE") or VECTOR_STORE_SQLITE_VEC).strip().lower()
+    if provider == VECTOR_STORE_QDRANT:
+        return
+    if provider != VECTOR_STORE_SQLITE_VEC:
+        raise MemoryNotConfiguredError(
+            f"S2S_MEMORY_VECTOR_STORE must be {VECTOR_STORE_SQLITE_VEC!r} or "
+            f"{VECTOR_STORE_QDRANT!r}; got {provider!r}"
+        )
+    if needs_migration(memory_root):
+        raise MemoryNotConfiguredError(migration_hint(memory_root))
+    try:
+        from speech_to_speech.memory.stores.sqlite_vec import install_vector_store
+    except ImportError as exc:  # pragma: no cover - depends on the sidecar venv
+        raise MemoryBackendUnavailableError(
+            "S2S_MEMORY_VECTOR_STORE=sqlite_vec requires mem0 and sqlite-vec in the sidecar venv"
+        ) from exc
+    try:
+        install_vector_store(provider)
+    except ImportError as exc:
+        raise MemoryBackendUnavailableError(str(exc)) from exc
 
 
 class MemoryLockedError(RuntimeError):
@@ -548,6 +586,8 @@ class _VoicememBackend:
             # (`_canon` uses setdefault), which silently keeps loading E5.
             for key in ("slots", "schema"):
                 kwargs[key] = lambda: LocalQueryClassifier(model=remote)
+
+        _install_vector_store(self._memory_root)
 
         kwargs.update(
             enable_scene=False,

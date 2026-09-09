@@ -9,6 +9,13 @@ from typing import Mapping
 BACKEND_OFF = "off"
 BACKEND_VOICEMEM = "voicemem"
 
+#: mem0 vector backend inside the sidecar. ``sqlite_vec`` keeps the whole stack on
+#: SQLite (one file, no qdrant-client/grpcio, concurrent connections);
+#: ``qdrant`` is the pre-2026-09 default and stays as the rollback path.
+VECTOR_STORE_SQLITE_VEC = "sqlite_vec"
+VECTOR_STORE_QDRANT = "qdrant"
+VECTOR_STORES = (VECTOR_STORE_SQLITE_VEC, VECTOR_STORE_QDRANT)
+
 
 class MemoryConfigError(ValueError):
     """Raised when memory is enabled without the inputs it needs."""
@@ -39,6 +46,10 @@ class MemoryConfig:
     embedder_backend: str = "qmd"
     #: QMD daemon base URL (its patched /embed route lives there).
     embedder_base_url: str | None = None
+    #: mem0's vector backend in the sidecar (see VECTOR_STORES). SQLite/sqlite-vec
+    #: by default: same engine family as QMD's index and mem0's history, no
+    #: qdrant-client/grpcio, and no single-client-per-directory lock.
+    vector_store: str = VECTOR_STORE_SQLITE_VEC
     max_context_chars: int = 1200
     min_partial_chars: int = 6
     interactive_timeout_ms: int = 30_000
@@ -65,13 +76,15 @@ class MemoryConfig:
             if not value
         ]
         if missing:
-            raise MemoryConfigError(
-                "memory backend 'voicemem' requires " + ", ".join(missing)
-            )
+            raise MemoryConfigError("memory backend 'voicemem' requires " + ", ".join(missing))
         if not os.path.exists(str(self.sidecar_script)):
             raise MemoryConfigError(f"sidecar script not found: {self.sidecar_script}")
         if not os.path.exists(str(self.sidecar_python)):
             raise MemoryConfigError(f"sidecar interpreter not found: {self.sidecar_python}")
+        if self.vector_store not in VECTOR_STORES:
+            raise MemoryConfigError(
+                f"memory vector_store must be one of {', '.join(VECTOR_STORES)}; got {self.vector_store!r}"
+            )
 
     def child_env(self) -> dict[str, str]:
         """Environment for the sidecar process (inherits ours, then overrides)."""
@@ -91,7 +104,18 @@ class MemoryConfig:
         merged["S2S_MEMORY_EMBEDDER"] = self.embedder_backend
         if self.embedder_base_url:
             merged["S2S_MEMORY_EMBEDDER_BASE_URL"] = self.embedder_base_url
+        # Pinned, not inherited: a stray value in the parent environment must not
+        # silently change where memory is stored.
+        merged["S2S_MEMORY_VECTOR_STORE"] = self.vector_store
         return merged
 
 
-__all__ = ["BACKEND_OFF", "BACKEND_VOICEMEM", "MemoryConfig", "MemoryConfigError"]
+__all__ = [
+    "BACKEND_OFF",
+    "BACKEND_VOICEMEM",
+    "VECTOR_STORE_QDRANT",
+    "VECTOR_STORE_SQLITE_VEC",
+    "VECTOR_STORES",
+    "MemoryConfig",
+    "MemoryConfigError",
+]

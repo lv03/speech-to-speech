@@ -3,8 +3,13 @@
 
 Creates a dedicated venv, installs voicemem at a pinned commit (PyPI only has
 0.2.3, which lacks `llm_config`/`memory_language`), pins `httpx<1` because mem0
-breaks on the 1.0 prereleases uv otherwise resolves, downloads the local E5
-embedding model, and prints the exact settings to paste into the app.
+breaks on the 1.0 prereleases uv otherwise resolves, installs the `sqlite-vec`
+extension mem0's vector store now uses, and prints the exact settings to paste
+into the app.
+
+Embeddings come from the QMD daemon by default (`--embedder qmd`), so no local
+embedding model is downloaded. `--embedder e5` and `--embedder llama-cpp` remain
+for the standalone (non-QMD) paths and do download/install what they need.
 
 Every step is idempotent and `--dry-run` prints the plan without touching
 anything. This is the consent-driven provisioning path: nothing is downloaded
@@ -27,6 +32,9 @@ from pathlib import Path
 VOICEMEM_SHA = "a450911fc8cbb44c46d810aace2f3288bad287e4"
 TARBALL_URL = f"https://codeload.github.com/xzf-thu/VoiceMem/tar.gz/{VOICEMEM_SHA}"
 E5_MODEL = "intfloat/multilingual-e5-small"
+#: mem0's vector backend is SQLite + this extension (see STORE_SWAP.md). Pinned
+#: because the Python wheel bundles the native library for each platform.
+SQLITE_VEC_PIN = "sqlite-vec==0.1.6"
 #: QMD already installs this GGUF; the llama.cpp embedder reuses it (no download).
 QWEN3_GGUF_NAME = "hf_Qwen_Qwen3-Embedding-0.6B-Q8_0.gguf"
 DEFAULT_VENV = Path.home() / ".cache" / "speech-to-speech" / "voicemem-venv"
@@ -47,7 +55,7 @@ def build_plan(
     models: Path,
     skip_models: bool,
     python: str = "3.11",
-    embedder: str = "e5",
+    embedder: str = "qmd",
 ) -> list[Step]:
     steps = [
         Step(f"create venv {venv}", ["uv", "venv", str(venv), "--python", python]),
@@ -58,6 +66,10 @@ def build_plan(
         Step(
             "pin httpx<1 (mem0 breaks on 1.0 prereleases)",
             ["uv", "pip", "install", "--python", str(venv / "bin" / "python"), "httpx<1"],
+        ),
+        Step(
+            f"install {SQLITE_VEC_PIN} (mem0 vector backend)",
+            ["uv", "pip", "install", "--python", str(venv / "bin" / "python"), SQLITE_VEC_PIN],
         ),
     ]
     if embedder == "llama-cpp":
@@ -76,7 +88,7 @@ def build_plan(
                 ],
             )
         )
-    elif not skip_models:
+    elif not skip_models and embedder == "e5":
         steps.append(
             Step(
                 f"download {E5_MODEL} into {models}",
@@ -94,7 +106,7 @@ def build_plan(
     return steps
 
 
-def render_plan(steps: list[Step], *, venv: Path, models: Path, embedder: str = "e5") -> str:
+def render_plan(steps: list[Step], *, venv: Path, models: Path, embedder: str = "qmd") -> str:
     lines = ["memory sidecar provisioning plan:", ""]
     for index, step in enumerate(steps, start=1):
         lines.append(f"  {index}. {step.title}")
@@ -107,14 +119,24 @@ def render_plan(steps: list[Step], *, venv: Path, models: Path, embedder: str = 
         "  抽取端点         http://127.0.0.1:8080/v1（本机服务）或云端 OpenAI 兼容地址",
         "  注入字符上限     1200",
         "",
-        (
-            "embedder: llama-cpp -> export S2S_MEMORY_EMBEDDER=llama-cpp and "
-            f"S2S_MEMORY_EMBEDDER_GGUF=<path to {QWEN3_GGUF_NAME}>"
-            if embedder == "llama-cpp"
-            else f"and export VOICEMEM_MODELS_DIR={models} for the sidecar process."
-        ),
+        _embedder_note(embedder, models),
     ]
     return "\n".join(lines)
+
+
+def _embedder_note(embedder: str, models: Path) -> str:
+    if embedder == "llama-cpp":
+        return (
+            "embedder: llama-cpp -> export S2S_MEMORY_EMBEDDER=llama-cpp and "
+            f"S2S_MEMORY_EMBEDDER_GGUF=<path to {QWEN3_GGUF_NAME}>"
+        )
+    if embedder == "qmd":
+        return (
+            "embedder: qmd (default) -> the desktop app sets S2S_MEMORY_EMBEDDER=qmd and "
+            "S2S_MEMORY_EMBEDDER_BASE_URL=<QMD daemon>; running the sidecar by hand needs both "
+            "exported. No local embedding model is downloaded."
+        )
+    return f"and export VOICEMEM_MODELS_DIR={models} for the sidecar process."
 
 
 def run(steps: list[Step]) -> int:
@@ -135,9 +157,10 @@ def main() -> int:
     parser.add_argument("--skip-models", action="store_true", help="skip the E5 download")
     parser.add_argument(
         "--embedder",
-        choices=("e5", "llama-cpp"),
-        default="e5",
-        help="e5 downloads the local E5 model; llama-cpp reuses QMD's Qwen3 GGUF in-process.",
+        choices=("qmd", "e5", "llama-cpp"),
+        default="qmd",
+        help="qmd (default) reuses the QMD daemon's model over HTTP and downloads nothing; "
+        "e5 downloads the local E5 model; llama-cpp reuses QMD's Qwen3 GGUF in-process.",
     )
     parser.add_argument("--dry-run", action="store_true", help="print the plan and exit")
     parser.add_argument("--yes", action="store_true", help="run without an interactive prompt")

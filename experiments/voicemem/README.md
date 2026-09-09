@@ -20,34 +20,41 @@ packages it drags in.
 | `tests/test_adapter.py` | 15 mock-based tests for the adapter |
 | `tests/test_pipeline.py` | 22 mock-based tests for batching, prefetch and injection |
 | `tests/test_sidecar.py` | 9 tests spawning `sidecar.py --backend fake` |
-| `tests/test_mem0_sqlite_vec.py` | 12 store-contract tests (skipped without mem0 + sqlite-vec) |
+| `migrate_vectors.py` | One-time migration: mem0's local Qdrant store → sqlite-vec (copies rows, no re-embedding) |
 | `check_env.py` | Gate 1: what a voicemem install would change here (zero-install) |
 | `zh_smoke.py` | Gate 5: Chinese ingest/search smoke (needs the venv + a key) |
 | `prefetch_probe.py` | Real prefetch timing probe (needs the venv + a key) |
-| `provision.py` | Reproducible, consent-driven setup of the sidecar venv + E5 model (`--dry-run`) |
+| `provision.py` | Reproducible, consent-driven setup of the sidecar venv + `sqlite-vec` (`--dry-run`) |
 | `license_report.py` | Inventory the sidecar venv's dependencies and flag unresolved licenses |
 | `config.example.env` | Env template: endpoint, language, mirror, storage, telemetry off |
 | `DECISIONS.md` | The product decisions the implementation encodes + acceptance checklist |
 | `EMBEDDER.md` | Verification: reusing QMD's Qwen3-Embedding GGUF instead of E5 |
 | `QMD_STORE.md` | Feasibility: replacing mem0+Qdrant with QMD as the memory store (rejected route) |
 | `qmd_store.py` / `qmd_store_probe.py` | Prototype store + A/B probe behind that report |
-| `STORE_SWAP.md` | Feasibility: keeping mem0 but swapping its vector store Qdrant → SQLite/sqlite-vec |
-| `mem0_sqlite_vec.py` / `mem0_store_probe.py` / `store_swap_smoke.py` | Prototype store, mem0-level A/B, end-to-end VoiceMem probe |
+| `STORE_SWAP.md` | Keeping mem0 but swapping its vector store Qdrant → SQLite/sqlite-vec (**implemented**, Phase A) |
+| `mem0_store_probe.py` / `store_swap_smoke.py` | A/B probes behind that report (mem0-level and end-to-end) |
 | `INTEGRATION_NOTES.md` | What voicemem would introduce: deps, models, network, storage, risk |
 | `GATES.md` | The seven gates: status, evidence, and the work each one still needs |
 | `PRIOR_ART.md` | How qwen-audio-agent integrates VoiceMem, and what we should copy |
-| `INTEGRATION_PLAN.md` | Upstream study, the shape decision, and staged progress |
+| `INTEGRATION_PLAN.md` | Upstream study, staged progress, and the overall architecture + Phase A record |
 | `WIRING_PLAN.md` | Executable product-wiring steps (CLI, voice loop, injection, desktop) |
 
 ## Prepare the sidecar environment
 
 ```bash
 ./.venv/bin/python experiments/voicemem/provision.py --dry-run   # print the plan
-./.venv/bin/python experiments/voicemem/provision.py --yes       # create venv + install + E5
+./.venv/bin/python experiments/voicemem/provision.py --yes       # venv + voicemem + sqlite-vec
 ```
 
-Every step is idempotent; nothing is downloaded until this runs. The script
-prints the exact values to paste into the app's 长期记忆（实验） section.
+Every step is idempotent; nothing is downloaded until this runs. The default
+`--embedder qmd` downloads no embedding model: the sidecar embeds through the QMD
+daemon. The script prints the exact values to paste into the app's
+长期记忆（实验） section.
+
+mem0's vector backend is SQLite + `sqlite-vec` (`S2S_MEMORY_VECTOR_STORE`,
+default `sqlite_vec`, `qdrant` as the rollback). A memory root created by an
+older build must be migrated once — see `migrate_vectors.py` and §9 of
+`INTEGRATION_PLAN.md`.
 
 ## Run the sidecar
 

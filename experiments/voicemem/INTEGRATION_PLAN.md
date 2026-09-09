@@ -185,3 +185,110 @@ So at end-of-turn the memory block is already there and the residual work is
 ~140 ms — versus 272–450 ms for the cold `recall()` path measured on 0.2.3.
 Ingestion remains 13–44 s per utterance, which is why the write path is batched
 and off-thread.
+
+---
+
+## 8. Overall architecture (as of 2026-09-09)
+
+Five runtime pieces, one process boundary each. Nothing below is aspirational:
+every row was read from the tree on branch `feature/desktop-gateway`.
+
+```text
+┌─ Electron main (desktop/) ─────────────────────────────────────┐
+│ RuntimeManager   single source of runtime state                │
+│  ├ PythonRuntime    app-private venv + speech_to_speech wheel  │
+│  ├ QmdRuntime       packaged @tobilu/qmd 2.8.3 (mcp --http)    │
+│  ├ QmdService       app-private config/cache/index + QmdProxy  │
+│  ├ ModelStore       manifest + download/verify/resume          │
+│  └ SecretStore      secrets reach children via env, never argv │
+│        │                                                       │
+│        ├─ voice child   → src/speech_to_speech/ (VAD→STT→LLM→TTS)
+│        │     └─ tools/agent_gateway.py ──HTTP──► gateway/       │
+│        ├─ qmd child     → document index (documents/FTS/vec0)   │
+│        └─ memory child  → experiments/voicemem/sidecar.py (JSONL)
+└────────────────────────────────────────────────────────────────┘
+```
+
+| Component | State |
+|---|---|
+| Voice engine (4-stage cascade, thread pools + queues, Realtime WS/WebRTC) | shipping |
+| `gateway/` (FastAPI; pi via RPC verified, codex via ACP still needs joint testing) | shipping |
+| Desktop shell (RuntimeManager / QmdService / QmdProxy / ModelStore / SecretStore) | shipping |
+| QMD knowledge base, including our `POST /embed` patch | shipping |
+| **Memory (Phase 5)** | experiment: product wiring exists behind settings, off by default |
+
+Memory path:
+
+```text
+voice child                              sidecar child (own venv)
+MemoryProvider ──JSONL/stdio──► VoiceMemAdapter
+  gates, dedup, sensitive filter        └ VoiceMem (leftbrain_only)
+  batched writes + debounce               ├ fact extraction → OpenAI-compatible chat
+  per-response injection (4 gates)        ├ vectors → mem0 → SQLite + sqlite-vec
+  streaming prefetch                      └ history → SQLite
+                    ▲
+                    └── embeddings: QMD daemon's patched POST /embed (Qwen3-0.6B, 1024-d)
+                        No E5, fail-closed when the daemon is down.
+```
+
+Three independent SQLite files; only the engine family and the embedding model
+are shared:
+
+| Purpose | File | Owner |
+|---|---|---|
+| QMD document index | `<userData>/qmd/index.sqlite` | QMD |
+| mem0 vectors | `<memoryRoot>/vectors/voicemem.sqlite` | our store |
+| mem0 history | `<memoryRoot>/<space>.sqlite` | mem0 |
+
+## 9. Phase A — vector backend moved to SQLite/sqlite-vec (implemented)
+
+### Why
+
+Not to remove a service: mem0's Qdrant is embedded (`QdrantConfig(path=...)`), so
+there was never a Qdrant process to stop. The swap removes a library tree
+(`qdrant-client` + `grpcio` ≈ 45 MB installed, ≈ 58 MB RSS), removes the
+single-client-per-directory lock that VoiceMem works around with a client cache
+(its own comment records 137/152 eval questions failing on it), and puts the
+sidecar on the same storage engine as QMD's index and mem0's history.
+
+### What changed
+
+| Step | Change | Location |
+|---|---|---|
+| A1 | `S2S_MEMORY_VECTOR_STORE` (`sqlite_vec` default, `qdrant` rollback), validated and pinned into the child env | `src/speech_to_speech/memory/config.py`, `factory.py`, `desktop/src/main/voice-process.ts` |
+| A2 | Store moved out of the experiment into the packaged tree | `src/speech_to_speech/memory/stores/sqlite_vec.py` |
+| A3 | `install_vector_store()` registers the provider and redirects VoiceMem's hardcoded `provider="qdrant"` through mem0's config class (upstream fix preferred) | same module, called from `adapter._install_vector_store` |
+| A4 | One-time migration that copies rows (no re-embedding) + fail-closed gate so a switch cannot look like memory loss | `experiments/voicemem/migrate_vectors.py`, `src/speech_to_speech/memory/vector_store_layout.py` |
+| A5 | `sqlite-vec==0.1.6` provisioned; `--embedder qmd` is now the default, so no embedding model is downloaded | `experiments/voicemem/provision.py` |
+| A6 | Contract, migration, layout, config and install-seam tests | `tests/test_memory_sqlite_vec_store.py`, `tests/test_memory_vector_store.py`, `desktop/tests/memory-settings.test.mjs` |
+
+### Evidence
+
+- mem0-level A/B (12 facts / 6 queries, same QMD embedder): identical Top-1 rows
+  (5/6, same miss), search 0.9–1.2 ms vs 0.4–0.6 ms, populate 23 ms vs 359 ms.
+- End-to-end through `VoiceMemAdapter` with cloud extraction: PASS 3/3 on both
+  stores, recall 91–133 ms vs 87–127 ms, `vectors/` becomes one `.sqlite` file.
+- Full detail and reproduction commands: `STORE_SWAP.md`.
+
+### Left open
+
+1. Upstream VoiceMem change to make the provider configurable (then the redirect
+   shim in `install_vector_store` can be deleted).
+2. Hybrid search: sqlite-vec gives mem0 no `keyword_search`, so BM25 stays off
+   (it is off for the Qdrant path here too — fastembed is not installed).
+3. Above ~4096 memories with a metadata filter, vec0's `k` ceiling can truncate
+   the candidate set; a larger store needs pre-filtered ids or two-stage search.
+4. `<space>.json` still says `vector_store: "qdrant (local)"`: VoiceMem writes
+   that description itself, so it changes only when upstream does.
+
+## 10. Remaining route (unchanged by Phase A)
+
+- **Phase B — packaging**: move `experiments/voicemem/` into the packaged tree,
+  add the sidecar's license inventory to the release report, make venv/model
+  provisioning consent-driven, re-run `GATES.md` 1–7 on the pinned SHA.
+- **Phase C — v1 release gate (Task 8)**: blocked on external inputs
+  (`RUNTIME_ASSETS_FILE`, `RUNTIME_ASSETS_SIGNATURE_FILE`, `RUNTIME_ASSETS_ROOT`,
+  `QMD_BUNDLE_DIR`, `SMOKE_MODEL_PATH`); local staging evidence is not a release
+  candidate until signing/notarization exists.
+- **Phase D — product decisions**: is injected memory user-visible; is cloud fact
+  extraction acceptable; should `recall_memory` also be an explicit tool.

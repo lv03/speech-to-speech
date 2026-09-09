@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from provision import (  # noqa: E402
     E5_MODEL,
     QWEN3_GGUF_NAME,
+    SQLITE_VEC_PIN,
     TARBALL_URL,
     VOICEMEM_SHA,
     build_plan,
@@ -17,27 +18,51 @@ from provision import (  # noqa: E402
 )
 
 
-def test_plan_pins_the_commit_and_the_httpx_fix(tmp_path):
+def test_plan_pins_the_commit_httpx_and_the_vector_store_extension(tmp_path):
     steps = build_plan(venv=tmp_path / "venv", models=tmp_path / "models", skip_models=False)
     commands = [" ".join(step.command) for step in steps]
 
     assert any(VOICEMEM_SHA in command and TARBALL_URL in command for command in commands)
     assert any(command.endswith("httpx<1") for command in commands)
-    assert any(E5_MODEL in command for command in commands)
+    assert any(command.endswith(SQLITE_VEC_PIN) for command in commands)
     # The venv is created with uv, never with the repository interpreter.
     assert commands[0].startswith("uv venv")
 
 
+def test_qmd_embedder_is_the_default_and_downloads_no_model(tmp_path):
+    steps = build_plan(venv=tmp_path / "venv", models=tmp_path / "models", skip_models=False)
+    text = render_plan(steps, venv=tmp_path / "venv", models=tmp_path / "models")
+
+    assert not any(E5_MODEL in " ".join(step.command) for step in steps)
+    assert "S2S_MEMORY_EMBEDDER=qmd" in text
+
+
+def test_e5_embedder_downloads_the_model(tmp_path):
+    steps = build_plan(
+        venv=tmp_path / "venv",
+        models=tmp_path / "models",
+        skip_models=False,
+        embedder="e5",
+    )
+
+    assert any(E5_MODEL in " ".join(step.command) for step in steps)
+
+
 def test_skip_models_drops_the_download_step(tmp_path):
-    steps = build_plan(venv=tmp_path / "venv", models=tmp_path / "models", skip_models=True)
+    steps = build_plan(
+        venv=tmp_path / "venv",
+        models=tmp_path / "models",
+        skip_models=True,
+        embedder="e5",
+    )
     assert not any(E5_MODEL in " ".join(step.command) for step in steps)
 
 
 def test_render_lists_every_step_and_the_settings_to_paste(tmp_path):
     venv = tmp_path / "venv"
     models = tmp_path / "models"
-    steps = build_plan(venv=venv, models=models, skip_models=False)
-    text = render_plan(steps, venv=venv, models=models)
+    steps = build_plan(venv=venv, models=models, skip_models=False, embedder="e5")
+    text = render_plan(steps, venv=venv, models=models, embedder="e5")
 
     for step in steps:
         assert step.title in text

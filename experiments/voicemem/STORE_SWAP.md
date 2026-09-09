@@ -1,7 +1,9 @@
 # Swapping mem0's vector store: Qdrant → SQLite / sqlite-vec
 
-Status 2026-09-09. Prototype only — nothing under `src/`, `desktop/` or
-`gateway/` uses it.
+Status 2026-09-09. **Implemented (Phase A).** The store now lives in
+`src/speech_to_speech/memory/stores/sqlite_vec.py` and is the default backend;
+this document is the feasibility record and the measurement baseline behind that
+decision. Implementation summary: `INTEGRATION_PLAN.md` §9.
 
 ## Scope
 
@@ -21,24 +23,35 @@ So the swap does **not** stop any service. What it does remove is measured below
 
 ## What was built
 
+Implemented in Phase A (see `INTEGRATION_PLAN.md` §9); the store is no longer an
+experiment-only module.
+
 | File | Purpose |
 |---|---|
-| `mem0_sqlite_vec.py` | `SqliteVecStore` (mem0 `VectorStoreBase` implementation) + `register()` |
+| `src/speech_to_speech/memory/stores/sqlite_vec.py` | `SqliteVecStore` (mem0 `VectorStoreBase`) + `install_vector_store()` |
+| `src/speech_to_speech/memory/vector_store_layout.py` | Layout + migration detection for both backends (dependency-free) |
+| `src/speech_to_speech/memory/config.py` | `S2S_MEMORY_VECTOR_STORE` (default `sqlite_vec`, `qdrant` rollback) |
 | `mem0_store_probe.py` | mem0-level A/B: same embedder, facts, queries, mem0 version; only the store changes |
 | `store_swap_smoke.py` | End-to-end through `VoiceMemAdapter`, with VoiceMem's hardcoded provider rewritten |
-| `tests/test_mem0_sqlite_vec.py` | 12 contract tests (skipped unless mem0 + sqlite-vec are importable) |
+| `migrate_vectors.py` | One-time row copy from a legacy Qdrant store (no re-embedding) |
+| `tests/test_memory_sqlite_vec_store.py` | 18 contract + migration tests (skipped without mem0/sqlite-vec) |
+| `tests/test_memory_vector_store.py` | 14 layout/config/install-seam tests (no sidecar venv needed) |
 
 ## Teaching mem0 the provider — two dict hooks, no fork
 
 mem0 2.0.20 has no sqlite-vec provider (25 providers, none SQLite-backed). It
 does not need a fork:
 
-1. `VectorStoreFactory.provider_to_class["sqlite_vec"] = "mem0_sqlite_vec.SqliteVecStore"`
-   — the factory is a plain dict lookup + `importlib`.
+1. `VectorStoreFactory.provider_to_class["sqlite_vec"] =
+   "speech_to_speech.memory.stores.sqlite_vec.SqliteVecStore"` — the factory is a
+   plain dict lookup + `importlib`.
 2. `VectorStoreConfig` validates the provider against a private
    `_provider_configs` table and imports `mem0.configs.vector_stores.<provider>`
-   for a matching pydantic config model. `register()` inserts a synthetic module
-   under that name and points the table at it.
+   for a matching pydantic config model. `install_vector_store()` inserts a
+   synthetic module under that name and points the table at it.
+3. VoiceMem hardcodes `provider="qdrant"`, so the same function wraps
+   `VectorStoreConfig.__init__` and rewrites that one value. Deleting the shim
+   requires an upstream change in VoiceMem.
 
 Interface details that had to match mem0's real code (verified by reading
 `mem0/memory/main.py`, not by analogy):
@@ -84,7 +97,7 @@ memory search.
 | Result | PASS 3/3 | PASS 3/3 |
 | Recall latency | 87–127 ms | 91–133 ms |
 | `vectors/` on disk | `collection/voicemem/storage.sqlite` 52 KB + `.lock` + `meta.json` | `voicemem.sqlite` 4152 KB |
-| `vector_store` actually constructed | `mem0.vector_stores.qdrant.Qdrant` | `mem0_sqlite_vec.SqliteVecStore` |
+| `vector_store` actually constructed | `mem0.vector_stores.qdrant.Qdrant` | `speech_to_speech.memory.stores.sqlite_vec.SqliteVecStore` |
 
 Ingest cost (11–24 s/turn) is cloud fact extraction and is unaffected by the
 store, so it is omitted from the comparison.
@@ -147,20 +160,22 @@ before interpreter shutdown — exist only because of the embedded Qdrant client
 
 ## Recommendation
 
-Swap it, as a **dependency-and-robustness** change rather than a service-count
-change: ~45 MB fewer installed bytes, ~58 MB less RSS in the sidecar, one fewer
-storage layout, and removal of a lock failure mode that already caused a
-documented 90 % eval failure. Retrieval quality and latency are at parity.
+Adopted in Phase A, as a **dependency-and-robustness** change rather than a
+service-count change: ~45 MB fewer installed bytes, ~58 MB less RSS in the
+sidecar, one fewer storage layout, and removal of a lock failure mode that
+already caused a documented 90 % eval failure. Retrieval quality and latency are
+at parity.
 
-Prerequisites before this becomes product code:
+Prerequisites, and where each stands:
 
 1. an upstream VoiceMem change (or a maintained patch) to make the provider
-   configurable — a monkeypatch of mem0's pydantic config is fine for a probe,
-   not for shipping;
+   configurable — **open**: shipping on the `install_vector_store` redirect shim
+   until upstream lands it;
 2. a decision on hybrid search: if BM25 is ever wanted, either install fastembed
    for the Qdrant path or add an FTS5-backed `keyword_search` to this store;
-3. a migration story for existing `vectors/` directories (export/re-embed), since
-   the two layouts are not interchangeable.
+3. a migration story for existing `vectors/` directories — **done** in Phase A
+   (`migrate_vectors.py`, row copy without re-embedding, plus a fail-closed gate
+   so a switch cannot silently start empty).
 
 ## Reproduce
 
@@ -176,7 +191,7 @@ export S2S_MEMORY_EMBEDDER=qmd S2S_MEMORY_EMBEDDER_BASE_URL=http://127.0.0.1:813
 "$VENV/bin/python" experiments/voicemem/store_swap_smoke.py --store qdrant     --memory-root /tmp/swap-qdrant
 "$VENV/bin/python" experiments/voicemem/store_swap_smoke.py --store sqlite_vec --memory-root /tmp/swap-sqlite
 
-# 3. store contract tests (skipped in the project venv: mem0 lives in the sidecar venv)
+# 3. store/migration tests (skipped in the project venv: mem0 lives in the sidecar venv)
 uv pip install --python "$VENV/bin/python" pytest
-"$VENV/bin/python" -m pytest experiments/voicemem/tests/test_mem0_sqlite_vec.py -q
+"$VENV/bin/python" -m pytest tests/test_memory_sqlite_vec_store.py tests/test_memory_vector_store.py -q
 ```

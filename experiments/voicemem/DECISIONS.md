@@ -41,8 +41,10 @@ other components such as the STT/TTS backends.
 
 Reads never leave the machine: retrieval embeds locally through the QMD daemon's
 patched `/embed` route (`EMBEDDER.md`; no E5 model is loaded) and searches a
-local vector store inside the sidecar — mem0's embedded Qdrant today, with
-`STORE_SWAP.md` proposing SQLite/sqlite-vec as the replacement.
+local vector store inside the sidecar — SQLite + `sqlite-vec` by default
+(`S2S_MEMORY_VECTOR_STORE`; `qdrant` remains as a rollback), one SQLite file per
+memory root, migrated by `migrate_vectors.py`. Rationale and measurements:
+`STORE_SWAP.md`; implementation: `INTEGRATION_PLAN.md` §9.
 
 ## D3 — Injection is silent, and that is deliberate
 

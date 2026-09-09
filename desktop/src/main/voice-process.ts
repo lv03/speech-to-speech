@@ -125,6 +125,7 @@ export function buildVoiceEnvironment(options: VoiceEnvironmentOptions): NodeJS.
     'S2S_MEMORY_MODEL',
     'S2S_MEMORY_EMBEDDER',
     'S2S_MEMORY_EMBEDDER_BASE_URL',
+    'S2S_MEMORY_VECTOR_STORE',
     'S2S_MEMORY_MAX_CHARS',
   ]) {
     delete env[key]
@@ -141,6 +142,10 @@ export function buildVoiceEnvironment(options: VoiceEnvironmentOptions): NodeJS.
     // model. The backend name is always set so there is no silent fallback.
     env.S2S_MEMORY_EMBEDDER = 'qmd'
     if (options.memoryEmbedderBaseUrl) env.S2S_MEMORY_EMBEDDER_BASE_URL = options.memoryEmbedderBaseUrl
+    // Pinned, not a user setting: mem0 stores vectors in SQLite via sqlite-vec.
+    // Rolling back to mem0's embedded Qdrant means editing this constant (or
+    // running the sidecar by hand with S2S_MEMORY_VECTOR_STORE=qdrant).
+    env.S2S_MEMORY_VECTOR_STORE = 'sqlite_vec'
     if (options.memoryMaxChars) env.S2S_MEMORY_MAX_CHARS = String(options.memoryMaxChars)
   }
   return env

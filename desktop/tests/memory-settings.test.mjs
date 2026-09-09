@@ -54,6 +54,8 @@ test('memory env is injected only when enabled and consented', () => {
   expect(both.S2S_MEMORY_EMBEDDER_BASE_URL).toBe('http://[::1]:4123')
   expect(both.S2S_MEMORY_MODEL).toBe('deepseek-v4-flash')
   expect(both.S2S_MEMORY_MAX_CHARS).toBe('900')
+  // mem0's vector backend is pinned to SQLite/sqlite-vec, not a user setting.
+  expect(both.S2S_MEMORY_VECTOR_STORE).toBe('sqlite_vec')
 })
 
 test('memory env from the parent environment is cleared when memory is off', () => {
@@ -65,6 +67,7 @@ test('memory env from the parent environment is cleared when memory is off', () 
       S2S_MEMORY_BASE_URL: 'https://stale.example.com',
       S2S_MEMORY_EMBEDDER: 'local',
       S2S_MEMORY_EMBEDDER_BASE_URL: 'http://[::1]:9999',
+      S2S_MEMORY_VECTOR_STORE: 'qdrant',
     },
     gatewayUrl: 'http://127.0.0.1:3101',
   })
@@ -75,6 +78,7 @@ test('memory env from the parent environment is cleared when memory is off', () 
   expect(env.S2S_MEMORY_BASE_URL).toBeUndefined()
   expect(env.S2S_MEMORY_EMBEDDER).toBeUndefined()
   expect(env.S2S_MEMORY_EMBEDDER_BASE_URL).toBeUndefined()
+  expect(env.S2S_MEMORY_VECTOR_STORE).toBeUndefined()
 })
 
 test('settings round-trip the memory fields and reject out-of-range limits', async () => {

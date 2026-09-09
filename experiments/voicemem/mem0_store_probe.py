@@ -31,9 +31,8 @@ sys.path.insert(0, str(HERE.parents[1] / "src"))
 os.environ.setdefault("OPENAI_API_KEY", "probe-not-used")
 os.environ.setdefault("MEM0_TELEMETRY", "false")
 
-from mem0_sqlite_vec import register  # noqa: E402
-
 from speech_to_speech.memory.embedder import QmdEmbedder  # noqa: E402
+from speech_to_speech.memory.stores.sqlite_vec import install_vector_store  # noqa: E402
 
 FACTS: list[str] = [
     "用户对坚果过敏，尤其是花生和腰果。",
@@ -102,7 +101,6 @@ def main() -> int:
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args()
 
-    register()
     workdir = Path("/tmp/mem0-store-probe")
     shutil.rmtree(workdir, ignore_errors=True)
     workdir.mkdir(parents=True)
@@ -111,10 +109,11 @@ def main() -> int:
     print(f"embedder: {embedder.model_name} dims={embedder.probe()}")
 
     directories = {"qdrant": workdir / "qdrant", "sqlite_vec": workdir / "sqlite"}
-    stores = {
-        "qdrant": build_memory("qdrant", directories["qdrant"], embedder),
-        "sqlite_vec": build_memory("sqlite_vec", directories["sqlite_vec"], embedder),
-    }
+    # Order matters: install_vector_store redirects mem0's qdrant provider, so the
+    # Qdrant arm must be constructed first or it would silently become sqlite-vec.
+    stores = {"qdrant": build_memory("qdrant", directories["qdrant"], embedder)}
+    install_vector_store("sqlite_vec")
+    stores["sqlite_vec"] = build_memory("sqlite_vec", directories["sqlite_vec"], embedder)
 
     for label, memory in stores.items():
         start = time.monotonic()
