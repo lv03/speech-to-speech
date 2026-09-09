@@ -12,9 +12,10 @@ Protocol::
     {"id": "<opaque>", "result": {...}}
     {"id": "<opaque>", "error": {"type": "MemoryLockedError", "detail": "..."}}
 
-Methods: ``health``, ``set_permission``, ``recall``, ``observe``, ``flush``,
-``close``. The session starts **locked**; only an explicit
-``set_permission {"unlocked": true}`` from the parent opens reads and writes.
+Methods: ``health``, ``set_permission``, ``recall``, ``observe``, ``prefetch_partial``,
+``prefetch_final``, ``flush``, ``close``. The session starts **locked**; only an
+explicit ``set_permission {"unlocked": true}`` from the parent opens reads and
+writes.
 
 Run it with the dedicated voicemem venv (``--backend real``), or with any
 Python and ``--backend fake`` for tests::
@@ -26,6 +27,8 @@ Python and ``--backend fake`` for tests::
 from __future__ import annotations
 
 import argparse
+import asyncio
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -43,6 +46,40 @@ from session import SessionWriter  # noqa: E402
 
 PROTOCOL_VERSION = 1
 
+_METHODS = {
+    "health",
+    "set_permission",
+    "recall",
+    "observe",
+    "prefetch_partial",
+    "prefetch_final",
+    "flush",
+    "close",
+}
+
+
+class FakePrefetchStream:
+    """Async text stream over the fake store, mirroring voicemem's shape."""
+
+    def __init__(self, memory: "FakeMemory") -> None:
+        self._memory = memory
+
+    async def feed_partial(self, text: str, ended: bool = False):
+        # Like the real backend: speculation is asynchronous, so a partial tick
+        # returns no context yet; the block arrives on the final tick.
+        del text, ended
+        return _FakeState(False, "")
+
+    async def feed_text(self, text: str):
+        del text
+        return _FakeState(True, self._memory.context())
+
+
+class _FakeState:
+    def __init__(self, turn_over: bool, context: str) -> None:
+        self.state = "turn_over" if turn_over else "listening"
+        self.memory_context = context
+
 
 class FakeMemory:
     """In-memory backend for tests: no voicemem, no network, no model."""
@@ -56,6 +93,9 @@ class FakeMemory:
         self.hits = [line.lstrip("- ") for line in text.splitlines()]
         return True
 
+    def context(self) -> str:
+        return "\n".join(f"- {hit}" for hit in self.hits)
+
     def recall(self, query: str, *, top_k: int | None = None):
         del query, top_k
         return tuple(MemoryHit(text=hit, memory_id=f"m{index}") for index, hit in enumerate(self.hits))
@@ -66,6 +106,9 @@ class FakeMemory:
 
     def flush(self) -> None:
         return None
+
+    def open_stream(self):
+        return FakePrefetchStream(self)
 
 
 class Sidecar:
@@ -96,6 +139,8 @@ class Sidecar:
             on_error=self._record_error,
         )
         self._last_error = ""
+        self._streams: dict[str, Any] = {}
+        self._loop = asyncio.new_event_loop()
 
     # ── methods ──────────────────────────────────────────────────────────────
 
@@ -151,11 +196,46 @@ class Sidecar:
         session_id = str(params.get("sessionId", "")).strip() or None
         return {"batches": self._writer.flush(session_id)}
 
+    def prefetch_partial(self, params: dict) -> dict:
+        return self._prefetch(params, final=False)
+
+    def prefetch_final(self, params: dict) -> dict:
+        return self._prefetch(params, final=True)
+
     def close(self, _params: dict) -> dict:
         self._writer.close()
+        self._streams.clear()
+        if not self._loop.is_closed():
+            self._loop.close()
         return {"closed": True}
 
     # ── plumbing ─────────────────────────────────────────────────────────────
+
+    def _prefetch(self, params: dict, *, final: bool) -> dict:
+        """Drive one speculative retrieval tick; returns the memory block if ready."""
+        self._require_unlocked()
+        session_id = str(params.get("sessionId", "")).strip() or "default"
+        stream = self._streams.get(session_id)
+        if stream is None:
+            opener = getattr(self._memory, "open_prefetch", None) or getattr(self._memory, "open_stream", None)
+            if opener is None:
+                raise ValueError("backend does not support prefetch")
+            stream = opener()
+            self._streams[session_id] = stream
+        text = str(params.get("text", ""))
+        state = self._run(stream.feed_text(text) if final else stream.feed_partial(text))
+        context = str(getattr(state, "memory_context", "") or "")[: self._max_context_chars]
+        return {"context": context, "stale": bool(getattr(state, "stale", False))}
+
+    def _run(self, awaitable):
+        """Run a possibly-async backend call on the sidecar's persistent loop.
+
+        A fresh ``asyncio.run`` per request would break voicemem's stream, whose
+        speculation tasks belong to one loop for the life of the session.
+        """
+        if not inspect.isawaitable(awaitable):
+            return awaitable
+        return self._loop.run_until_complete(awaitable)
 
     def _require_unlocked(self) -> None:
         """The sidecar owns the permission state, so every backend is gated.
@@ -175,7 +255,7 @@ class Sidecar:
         if not isinstance(params, dict):
             raise ValueError("params must be an object")
         handler = getattr(self, method, None)
-        if method not in {"health", "set_permission", "recall", "observe", "flush", "close"} or handler is None:
+        if method not in _METHODS or handler is None:
             raise ValueError(f"unsupported method: {method}")
         return handler(params)
 

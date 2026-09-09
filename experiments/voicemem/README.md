@@ -28,6 +28,7 @@ packages it drags in.
 | `GATES.md` | The seven gates: status, evidence, and the work each one still needs |
 | `PRIOR_ART.md` | How qwen-audio-agent integrates VoiceMem, and what we should copy |
 | `INTEGRATION_PLAN.md` | Upstream study, the shape decision, and staged progress |
+| `WIRING_PLAN.md` | Executable product-wiring steps (CLI, voice loop, injection, desktop) |
 
 ## Run the sidecar
 

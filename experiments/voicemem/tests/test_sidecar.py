@@ -147,3 +147,27 @@ def test_timeout_is_reported_without_killing_the_process(tmp_path):
         assert client.request("health", timeout_ms=15_000)["backend"] == "fake"
     finally:
         client.close()
+
+
+def test_prefetch_requires_unlock_and_returns_context(sidecar):
+    with pytest.raises(SidecarError, match="MemoryLockedError"):
+        sidecar.request("prefetch_final", {"sessionId": "s1", "text": "我对什么过敏"})
+
+    sidecar.set_permission(unlocked=True)
+    sidecar.observe(session_id="s1", turns=[{"turn_id": "t1", "text": "我对花生过敏"}])
+    sidecar.flush(session_id="s1")
+
+    partial = sidecar.request("prefetch_partial", {"sessionId": "s1", "turnId": "t2", "revision": 1, "text": "我对什么"})
+    assert partial["stale"] is False
+    final = sidecar.request("prefetch_final", {"sessionId": "s1", "turnId": "t2", "revision": 1, "text": "我对什么食物过敏"})
+    assert "我对花生过敏" in final["context"]
+
+
+def test_prefetch_stream_is_kept_per_session(sidecar):
+    sidecar.set_permission(unlocked=True)
+    sidecar.observe(session_id="s1", turns=[{"turn_id": "t1", "text": "我住在杭州"}])
+    sidecar.flush(session_id="s1")
+    first = sidecar.request("prefetch_final", {"sessionId": "s1", "turnId": "t2", "revision": 1, "text": "我住哪里"})
+    second = sidecar.request("prefetch_final", {"sessionId": "s2", "turnId": "t3", "revision": 1, "text": "我住哪里"})
+    assert "我住在杭州" in first["context"]
+    assert "我住在杭州" in second["context"]
