@@ -162,6 +162,20 @@ class RemoteOpenAIEmbedder:
 
 
 
+
+def _embed_cache_resolve(model: str, texts: list[str], compute) -> list[list[float]]:
+    """Reuse voicemem's in-process (model, text) embedding cache when available.
+
+    voicemem only wires this into its built-in OpenAI embedders; our injected
+    embedders bypassed it, which is why a turn issued 8-11 calls instead of ~4.
+    """
+    try:
+        from voicemem.utils.common import embed_cache
+    except ImportError:  # pragma: no cover - voicemem is present in practice
+        return compute(texts)
+    return embed_cache.resolve(model, texts, compute)
+
+
 #: Loaded llama.cpp models, keyed by (path, n_ctx). voicemem issues ~11 embedding
 #: calls per turn, so the model must be loaded once and reused.
 _LLAMA_CACHE: dict[tuple[str, int], Any] = {}
@@ -245,10 +259,12 @@ class LlamaCppEmbedder:
     def embed_texts(self, texts):
         if not texts:
             return []
-        return self._embed([f"{self.doc_prefix}{text}" for text in texts])
+        return _embed_cache_resolve(
+            self.model_name, [f"{self.doc_prefix}{text}" for text in texts], self._embed
+        )
 
     def embed_query_text(self, text: str):
-        return self._embed([f"{self.query_prefix}{text}"])[0]
+        return _embed_cache_resolve(self.model_name, [f"{self.query_prefix}{text}"], self._embed)[0]
 
     def encode(self, texts, normalize_embeddings: bool = True):
         import numpy as np
@@ -260,7 +276,7 @@ class LlamaCppEmbedder:
             for text in texts
         ]
         # _embed already L2-normalizes; the slot classifier relies on that.
-        return np.asarray(self._embed(prepared), dtype="float32")
+        return np.asarray(_embed_cache_resolve(self.model_name, prepared, self._embed), dtype="float32")
 
 
 class VoiceMemAdapter:

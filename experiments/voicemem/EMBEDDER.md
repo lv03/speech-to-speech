@@ -47,6 +47,23 @@ batch=7 167 ms   batch=7 239 ms     # slot matrix, built twice (two classifier i
 batch=1  38 / 175 / 204 / 205 / 210 / 45 / 36 ms   # per-query embeddings
 ```
 
+### Embedding cache (wired after the first measurement)
+
+voicemem ships an in-process `(model, text)` embedding cache
+(`utils/common/embed_cache.py`, its own note: one ingest issues 15 calls, dedup
+leaves ~4) but only wires it into its **built-in** OpenAI embedders. Our injected
+embedders bypassed it, which is why a turn showed 8–11 calls. After routing both
+custom embedders through `embed_cache.resolve`:
+
+```text
+first  feed_final: 323 ms, 4 calls  [1×35, 1×68, 7×155, 7×236]
+repeat feed_final:  12 ms, 0 calls
+```
+
+A repeated turn is now free. The two `batch=7` calls are the slot matrix built
+concurrently by two classifier instances, which the cache cannot dedupe (both
+start before either finishes) — an in-flight dedup would remove one of them.
+
 ### Option A details
 
 - **Thread safety is mandatory.** Without a lock around `create_embedding`, the
