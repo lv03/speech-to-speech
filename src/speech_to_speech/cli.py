@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import time
 from collections.abc import Sequence
@@ -26,6 +27,8 @@ from speech_to_speech.security.voiceprint import (
     VoiceprintProfile,
 )
 from speech_to_speech.security.wake_word import DEFAULT_WAKE_WORD
+
+logger = logging.getLogger(__name__)
 
 Command = Literal["serve", "talk", "local", "voiceprint"]
 
@@ -171,6 +174,38 @@ def parse_talk_arguments(argv: Sequence[str]) -> RealtimeAudioClientConfig:
         default=defaults.connection_retry_timeout_s,
         help="Seconds to wait for the Realtime endpoint to become available.",
     )
+    parser.add_argument(
+        "--memory-backend",
+        dest="memory_backend",
+        choices=("off", "voicemem"),
+        default="off",
+        help="Optional long-term memory backend. Off by default; voicemem requires its own venv and sidecar paths.",
+    )
+    parser.add_argument(
+        "--memory-sidecar-python",
+        dest="memory_sidecar_python",
+        default=None,
+        help="Interpreter that has voicemem installed (its own venv, never this runtime).",
+    )
+    parser.add_argument(
+        "--memory-sidecar-script",
+        dest="memory_sidecar_script",
+        default=None,
+        help="Path to the memory sidecar JSONL entry point.",
+    )
+    parser.add_argument(
+        "--memory-root",
+        dest="memory_root",
+        default=None,
+        help="App-private directory for the memory store.",
+    )
+    parser.add_argument(
+        "--memory-max-chars",
+        dest="memory_max_chars",
+        type=int,
+        default=1200,
+        help="Maximum characters of the memory block injected into a response.",
+    )
     namespace = parser.parse_args(list(argv))
     tools: list[dict[str, Any]] = []
     tool_executor = None
@@ -200,7 +235,41 @@ def parse_talk_arguments(argv: Sequence[str]) -> RealtimeAudioClientConfig:
         tools=tools,
         tool_executor=tool_executor,
         tool_response_create=tool_response_create,
+        # `talk` has no wake-word gate, so the explicit CLI opt-in is the permission.
+        memory_provider=_build_memory_provider(namespace, unlocked=True),
     )
+
+
+def _build_memory_provider(namespace: argparse.Namespace, *, unlocked: bool = False):
+    """Build the optional memory provider. Returns None unless explicitly enabled.
+
+    ``unlocked`` mirrors the security gate. Callers that own a wake-word gate must
+    leave it False and unlock the provider from the gate callback instead.
+    """
+    backend = getattr(namespace, "memory_backend", "off")
+    if backend == "off":
+        return None
+    from speech_to_speech.memory import MemoryConfig, MemoryProvider
+
+    provider = MemoryProvider(
+        MemoryConfig(
+            backend=backend,
+            sidecar_python=namespace.memory_sidecar_python,
+            sidecar_script=namespace.memory_sidecar_script,
+            memory_root=namespace.memory_root,
+            max_context_chars=int(namespace.memory_max_chars),
+        )
+    )
+    started = provider.start()
+    if not started:
+        logger.warning(
+            "Memory backend %s is enabled but the sidecar did not start: %s",
+            backend,
+            provider.degraded_reason or "unknown",
+        )
+    elif unlocked:
+        provider.set_unlocked(True)
+    return provider
 
 
 def _default_voiceprint_path(name: str | None) -> Path:

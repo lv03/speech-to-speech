@@ -20,11 +20,21 @@ inject per response — with the four-gate policy in
 | Sidecar (JSONL, own lock state) | `experiments/voicemem/sidecar.py` | done, real E2E |
 | Sidecar client (product) | `src/speech_to_speech/memory/sidecar_client.py` | done, tested |
 | Provider (fail-closed, disabled by default) | `src/speech_to_speech/memory/provider.py` | done, tested |
-| CLI / config plumbing | — | **next** |
-| Voice-loop event mapping + injection | — | **next** |
+| Bridge (per-turn state, async offload) | `src/speech_to_speech/memory/bridge.py` | done, tested |
+| CLI flags + provider construction | `src/speech_to_speech/cli.py` | done, tested (talk path) |
+| Voice-loop event mapping + per-response injection | `audio_client.py` | done, tested |
+| Local-pipeline gate mirroring | — | **next** |
 | Desktop settings, IPC, lifecycle | — | **next** |
 
-## Step 1 — CLI and config plumbing
+## Step 1 — CLI and config plumbing (done for `talk`)
+
+Implemented: `--memory-backend {off,voicemem}`, `--memory-sidecar-python`,
+`--memory-sidecar-script`, `--memory-root`, `--memory-max-chars`, all defaulting
+off. `talk` has no wake-word gate, so its explicit CLI opt-in is the permission
+and the provider starts unlocked; callers that own a gate must leave it locked
+and unlock from the gate callback (`_build_memory_provider(..., unlocked=False)`).
+
+Original scope:
 
 Files: `src/speech_to_speech/cli.py`,
 `src/speech_to_speech/arguments_classes/local_audio_arguments.py`,
@@ -44,7 +54,20 @@ Tests: `tests/test_cli_defaults.py` (defaults are off; enabling without paths
 fails fast with `MemoryConfigError`), `tests/openai_realtime/test_pipeline_builder.py`
 (the client receives a provider only when enabled).
 
-## Step 2 — Voice-loop event mapping
+## Step 2 — Voice-loop event mapping (done)
+
+Implemented in `audio_client.py` via `_MemoryTurnHandler`: transcription deltas
+warm `prefetch_partial`, completion resolves `prefetch_final` + queues one
+`observe`, and the handler closes the bridge on session end. `RealtimeAudioClientConfig`
+gained `memory_provider`, and `MemoryBridge` offloads every provider call with
+`asyncio.to_thread`. Six tests cover injection, locked, disabled, active-response
+and empty-text paths.
+
+Still open: mirror the wake-word gate into `provider.set_unlocked(...)` inside
+`build_local_pipeline` (`pipeline_graph.py` builds `SecurityGateHandler` at line
+182 and exposes `is_locked` / `set_state_change_callback`).
+
+Original scope:
 
 File: `src/speech_to_speech/api/openai_realtime/audio_client.py`.
 
@@ -58,7 +81,16 @@ File: `src/speech_to_speech/api/openai_realtime/audio_client.py`.
 
 Tests: unit tests with a fake provider recording calls; no sidecar process.
 
-## Step 3 — Per-response injection
+## Step 3 — Per-response injection (done)
+
+Implemented: when the provider is enabled, `build_session_update` sets
+`turn_detection.create_response = false` and the handler creates every response
+locally, attaching `response.instructions = <memory block>` only when the
+four-gate policy injects. Server VAD still handles barge-in
+(`interrupt_response: true`), and a create is skipped with a warning while
+another response is active. Default (memory off) is byte-identical to before.
+
+Original scope:
 
 File: `audio_client.py` (`_ToolCallCoordinator` and the response path).
 

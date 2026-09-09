@@ -15,6 +15,7 @@ from speech_to_speech.api.openai_realtime.audio_client import (
     RealtimeAudioClientConfig,
     ToolResult,
     _FriendlyEventRenderer,
+    _MemoryTurnHandler,
     _ToolCallCoordinator,
     _ToolCoordinatorError,
     build_session_update,
@@ -24,6 +25,7 @@ from speech_to_speech.api.openai_realtime.audio_client import (
     normalize_realtime_url,
     run_realtime_audio_client,
 )
+from speech_to_speech.memory.injection import HEADER_ZH
 
 TOOL_DEFINITION = {
     "type": "function",
@@ -1487,3 +1489,120 @@ def test_talk_client_uses_signal_driven_shutdown(monkeypatch):
         (signal.SIGINT, "previous-SIGINT"),
         (signal.SIGTERM, "previous-SIGTERM"),
     ]
+
+
+# ── optional long-term memory wiring ─────────────────────────────────────────
+
+
+class _FakeMemoryProvider:
+    enabled = True
+
+    def __init__(self, *, context="用户对坚果过敏") -> None:
+        self.context = context
+        self.unlocked = True
+        self.observed: list[list[dict]] = []
+
+    def set_unlocked(self, unlocked):
+        self.unlocked = bool(unlocked)
+
+    def prefetch_partial(self, *, session_id, turn_id, revision, text):
+        return ""
+
+    def prefetch_final(self, *, session_id, turn_id, revision, text):
+        return self.context if self.unlocked else ""
+
+    def observe(self, *, session_id, turns):
+        if not self.unlocked:
+            return {"accepted": [], "rejected": [], "pendingTurns": 0}
+        self.observed.append(list(turns))
+        return {"accepted": [t["turn_id"] for t in turns], "rejected": [], "pendingTurns": len(turns)}
+
+    def flush(self, *, session_id=None):
+        return 0
+
+    def close(self):
+        return None
+
+    def build_injection(self, context, *, is_user_turn=True):
+        from speech_to_speech.memory.injection import build_injection
+
+        return build_injection(context, enabled=True, unlocked=self.unlocked, is_user_turn=is_user_turn)
+
+
+def test_session_update_keeps_server_side_responses_without_memory():
+    update = build_session_update(RealtimeAudioClientConfig())
+    assert "create_response" not in update["session"]["audio"]["input"]["turn_detection"]
+
+
+def test_session_update_hands_response_creation_to_the_client_with_memory():
+    update = build_session_update(
+        RealtimeAudioClientConfig(memory_provider=_FakeMemoryProvider())
+    )
+    turn_detection = update["session"]["audio"]["input"]["turn_detection"]
+    assert turn_detection["create_response"] is False
+    assert turn_detection["interrupt_response"] is True
+
+
+async def test_memory_handler_injects_per_response_and_observes_once():
+    provider = _FakeMemoryProvider()
+    conn = RecordingConnection()
+    handler = _MemoryTurnHandler(conn, provider)
+
+    await handler.handle_event(_transcription_delta("item_1", "我对什么食物"))
+    await handler.handle_event(_transcription_completed("item_1", "我对什么食物过敏？"))
+
+    assert [event["type"] for event in conn.sent] == ["response.create"]
+    assert conn.sent[0]["response"]["instructions"].startswith(HEADER_ZH)
+    assert "用户对坚果过敏" in conn.sent[0]["response"]["instructions"]
+    assert provider.observed == [[{"turn_id": "item_1", "turn_revision": 0, "text": "我对什么食物过敏？"}]]
+    await handler.close()
+
+
+async def test_memory_handler_creates_a_plain_response_when_locked():
+    provider = _FakeMemoryProvider()
+    provider.set_unlocked(False)
+    conn = RecordingConnection()
+    handler = _MemoryTurnHandler(conn, provider)
+
+    await handler.handle_event(_transcription_completed("item_1", "我对什么食物过敏？"))
+
+    assert conn.sent == [{"type": "response.create"}]
+    assert provider.observed == []
+    await handler.close()
+
+
+async def test_memory_handler_skips_while_a_response_is_active():
+    provider = _FakeMemoryProvider()
+    conn = RecordingConnection()
+    handler = _MemoryTurnHandler(conn, provider)
+    await handler.handle_event(response_created("response_1"))
+
+    await handler.handle_event(_transcription_completed("item_1", "我住哪里"))
+
+    assert conn.sent == []
+    await handler.close()
+
+
+async def test_memory_handler_ignores_partials_without_transcript():
+    provider = _FakeMemoryProvider()
+    conn = RecordingConnection()
+    handler = _MemoryTurnHandler(conn, provider)
+    await handler.handle_event(_transcription_delta("item_1", ""))
+    assert conn.sent == []
+    await handler.close()
+
+
+def _transcription_delta(item_id: str, delta: str):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(type="conversation.item.input_audio_transcription.delta", item_id=item_id, delta=delta)
+
+
+def _transcription_completed(item_id: str, transcript: str):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        type="conversation.item.input_audio_transcription.completed",
+        item_id=item_id,
+        transcript=transcript,
+    )

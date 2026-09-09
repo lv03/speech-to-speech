@@ -67,6 +67,10 @@ class RealtimeAudioClientConfig:
     tools: list[dict[str, Any]] = field(default_factory=list)
     tool_executor: ToolExecutor | None = None
     tool_response_create: bool = True
+    #: Optional long-term memory provider (speech_to_speech.memory.MemoryProvider).
+    #: When set and enabled, this client creates responses locally so it can attach
+    #: a per-response memory block; disabled by default.
+    memory_provider: Any | None = None
 
     def __post_init__(self) -> None:
         if not 0 <= self.playback_buffer_ms < float("inf"):
@@ -219,9 +223,13 @@ def build_session_update(config: RealtimeAudioClientConfig) -> dict[str, Any]:
             "or 24000 for the OpenAI Realtime PCM schema."
         )
 
-    input_config: dict[str, Any] = {
-        "turn_detection": {"type": "server_vad", "interrupt_response": True},
-    }
+    turn_detection: dict[str, Any] = {"type": "server_vad", "interrupt_response": True}
+    if getattr(config.memory_provider, "enabled", False):
+        # Memory must ride the response, and the server cannot attach per-response
+        # instructions, so the client creates responses itself (server VAD stays
+        # on for barge-in only).
+        turn_detection["create_response"] = False
+    input_config: dict[str, Any] = {"turn_detection": turn_detection}
     output_config: dict[str, Any] = {}
 
     input_format = maybe_pcm_format(config.send_rate)
@@ -898,6 +906,53 @@ async def _wait_for_stop(stop_event: Event) -> None:
         await asyncio.to_thread(stop_event.wait, 0.1)
 
 
+class _MemoryTurnHandler:
+    """Feeds transcription events to the memory bridge and creates responses locally.
+
+    Only constructed when a memory provider is configured; when it is active the
+    session runs with ``turn_detection.create_response = false`` so every reply is
+    created here, with the memory block attached when the policy allows it.
+    """
+
+    def __init__(self, conn: Any, provider: Any) -> None:
+        from speech_to_speech.memory.bridge import MemoryBridge
+
+        self._conn = conn
+        self._bridge = MemoryBridge(provider)
+        self._partials: dict[str, str] = {}
+        self._response_active = False
+
+    async def handle_event(self, event: Any) -> None:
+        event_type = getattr(event, "type", "")
+        if event_type == "conversation.item.input_audio_transcription.delta":
+            item_id = str(getattr(event, "item_id", "") or "")
+            text = self._partials.get(item_id, "") + (getattr(event, "delta", "") or "")
+            self._partials[item_id] = text
+            await self._bridge.on_partial(item_id=item_id, text=text)
+        elif event_type == "conversation.item.input_audio_transcription.completed":
+            item_id = str(getattr(event, "item_id", "") or "")
+            transcript = getattr(event, "transcript", "") or ""
+            self._partials.pop(item_id, None)
+            decision = await self._bridge.on_final(item_id=item_id, text=transcript)
+            await self._create_response(decision)
+        elif event_type == "response.created":
+            self._response_active = True
+        elif event_type in {"response.done", "response.cancelled", "response.failed"}:
+            self._response_active = False
+
+    async def _create_response(self, decision: Any) -> None:
+        if self._response_active:
+            logger.warning("Memory: skipping response.create while another response is active")
+            return
+        payload: dict[str, Any] = {"type": "response.create"}
+        if getattr(decision, "inject", False) and getattr(decision, "message", None):
+            payload["response"] = {"instructions": decision.message["content"]}
+        await self._conn.send(payload)
+
+    async def close(self) -> None:
+        await self._bridge.close()
+
+
 async def _run_audio_session(
     conn: Any,
     config: RealtimeAudioClientConfig,
@@ -938,9 +993,17 @@ async def _run_audio_session(
                 }
             )
 
+    memory_handler = (
+        _MemoryTurnHandler(conn, config.memory_provider)
+        if getattr(config.memory_provider, "enabled", False)
+        else None
+    )
+
     async def receive_events() -> None:
         while not stop_event.is_set():
             event = await conn.recv()
+            if memory_handler is not None:
+                await memory_handler.handle_event(event)
             tool_calls.handle_event(event)
             handle_server_event(
                 event,
@@ -992,6 +1055,11 @@ async def _run_audio_session(
                 raise task.exception()  # type: ignore[misc]
     finally:
         stop_event.set()
+        if memory_handler is not None:
+            try:
+                await memory_handler.close()
+            except Exception:
+                logger.exception("Failed to close the memory bridge")
         await tool_calls.close()
         renderer.clear_live_user_text()
         renderer.reset_assistant_text()
