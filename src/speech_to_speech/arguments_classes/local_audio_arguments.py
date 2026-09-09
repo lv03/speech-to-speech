@@ -39,6 +39,42 @@ class LocalAudioArguments:
             "help": "Pause local microphone capture while audio is playing. Disabled by default so barge-in works."
         },
     )
+    local_audio_memory_backend: Optional[str] = field(
+        default="off",
+        metadata={
+            "help": "Optional long-term memory backend for the local command: off (default) or voicemem.",
+            "choices": ("off", "voicemem"),
+            "aliases": ["--memory-backend"],
+        },
+    )
+    local_audio_memory_sidecar_python: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Interpreter that has voicemem installed (its own venv, never this runtime).",
+            "aliases": ["--memory-sidecar-python"],
+        },
+    )
+    local_audio_memory_sidecar_script: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Path to the memory sidecar JSONL entry point.",
+            "aliases": ["--memory-sidecar-script"],
+        },
+    )
+    local_audio_memory_root: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "App-private directory for the memory store.",
+            "aliases": ["--memory-root"],
+        },
+    )
+    local_audio_memory_max_chars: int = field(
+        default=1200,
+        metadata={
+            "help": "Maximum characters of the memory block injected into a response.",
+            "aliases": ["--memory-max-chars"],
+        },
+    )
     local_audio_print_json: bool = field(
         default=False,
         metadata={"help": "Print raw Realtime events received by the packaged local audio client."},

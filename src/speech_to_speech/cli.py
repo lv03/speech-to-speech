@@ -249,27 +249,16 @@ def _build_memory_provider(namespace: argparse.Namespace, *, unlocked: bool = Fa
     backend = getattr(namespace, "memory_backend", "off")
     if backend == "off":
         return None
-    from speech_to_speech.memory import MemoryConfig, MemoryProvider
+    from speech_to_speech.memory import build_memory_provider
 
-    provider = MemoryProvider(
-        MemoryConfig(
-            backend=backend,
-            sidecar_python=namespace.memory_sidecar_python,
-            sidecar_script=namespace.memory_sidecar_script,
-            memory_root=namespace.memory_root,
-            max_context_chars=int(namespace.memory_max_chars),
-        )
+    return build_memory_provider(
+        backend=backend,
+        sidecar_python=namespace.memory_sidecar_python,
+        sidecar_script=namespace.memory_sidecar_script,
+        memory_root=namespace.memory_root,
+        max_context_chars=int(namespace.memory_max_chars),
+        unlocked=unlocked,
     )
-    started = provider.start()
-    if not started:
-        logger.warning(
-            "Memory backend %s is enabled but the sidecar did not start: %s",
-            backend,
-            provider.degraded_reason or "unknown",
-        )
-    elif unlocked:
-        provider.set_unlocked(True)
-    return provider
 
 
 def _default_voiceprint_path(name: str | None) -> Path:

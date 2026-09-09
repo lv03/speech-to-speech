@@ -103,3 +103,77 @@ def test_local_emits_initial_security_state_for_desktop_sync(monkeypatch, capsys
 
     assert gate.callbacks, "expected the local pipeline to register a security-state callback"
     assert 'EVENT: {"type": "security.locked"}' in capsys.readouterr().out
+
+
+def test_local_keeps_memory_off_by_default(monkeypatch):
+    unit = SimpleNamespace(handlers=[object()])
+    monkeypatch.setattr("speech_to_speech.pipeline_graph.PipelineGraph.instantiate", lambda self, **_kwargs: unit)
+
+    args = _default_args()
+    manager = build_local_pipeline(args, Event())
+    client = manager.handlers[-1]
+
+    assert client.config.memory_provider is None
+
+
+def test_local_builds_a_locked_memory_provider_and_mirrors_the_gate(monkeypatch):
+    calls: list[bool] = []
+
+    class FakeProvider:
+        enabled = True
+
+        def set_unlocked(self, unlocked):
+            calls.append(bool(unlocked))
+
+    provider = FakeProvider()
+    monkeypatch.setattr(
+        "speech_to_speech.memory.build_memory_provider",
+        lambda **_kwargs: provider,
+    )
+
+    class FakeGate:
+        is_locked = True
+
+        def __init__(self):
+            self.callbacks = []
+
+        def set_state_change_callback(self, callback):
+            self.callbacks.append(callback)
+
+    gate = FakeGate()
+    unit = SimpleNamespace(handlers=[gate])
+    monkeypatch.setattr("speech_to_speech.pipeline_graph.PipelineGraph.instantiate", lambda self, **_kwargs: unit)
+
+    args = parse_arguments(["--memory-backend", "voicemem"], command="local")
+    manager = build_local_pipeline(args, Event())
+    client = manager.handlers[-1]
+
+    assert client.config.memory_provider is provider
+    # Initial locked state is mirrored, then unlocking the gate unlocks memory.
+    assert calls == [False]
+    gate.callbacks[0](False)
+    assert calls == [False, True]
+    gate.callbacks[0](True)
+    assert calls == [False, True, False]
+
+
+def test_local_unlocks_memory_when_there_is_no_security_gate(monkeypatch):
+    calls: list[bool] = []
+
+    class FakeProvider:
+        enabled = True
+
+        def set_unlocked(self, unlocked):
+            calls.append(bool(unlocked))
+
+    monkeypatch.setattr(
+        "speech_to_speech.memory.build_memory_provider",
+        lambda **_kwargs: FakeProvider(),
+    )
+    unit = SimpleNamespace(handlers=[object()])
+    monkeypatch.setattr("speech_to_speech.pipeline_graph.PipelineGraph.instantiate", lambda self, **_kwargs: unit)
+
+    args = parse_arguments(["--memory-backend", "voicemem"], command="local")
+    build_local_pipeline(args, Event())
+
+    assert calls == [True]

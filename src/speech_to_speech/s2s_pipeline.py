@@ -488,19 +488,48 @@ def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadMana
         else:
             tools, tool_executor, tool_response_create = load_realtime_tool_modules(module_names)
     server_manager = build_pipeline(args, stop_event, host="127.0.0.1")
+
+    from speech_to_speech.memory import build_memory_provider
+
+    # Memory stays locked until the wake-word gate opens; the gate is the only
+    # permission source, so the provider is built locked even when the backend is
+    # explicitly enabled.
+    memory_provider = build_memory_provider(
+        backend=local_audio.local_audio_memory_backend,
+        sidecar_python=local_audio.local_audio_memory_sidecar_python,
+        sidecar_script=local_audio.local_audio_memory_sidecar_script,
+        memory_root=local_audio.local_audio_memory_root,
+        max_context_chars=local_audio.local_audio_memory_max_chars,
+    )
+
     # Surface the wake-word security gate's locked/unlocked state to stdout as
     # EVENT lines so the desktop app can mirror it (sleep the orb while locked,
-    # wake it on unlock). The gate lives inside the server pipeline; emitting
-    # JSONL keeps the parent process from reaching into the handler chain.
-    if local_audio.local_audio_print_json:
-        for handler in server_manager.handlers:
-            set_state_cb = getattr(handler, "set_state_change_callback", None)
-            if callable(set_state_cb):
-                set_state_cb(_emit_security_state)
-                initial_locked = getattr(handler, "is_locked", None)
-                if initial_locked is not None:
-                    _emit_security_state(bool(initial_locked))
-                break
+    # wake it on unlock), and mirror it into the memory provider. The gate lives
+    # inside the server pipeline; emitting JSONL keeps the parent process from
+    # reaching into the handler chain.
+    gate = next(
+        (
+            handler
+            for handler in server_manager.handlers
+            if callable(getattr(handler, "set_state_change_callback", None))
+        ),
+        None,
+    )
+    if gate is not None:
+
+        def _on_security_state(locked: bool) -> None:
+            if memory_provider is not None:
+                memory_provider.set_unlocked(not locked)
+            if local_audio.local_audio_print_json:
+                _emit_security_state(locked)
+
+        gate.set_state_change_callback(_on_security_state)
+        initial_locked = getattr(gate, "is_locked", None)
+        if initial_locked is not None:
+            _on_security_state(bool(initial_locked))
+    elif memory_provider is not None:
+        # No wake-word gate: the explicit CLI opt-in is the permission.
+        memory_provider.set_unlocked(True)
     client = RealtimeAudioClient(
         stop_event,
         RealtimeAudioClientConfig(
@@ -515,6 +544,7 @@ def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadMana
             tools=tools,
             tool_executor=tool_executor,
             tool_response_create=tool_response_create,
+            memory_provider=memory_provider,
         ),
     )
     handlers: list[Any] = [*server_manager.handlers, client]

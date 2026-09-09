@@ -11,6 +11,7 @@ Disabled by default: nothing constructs a provider unless
 """
 
 from .config import MemoryConfig
+from .factory import build_memory_provider
 from .injection import InjectionDecision, build_injection, inject_into_messages
 from .provider import MemoryProvider, MemoryProviderError
 from .sidecar_client import SidecarClient, SidecarError, SidecarTimeout
@@ -24,5 +25,6 @@ __all__ = [
     "SidecarError",
     "SidecarTimeout",
     "build_injection",
+    "build_memory_provider",
     "inject_into_messages",
 ]

@@ -23,7 +23,7 @@ inject per response — with the four-gate policy in
 | Bridge (per-turn state, async offload) | `src/speech_to_speech/memory/bridge.py` | done, tested |
 | CLI flags + provider construction | `src/speech_to_speech/cli.py` | done, tested (talk path) |
 | Voice-loop event mapping + per-response injection | `audio_client.py` | done, tested |
-| Local-pipeline gate mirroring | — | **next** |
+| Local-pipeline gate mirroring | `s2s_pipeline.py`, `memory/factory.py` | done, tested |
 | Desktop settings, IPC, lifecycle | — | **next** |
 
 ## Step 1 — CLI and config plumbing (done for `talk`)
@@ -63,9 +63,11 @@ gained `memory_provider`, and `MemoryBridge` offloads every provider call with
 `asyncio.to_thread`. Six tests cover injection, locked, disabled, active-response
 and empty-text paths.
 
-Still open: mirror the wake-word gate into `provider.set_unlocked(...)` inside
-`build_local_pipeline` (`pipeline_graph.py` builds `SecurityGateHandler` at line
-182 and exposes `is_locked` / `set_state_change_callback`).
+Gate mirroring is done: `build_local_pipeline` finds the handler exposing
+`set_state_change_callback`, mirrors `is_locked` into `provider.set_unlocked(...)`
+alongside the existing stdout emitter, and unlocks immediately only when no gate
+exists (explicit CLI opt-in). Three pipeline-builder tests cover the locked,
+unlock-on-gate and no-gate paths.
 
 Original scope:
 
