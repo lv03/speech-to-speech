@@ -40,6 +40,8 @@ let gateway: EmbeddedGateway | null = null
 let voice: EmbeddedVoice | null = null
 /** 最近一次记忆后端健康状态（由语音进程的 EVENT 行推送）。 */
 let memoryHealth: Record<string, unknown> | null = null
+/** QMD 守护进程的 /embed 基础地址；记忆开启且守护进程就绪时才有值。 */
+let memoryEmbedderBaseUrl = ''
 let settingsStore: SettingsStore | null = null
 let secretStore: SecretStore | null = null
 let knowledgeService: QmdService | null = null
@@ -461,6 +463,19 @@ async function startKnowledgeProxy(): Promise<void> {
   knowledgeProxyEndpoint = endpoint
 }
 
+/** Start the QMD daemon for memory embeddings and remember its /embed base URL. */
+async function startMemoryEmbeddings(): Promise<void> {
+  memoryEmbedderBaseUrl = ''
+  const settings = settingsStore?.get()
+  if (!settings?.memoryEnabled || !runtimeManager) return
+  const status = await runtimeManager.ensureMemoryEmbeddings()
+  if (!status.ok) {
+    console.warn('[desktop] 记忆嵌入不可用：', status.reason ?? 'unknown')
+    return
+  }
+  memoryEmbedderBaseUrl = status.baseUrl ?? ''
+}
+
 async function startVoice(): Promise<void> {
   const settings = settingsStore?.get()
   if (!settings?.enableVoice) return
@@ -505,6 +520,7 @@ async function startVoice(): Promise<void> {
     memoryRoot: join(app.getPath('userData'), 'memory'),
     memoryExtractionBaseUrl: settings.memoryExtractionBaseUrl,
     memoryExtractionModel: settings.memoryExtractionModel,
+    memoryEmbedderBaseUrl,
     memoryMaxChars: settings.memoryMaxChars,
     onLog: (line) => pushVoiceLog(line),
     onEvent: (event) => {
@@ -917,6 +933,7 @@ app.whenReady().then(async () => {
     indexFingerprints,
     retrievalPreference: effectiveRetrievalPreference,
     preheatEnabled: settingsStore?.get().knowledgePreheatEnabled ?? true,
+    memoryEnabled: settingsStore?.get().memoryEnabled ?? false,
     modelUnavailableReason: app.isPackaged ? runtimeManifestResult.error : undefined,
     qmdRuntime,
     qmdClient,
@@ -1002,6 +1019,16 @@ app.whenReady().then(async () => {
         await runtimeManager.setRetrievalPreference(saved.knowledgeRetrievalMode)
       }
       runtimeManager.setPreheatEnabled(saved.knowledgePreheatEnabled)
+      if (before && before.memoryEnabled !== saved.memoryEnabled) {
+        runtimeManager.setMemoryEnabled(saved.memoryEnabled)
+        await startMemoryEmbeddings()
+        if (voice) {
+          const runningVoice = voice
+          voice = null
+          await runningVoice.stop()
+          void startVoice().catch((error) => console.error('[desktop] 记忆设置重启语音失败：', error))
+        }
+      }
     }
     // 皮肤变化 → 重载 orb 让新皮肤生效
     if (before && saved && candidate.orbSkin !== undefined && before.orbSkin !== saved.orbSkin) {
@@ -1100,6 +1127,7 @@ app.whenReady().then(async () => {
     subscribeGatewayEvents,
     proxy: startKnowledgeProxy,
     restoreIndexes: () => runtimeManager?.restoreExistingIndexes() ?? Promise.resolve(),
+    memoryEmbeddings: startMemoryEmbeddings,
     voice: startVoice,
   })
     .catch((error) => {

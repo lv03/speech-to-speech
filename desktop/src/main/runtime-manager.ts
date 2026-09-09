@@ -72,13 +72,15 @@ export interface RuntimeManagerOptions {
   sleep?: (milliseconds: number) => Promise<void>
   retryDelaysMs?: number[]
   watchdogIntervalMs?: number
+  /** Long-term memory needs QMD's embedding model even without a collection. */
+  memoryEnabled?: boolean
 }
 
-export interface RuntimeProcessStops {
-  voice?: () => Promise<void>
-  proxy?: () => Promise<void>
-  qmd?: () => Promise<void>
-  gateway?: () => Promise<void>
+export interface MemoryEmbeddingsStatus {
+  ok: boolean
+  reason?: string
+  /** Base URL for the patched POST /embed route (no /mcp suffix). */
+  baseUrl?: string
 }
 
 export interface RuntimeProcessStarts {
@@ -86,7 +88,15 @@ export interface RuntimeProcessStarts {
   subscribeGatewayEvents?: () => void
   proxy: () => Promise<void>
   restoreIndexes: () => Promise<void>
+  memoryEmbeddings?: () => Promise<void>
   voice: () => Promise<void>
+}
+
+export interface RuntimeProcessStops {
+  voice?: () => Promise<void>
+  proxy?: () => Promise<void>
+  qmd?: () => Promise<void>
+  gateway?: () => Promise<void>
 }
 
 export async function startProcessesInOrder(starts: RuntimeProcessStarts): Promise<void> {
@@ -97,6 +107,13 @@ export async function startProcessesInOrder(starts: RuntimeProcessStarts): Promi
     await starts.restoreIndexes()
   } catch {
     // Knowledge restoration is best effort; voice must remain available.
+  }
+  try {
+    // Memory embeddings need the QMD daemon even without a collection; a failure
+    // here must not block the voice engine.
+    await starts.memoryEmbeddings?.()
+  } catch {
+    // Degraded memory is reported through memory.health.
   }
   await starts.voice()
 }
@@ -145,6 +162,7 @@ export class RuntimeManager {
   private stopped = false
   private retrievalPreference: RetrievalPreference
   private preheatEnabled: boolean
+  private memoryEnabled: boolean
   private currentState: RuntimeState = {
     name: 'no_collection',
     updatedAt: new Date(0).toISOString(),
@@ -169,6 +187,7 @@ export class RuntimeManager {
     this.now = options.now ?? (() => new Date())
     this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
     this.retryDelaysMs = options.retryDelaysMs ?? [1000, 2000, 4000]
+    this.memoryEnabled = options.memoryEnabled === true
     this.retrievalPreference = options.retrievalPreference ?? 'auto'
     this.preheatEnabled = options.preheatEnabled ?? true
     this.service.setRetrievalMode?.(this.executionMode())
@@ -309,6 +328,43 @@ export class RuntimeManager {
       this.invalidateHandles?.()
       this.setState(enabled.length > 0 ? 'needs_consent' : 'no_collection', undefined, enabled.length > 0 ? 'Retrieval profile changed; reindex required' : undefined)
     })
+  }
+
+  setMemoryEnabled(enabled: boolean): void {
+    this.memoryEnabled = enabled
+  }
+
+  /**
+   * Make sure the QMD daemon serves embeddings for the memory backend.
+   *
+   * Memory reuses QMD's already-loaded embedding model, so it needs the daemon
+   * even when no collection exists. The model is never downloaded here: if it is
+   * not installed, memory reports a degraded state and the user consents first.
+   */
+  async ensureMemoryEmbeddings(): Promise<MemoryEmbeddingsStatus> {
+    if (!this.memoryEnabled) {
+      const snapshot = await this.service.snapshot()
+      const enabled = snapshot.collections.filter((collection) => collection.enabled)
+      if (enabled.length === 0 && this.qmdStarted) {
+        await this.qmdRuntime.stop().catch(() => undefined)
+        this.qmdStarted = false
+        this.clearQmdBindings()
+      }
+      return { ok: false, reason: 'memory is disabled' }
+    }
+    if (this.stopped) return { ok: false, reason: 'knowledge runtime is stopping' }
+    const installed = await this.modelStore.inspect(this.modelAssetId).catch(() => ({ present: false, bytes: 0 }))
+    if (!installed.present) return { ok: false, reason: 'embedding model is not installed' }
+    try {
+      await this.modelStore.ensureInstalled(this.modelAssetId)
+      await this.ensureQmdReady()
+      if (!(await this.qmdRuntime.health())) return { ok: false, reason: 'QMD daemon health check failed' }
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : 'QMD daemon unavailable' }
+    }
+    const endpoint = (this.qmdRuntime as { endpoint?: { baseUrl?: string } }).endpoint
+    const baseUrl = endpoint?.baseUrl?.replace(/\/mcp$/, '')
+    return { ok: true, ...(baseUrl ? { baseUrl } : {}) }
   }
 
   setPreheatEnabled(enabled: boolean): void {

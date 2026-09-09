@@ -35,6 +35,11 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The adapter imports speech_to_speech.memory.embedder, so the repository source
+# tree must be importable in the sidecar venv too (packaging ships it alongside).
+_REPO_SRC = Path(__file__).resolve().parents[2] / "src"
+if _REPO_SRC.is_dir() and str(_REPO_SRC) not in sys.path:
+    sys.path.insert(0, str(_REPO_SRC))
 
 from adapter import (  # noqa: E402
     MemoryHit,
@@ -154,6 +159,8 @@ class Sidecar:
             on_error=self._record_error,
         )
         self._last_error = ""
+        self._backend_ready: bool | None = None
+        self._backend_error = ""
         self._streams: dict[str, Any] = {}
         self._loop = asyncio.new_event_loop()
 
@@ -167,7 +174,30 @@ class Sidecar:
             "unlocked": self._unlocked,
             "pendingTurns": self._writer.pending(),
             "warning": self._last_error,
+            "backendReady": self._probe_backend(),
+            "backendError": self._backend_error,
         }
+
+    def _probe_backend(self) -> bool:
+        """Build the backend once so a missing embedding endpoint is visible.
+
+        The memory backend fails closed when the QMD daemon is not serving
+        embeddings; probing at startup turns that into a health field the app can
+        show, instead of a silent no-op on the first turn.
+        """
+        if self._backend_ready is not None:
+            return self._backend_ready
+        ensure = getattr(self._memory, "_ensure_backend", None)
+        if ensure is None:  # fake backend: nothing to probe
+            self._backend_ready = True
+            return True
+        try:
+            ensure()
+            self._backend_ready = True
+        except Exception as exc:  # noqa: BLE001 - report, never crash the boundary
+            self._backend_ready = False
+            self._backend_error = f"{type(exc).__name__}: {exc}"[:200]
+        return bool(self._backend_ready)
 
     def set_permission(self, params: dict) -> dict:
         self._unlocked = bool(params.get("unlocked"))

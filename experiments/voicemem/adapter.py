@@ -30,12 +30,18 @@ Fail-closed rules encoded here:
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence, runtime_checkable
+
+from speech_to_speech.memory.embedder import EmbeddingUnavailableError, QmdEmbedder  # noqa: E402
+from speech_to_speech.memory.embedder import embed_cache_resolve as _embed_cache_resolve
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_TOP_K = 5
 
@@ -182,19 +188,6 @@ def _warm_classifier(classifier) -> None:
         pass
 
 
-def _embed_cache_resolve(model: str, texts: list[str], compute) -> list[list[float]]:
-    """Reuse voicemem's in-process (model, text) embedding cache when available.
-
-    voicemem only wires this into its built-in OpenAI embedders; our injected
-    embedders bypassed it, which is why a turn issued 8-11 calls instead of ~4.
-    """
-    try:
-        from voicemem.utils.common import embed_cache
-    except ImportError:  # pragma: no cover - voicemem is present in practice
-        return compute(texts)
-    return embed_cache.resolve(model, texts, compute)
-
-
 #: Loaded llama.cpp models, keyed by (path, n_ctx). voicemem issues ~11 embedding
 #: calls per turn, so the model must be loaded once and reused.
 _LLAMA_CACHE: dict[tuple[str, int], Any] = {}
@@ -297,80 +290,6 @@ class LlamaCppEmbedder:
         # _embed already L2-normalizes; the slot classifier relies on that.
         return np.asarray(_embed_cache_resolve(self.model_name, prepared, self._embed), dtype="float32")
 
-
-
-class QmdEmbedder:
-    """Embeddings from the QMD daemon's patched ``POST /embed`` route.
-
-    Reuses the model QMD already has loaded (one instance, no extra process, no
-    llama-cpp-python). The route applies the model-specific prompt format, so the
-    caller sends raw text and just says whether it is a query.
-    """
-
-    def __init__(self, *, base_url: str, timeout: float = 30.0) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.timeout = float(timeout)
-        self._dimensions: int | None = None
-        self._client = None
-
-    def _http(self):
-        if self._client is None:
-            import httpx
-
-            self._client = httpx.Client(timeout=self.timeout)
-        return self._client
-
-    def _post(self, texts: list[str], *, is_query: bool) -> list[list[float]]:
-        response = self._http().post(
-            f"{self.base_url}/embed",
-            json={"texts": texts, "isQuery": is_query},
-        )
-        response.raise_for_status()
-        payload = response.json()
-        rows = sorted(payload["data"], key=lambda row: row.get("index", 0))
-        return [list(map(float, row["embedding"])) for row in rows]
-
-    @property
-    def model_name(self) -> str:
-        return f"qmd-embed ({self.base_url})"
-
-    @property
-    def dimensions(self) -> int:
-        if self._dimensions is None:
-            self._dimensions = len(self._post(["dimension probe"], is_query=False)[0])
-        return self._dimensions
-
-    def embed_texts(self, texts):
-        if not texts:
-            return []
-        return _embed_cache_resolve(self.model_name, list(texts), lambda batch: self._post(batch, is_query=False))
-
-    def embed_query_text(self, text: str):
-        return _embed_cache_resolve(self.model_name, [text], lambda batch: self._post(batch, is_query=True))[0]
-
-    def encode(self, texts, normalize_embeddings: bool = True):
-        import numpy as np
-
-        # The slot classifier marks queries with a "query: " prefix; batch by role
-        # so a slot matrix costs one call instead of one per slot.
-        prepared = [(text, text.startswith("query: ")) for text in texts]
-        rows: list[list[float] | None] = [None] * len(prepared)
-        for is_query in (False, True):
-            indexes = [index for index, (_, query) in enumerate(prepared) if query is is_query]
-            if not indexes:
-                continue
-            batch = [prepared[index][0] for index in indexes]
-            vectors = _embed_cache_resolve(
-                self.model_name, batch, lambda items, q=is_query: self._post(items, is_query=q)
-            )
-            for index, vector in zip(indexes, vectors):
-                rows[index] = vector
-        matrix = np.asarray(rows, dtype="float32")
-        if normalize_embeddings:
-            norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-            norms[norms == 0] = 1.0
-            matrix = matrix / norms
-        return matrix
 
 
 class VoiceMemAdapter:
@@ -573,6 +492,15 @@ class _VoicememBackend:
             from voicemem.leftbrain.cognitive_graph.local_query_classifier import LocalQueryClassifier
 
             shared = QmdEmbedder(base_url=embed_base)
+            # Fail closed: if the QMD daemon is not serving embeddings, memory must
+            # report a degraded state rather than quietly loading another model.
+            try:
+                dimensions = shared.probe()
+            except EmbeddingUnavailableError as exc:
+                raise MemoryBackendUnavailableError(
+                    f"memory embeddings unavailable at {embed_base} ({exc})"
+                ) from exc
+            logger.info("Memory embeddings served by QMD (%s, %d dims)", embed_base, dimensions)
             # One classifier object (not a factory): two instances would build the
             # slot matrix twice, and the concurrent duplicate misses the embed cache.
             classifier = LocalQueryClassifier(model=shared)

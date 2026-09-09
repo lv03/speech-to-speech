@@ -34,6 +34,11 @@ class MemoryConfig:
     extraction_base_url: str | None = None
     #: Chat model used for fact extraction (empty = voicemem default).
     extraction_model: str | None = None
+    #: Where memory embeddings come from. Only "qmd" is supported in the product:
+    #: it reuses the model the QMD daemon already has loaded.
+    embedder_backend: str = "qmd"
+    #: QMD daemon base URL (its patched /embed route lives there).
+    embedder_base_url: str | None = None
     max_context_chars: int = 1200
     min_partial_chars: int = 6
     interactive_timeout_ms: int = 30_000
@@ -55,6 +60,7 @@ class MemoryConfig:
                 ("sidecar_script", self.sidecar_script),
                 ("memory_root", self.memory_root),
                 ("extraction_base_url", self.extraction_base_url),
+                ("embedder_base_url", self.embedder_base_url),
             )
             if not value
         ]
@@ -80,6 +86,11 @@ class MemoryConfig:
             merged["OPENAI_BASE_URL"] = self.extraction_base_url
         if self.extraction_model:
             merged["OPENAI_MODEL"] = self.extraction_model
+        # Embeddings always come from the QMD daemon; there is no silent fallback
+        # to a locally downloaded model.
+        merged["S2S_MEMORY_EMBEDDER"] = self.embedder_backend
+        if self.embedder_base_url:
+            merged["S2S_MEMORY_EMBEDDER_BASE_URL"] = self.embedder_base_url
         return merged
 
 

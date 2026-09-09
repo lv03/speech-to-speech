@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
@@ -9,7 +9,7 @@ test('copies qmd and its production dependency closure without desktop dev depen
   const destination = await mkdtemp(join(tmpdir(), 's2s-qmd-resources-'))
   const sourceNodeModules = join(process.cwd(), 'node_modules')
 
-  const copied = await prepareQmdResources({ sourceNodeModules, destination })
+  const { packages: copied, embedRoutePatch } = await prepareQmdResources({ sourceNodeModules, destination })
   const qmdPackage = JSON.parse(await readFile(join(destination, 'node_modules', '@tobilu', 'qmd', 'package.json'), 'utf8'))
 
   expect(copied).toContain('@tobilu/qmd')
@@ -19,6 +19,10 @@ test('copies qmd and its production dependency closure without desktop dev depen
   expect(copied).toContain('sqlite-vec')
   expect(copied).not.toContain('electron')
   expect(copied).not.toContain('vitest')
+  // The memory embed route is applied to the copied bundle at build time.
+  expect(embedRoutePatch).toBe('applied')
+  const server = await readFile(join(destination, 'node_modules', '@tobilu', 'qmd', 'dist', 'mcp', 'server.js'), 'utf8')
+  expect(server).toContain('pathname === "/embed"')
 })
 
 test('keeps only the requested platform native prebuilds', async () => {
@@ -57,7 +61,12 @@ test('uses the lockfile production closure and retains nested package locations'
     'node_modules/dev-only': { version: '1.0.0', dev: true },
   } }))
 
-  const copied = await prepareQmdResources({ sourceNodeModules, destination, lockfilePath })
+  // The patch step needs the real server entry to exist in the bundle.
+  const serverEntry = join(root, 'node_modules/@tobilu/qmd/dist/mcp')
+  await mkdir(serverEntry, { recursive: true })
+  await cp(join(process.cwd(), 'node_modules/@tobilu/qmd/dist/mcp/server.js'), join(serverEntry, 'server.js'))
+
+  const { packages: copied } = await prepareQmdResources({ sourceNodeModules, destination, lockfilePath })
 
   expect(copied).toEqual(['@tobilu/qmd', 'kept', 'nested-kept'])
   await expect(readFile(join(destination, 'node_modules', 'kept', 'node_modules', 'nested-kept', 'package.json'), 'utf8')).resolves.toContain('nested-kept')

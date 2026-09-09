@@ -32,6 +32,7 @@ test('memory env is injected only when enabled and consented', () => {
     memoryRoot: '/tmp/app-memory',
     memoryExtractionBaseUrl: 'https://api.deepseek.com',
     memoryExtractionModel: 'deepseek-v4-flash',
+    memoryEmbedderBaseUrl: 'http://[::1]:4123',
     memoryMaxChars: 900,
   }
 
@@ -47,6 +48,10 @@ test('memory env is injected only when enabled and consented', () => {
   expect(both.S2S_MEMORY_SIDECAR_SCRIPT).toBe('/opt/sidecar.py')
   expect(both.S2S_MEMORY_ROOT).toBe('/tmp/app-memory')
   expect(both.S2S_MEMORY_BASE_URL).toBe('https://api.deepseek.com')
+  // Embeddings always come from the QMD daemon; the backend name is always set
+  // so the sidecar never silently falls back to another model.
+  expect(both.S2S_MEMORY_EMBEDDER).toBe('qmd')
+  expect(both.S2S_MEMORY_EMBEDDER_BASE_URL).toBe('http://[::1]:4123')
   expect(both.S2S_MEMORY_MODEL).toBe('deepseek-v4-flash')
   expect(both.S2S_MEMORY_MAX_CHARS).toBe('900')
 })
@@ -58,6 +63,8 @@ test('memory env from the parent environment is cleared when memory is off', () 
       S2S_MEMORY_SIDECAR_PYTHON: '/stale/python',
       S2S_MEMORY_ROOT: '/stale/root',
       S2S_MEMORY_BASE_URL: 'https://stale.example.com',
+      S2S_MEMORY_EMBEDDER: 'local',
+      S2S_MEMORY_EMBEDDER_BASE_URL: 'http://[::1]:9999',
     },
     gatewayUrl: 'http://127.0.0.1:3101',
   })
@@ -66,6 +73,8 @@ test('memory env from the parent environment is cleared when memory is off', () 
   expect(env.S2S_MEMORY_SIDECAR_PYTHON).toBeUndefined()
   expect(env.S2S_MEMORY_ROOT).toBeUndefined()
   expect(env.S2S_MEMORY_BASE_URL).toBeUndefined()
+  expect(env.S2S_MEMORY_EMBEDDER).toBeUndefined()
+  expect(env.S2S_MEMORY_EMBEDDER_BASE_URL).toBeUndefined()
 })
 
 test('settings round-trip the memory fields and reject out-of-range limits', async () => {

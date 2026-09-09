@@ -118,7 +118,7 @@ function fakeModelStore(events, present = false, failEnsure = false, holdEnsure 
   }
 }
 
-function fakeDependencies({ present = false, failStarts = 0, failEnsure = false, failInitialize = false, failStop = false, holdEnsure = false, holdQuery = false, watchdogIntervalMs = 0, trackProxy = false, modelAssetSizes = { embedding: 100 }, retrievalProfiles, retrievalPreference = 'auto' } = {}) {
+function fakeDependencies({ present = false, memoryEnabled = false, failStarts = 0, failEnsure = false, failInitialize = false, failStop = false, holdEnsure = false, holdQuery = false, watchdogIntervalMs = 0, trackProxy = false, modelAssetSizes = { embedding: 100 }, retrievalProfiles, retrievalPreference = 'auto' } = {}) {
   const events = []
   let healthy = true
   let releaseQuery
@@ -126,6 +126,7 @@ function fakeDependencies({ present = false, failStarts = 0, failEnsure = false,
   const modelStore = fakeModelStore(events, present, failEnsure, holdEnsure, Object.keys(modelAssetSizes), modelAssetSizes)
   const exitListeners = new Set()
   const qmdRuntime = {
+    endpoint: null,
     onExit(listener) {
       exitListeners.add(listener)
       return () => exitListeners.delete(listener)
@@ -137,7 +138,8 @@ function fakeDependencies({ present = false, failStarts = 0, failEnsure = false,
         failStarts -= 1
         throw new Error('QMD daemon failed to start')
       }
-      return { baseUrl: 'http://[::1]:4123/mcp', port: 4123 }
+      qmdRuntime.endpoint = { baseUrl: 'http://[::1]:4123/mcp', port: 4123 }
+      return qmdRuntime.endpoint
     },
     async health() {
       events.push('qmd.health')
@@ -183,6 +185,7 @@ function fakeDependencies({ present = false, failStarts = 0, failEnsure = false,
       modelAssetSizes,
       retrievalProfiles,
       retrievalPreference,
+      memoryEnabled,
       qmdRuntime,
       qmdClient,
       invalidateHandles: trackProxy ? () => events.push('proxy.invalidate') : undefined,
@@ -625,4 +628,46 @@ test('cleans up RuntimeManager state even when stopping QMD fails', async () => 
   expect(dependencies.events).toContain('qmd.reset')
   expect(dependencies.events).toContain('proxy.invalidate')
   expect(dependencies.service.calls).toContainEqual(['set-client', undefined])
+})
+
+
+test('memory embeddings start the QMD daemon without a collection', async () => {
+  const dependencies = fakeDependencies({ present: true, memoryEnabled: true })
+
+  const status = await dependencies.manager.ensureMemoryEmbeddings()
+
+  expect(status).toEqual({ ok: true, baseUrl: 'http://[::1]:4123' })
+  expect(dependencies.events).toContain('qmd.start')
+})
+
+test('memory embeddings never download the model and fail closed when it is missing', async () => {
+  const dependencies = fakeDependencies({ present: false, memoryEnabled: true })
+
+  const status = await dependencies.manager.ensureMemoryEmbeddings()
+
+  expect(status.ok).toBe(false)
+  expect(status.reason).toMatch(/not installed/)
+  expect(dependencies.events).not.toContain('qmd.start')
+  expect(dependencies.events).not.toContain('model.ensure')
+})
+
+test('memory embeddings are skipped while memory is disabled', async () => {
+  const dependencies = fakeDependencies({ present: true, memoryEnabled: false })
+
+  const status = await dependencies.manager.ensureMemoryEmbeddings()
+
+  expect(status).toEqual({ ok: false, reason: 'memory is disabled' })
+  expect(dependencies.events).not.toContain('qmd.start')
+})
+
+test('disabling memory stops a daemon that no collection needs', async () => {
+  const dependencies = fakeDependencies({ present: true, memoryEnabled: true })
+  await dependencies.manager.ensureMemoryEmbeddings()
+  dependencies.events.length = 0
+
+  dependencies.manager.setMemoryEnabled(false)
+  const status = await dependencies.manager.ensureMemoryEmbeddings()
+
+  expect(status.ok).toBe(false)
+  expect(dependencies.events).toContain('qmd.stop')
 })

@@ -80,6 +80,8 @@ export interface VoiceOptions {
   memoryExtractionBaseUrl?: string
   /** 事实抽取模型 */
   memoryExtractionModel?: string
+  /** QMD 守护进程的 /embed 基础地址（记忆嵌入来源） */
+  memoryEmbedderBaseUrl?: string
   /** 单次响应注入的记忆块最大字符数 */
   memoryMaxChars?: number
 }
@@ -97,6 +99,7 @@ export interface VoiceEnvironmentOptions {
   memoryRoot?: string
   memoryExtractionBaseUrl?: string
   memoryExtractionModel?: string
+  memoryEmbedderBaseUrl?: string
   memoryMaxChars?: number
 }
 
@@ -120,6 +123,8 @@ export function buildVoiceEnvironment(options: VoiceEnvironmentOptions): NodeJS.
     'S2S_MEMORY_ROOT',
     'S2S_MEMORY_BASE_URL',
     'S2S_MEMORY_MODEL',
+    'S2S_MEMORY_EMBEDDER',
+    'S2S_MEMORY_EMBEDDER_BASE_URL',
     'S2S_MEMORY_MAX_CHARS',
   ]) {
     delete env[key]
@@ -131,6 +136,11 @@ export function buildVoiceEnvironment(options: VoiceEnvironmentOptions): NodeJS.
     if (options.memoryRoot) env.S2S_MEMORY_ROOT = options.memoryRoot
     if (options.memoryExtractionBaseUrl) env.S2S_MEMORY_BASE_URL = options.memoryExtractionBaseUrl
     if (options.memoryExtractionModel) env.S2S_MEMORY_MODEL = options.memoryExtractionModel
+    // Embeddings always come from the QMD daemon; when it is unavailable the
+    // base URL is absent and the sidecar fails closed instead of loading another
+    // model. The backend name is always set so there is no silent fallback.
+    env.S2S_MEMORY_EMBEDDER = 'qmd'
+    if (options.memoryEmbedderBaseUrl) env.S2S_MEMORY_EMBEDDER_BASE_URL = options.memoryEmbedderBaseUrl
     if (options.memoryMaxChars) env.S2S_MEMORY_MAX_CHARS = String(options.memoryMaxChars)
   }
   return env
@@ -161,6 +171,7 @@ export class EmbeddedVoice {
   private readonly memoryRoot: string
   private readonly memoryExtractionBaseUrl: string
   private readonly memoryExtractionModel: string
+  private readonly memoryEmbedderBaseUrl: string
   private readonly memoryMaxChars: number
   private readonly startupTimeoutMs: number
   private readonly printJson: boolean
@@ -200,6 +211,7 @@ export class EmbeddedVoice {
     this.memoryRoot = options.memoryRoot || ''
     this.memoryExtractionBaseUrl = options.memoryExtractionBaseUrl || ''
     this.memoryExtractionModel = options.memoryExtractionModel || ''
+    this.memoryEmbedderBaseUrl = options.memoryEmbedderBaseUrl || ''
     this.memoryMaxChars = Number(options.memoryMaxChars) || 1200
     this.startupTimeoutMs = options.startupTimeoutMs ?? 300_000
     this.printJson = options.printJson ?? true
@@ -344,6 +356,7 @@ export class EmbeddedVoice {
       memoryRoot: this.memoryRoot,
       memoryExtractionBaseUrl: this.memoryExtractionBaseUrl,
       memoryExtractionModel: this.memoryExtractionModel,
+      memoryEmbedderBaseUrl: this.memoryEmbedderBaseUrl,
       memoryMaxChars: this.memoryMaxChars,
       llmApiKey: this.llmApiKey,
     })

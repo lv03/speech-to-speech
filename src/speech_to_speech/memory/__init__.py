@@ -11,6 +11,7 @@ Disabled by default: nothing constructs a provider unless
 """
 
 from .config import MemoryConfig
+from .embedder import EmbeddingUnavailableError, QmdEmbedder, embed_cache_resolve
 from .factory import build_memory_provider
 from .injection import InjectionDecision, build_injection, inject_into_messages
 from .provider import MemoryProvider, MemoryProviderError
@@ -26,5 +27,8 @@ __all__ = [
     "SidecarTimeout",
     "build_injection",
     "build_memory_provider",
+    "EmbeddingUnavailableError",
+    "QmdEmbedder",
+    "embed_cache_resolve",
     "inject_into_messages",
 ]

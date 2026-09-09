@@ -187,6 +187,21 @@ adapter's turn-aware `PrefetchStream` (which exposes `feed_final`), so prefetch
 failed with an `AttributeError` that the provider correctly degraded to an empty
 context. The sidecar now normalises both stream shapes.
 
+## Embedder wiring (adopted 2026-09-09)
+
+Memory embeddings come from the QMD daemon, which already holds the model:
+
+| Piece | Where | State |
+|---|---|---|
+| `POST /embed` route in the vendored QMD bundle | `desktop/patches/qmd-embed-route.patch`, applied by `prepare-qmd-resources.mjs` | done, tested (`qmd-patch.test.mjs`, `prepare-qmd-resources.test.mjs`) |
+| Python client | `src/speech_to_speech/memory/embedder.py` (`QmdEmbedder`) | done, tested |
+| Daemon lifecycle for memory | `RuntimeManager.ensureMemoryEmbeddings()` + `startProcessesInOrder.memoryEmbeddings` | done, tested (starts with no collection, never downloads, stops when memory is off) |
+| Voice child env | `voice-process.ts` sets `S2S_MEMORY_EMBEDDER=qmd` always, URL when the daemon is ready | done, tested |
+| Fail-closed path | `QmdEmbedder.probe()` at backend build + sidecar `health.backendReady` | done, verified against an unreachable endpoint |
+
+Measured: fresh memory question 90-162 ms, repeat 8 ms, daemon-side 22-25 ms per
+embed. No second process, no compiled dependency, no second model instance.
+
 ## Open product questions
 
 1. Should injected memory be visible to the user (e.g. a "remembered" badge), or

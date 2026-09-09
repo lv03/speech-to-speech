@@ -26,6 +26,8 @@ def _config(tmp_path: Path, **overrides) -> MemoryConfig:
         "memory_root": str(tmp_path / "mem"),
         "extraction_base_url": "http://127.0.0.1:9/v1",
         "extraction_model": "test-model",
+        "embedder_backend": "qmd",
+        "embedder_base_url": "http://127.0.0.1:9",
         "sidecar_backend": "fake",
         "interactive_timeout_ms": 15_000,
         "background_timeout_ms": 30_000,
@@ -151,5 +153,69 @@ def test_missing_extraction_endpoint_is_rejected(tmp_path):
                 sidecar_python=sys.executable,
                 sidecar_script=str(SIDECAR),
                 memory_root=str(tmp_path / "mem"),
+                embedder_base_url="http://127.0.0.1:9",
             )
         )
+
+
+def test_enabled_provider_requires_an_embedder_endpoint(tmp_path):
+    with pytest.raises(MemoryConfigError):
+        MemoryProvider(
+            MemoryConfig(
+                backend="voicemem",
+                sidecar_python=sys.executable,
+                sidecar_script=str(SIDECAR),
+                memory_root=str(tmp_path / "mem"),
+                extraction_base_url="http://127.0.0.1:9/v1",
+            )
+        )
+
+
+def test_child_env_pins_the_qmd_embedder(tmp_path):
+    instance = MemoryProvider(_config(tmp_path))
+    env = instance._config.child_env()  # noqa: SLF001
+    assert env["S2S_MEMORY_EMBEDDER"] == "qmd"
+    assert env["S2S_MEMORY_EMBEDDER_BASE_URL"] == "http://127.0.0.1:9"
+    instance.close()
+
+
+def test_unready_backend_reports_the_reason_instead_of_starting(tmp_path):
+    """A sidecar that is up but cannot embed must degrade, not silently work."""
+
+    class UnreadyClient:
+        def start(self):
+            return None
+
+        def health(self):
+            return {"ok": True, "backendReady": False, "backendError": "MemoryBackendUnavailableError: embeddings unavailable"}
+
+        def set_permission(self, **_kwargs):
+            return {}
+
+        def close(self):
+            return None
+
+    instance = MemoryProvider(_config(tmp_path), client=UnreadyClient())
+    assert instance.start() is False
+    assert "embeddings unavailable" in instance.degraded_reason
+    instance.close()
+
+
+def test_ready_backend_starts_normally(tmp_path):
+    class ReadyClient:
+        def start(self):
+            return None
+
+        def health(self):
+            return {"ok": True, "backendReady": True}
+
+        def set_permission(self, **_kwargs):
+            return {}
+
+        def close(self):
+            return None
+
+    instance = MemoryProvider(_config(tmp_path), client=ReadyClient())
+    assert instance.start() is True
+    assert instance.degraded_reason == ""
+    instance.close()

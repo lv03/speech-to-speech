@@ -65,8 +65,13 @@ class MemoryProvider:
         try:
             client = self._ensure_client()
             health = client.health()
-            self._degraded_reason = "" if health.get("ok") else str(health.get("warning") or "unhealthy")
             client.set_permission(unlocked=False)
+            if health.get("backendReady") is False:
+                # The sidecar is up but its embedding backend is not: report the
+                # reason instead of pretending memory works.
+                self._degraded_reason = str(health.get("backendError") or "memory backend is not ready")[:200]
+                return False
+            self._degraded_reason = "" if health.get("ok") else str(health.get("warning") or "unhealthy")
             return bool(health.get("ok"))
         except SidecarError as exc:
             self._degrade("start", exc)

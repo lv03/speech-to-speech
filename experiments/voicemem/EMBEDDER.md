@@ -1,5 +1,12 @@
 # Reusing an existing embedding model (Qwen3-Embedding-0.6B)
 
+> **Adopted (2026-09-09): option B+.** The product always embeds through the QMD
+> daemon's patched `POST /embed` route. There is no E5 fallback and no second
+> model download: if the daemon or the embedding model is unavailable, memory
+> reports a degraded state and stays idle. `QmdEmbedder` now lives in
+> `src/speech_to_speech/memory/embedder.py`; the patch is applied at build time
+> by `desktop/scripts/prepare-qmd-resources.mjs`.
+
 Question: the project already runs `Qwen/Qwen3-Embedding-0.6B-Q8_0.gguf` for QMD
 (1024 dims, loaded in-process by node-llama-cpp). Can the memory backend reuse
 that model instead of downloading `intfloat/multilingual-e5-small` (470 MB)?

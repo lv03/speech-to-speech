@@ -1,8 +1,13 @@
 import { cp, mkdir, readFile, rm } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const QMD_PACKAGE = '@tobilu/qmd'
+const EMBED_ROUTE_PATCH = 'qmd-embed-route.patch'
+const EMBED_ROUTE_MARKER = 'pathname === "/embed"'
+const QMD_SERVER_ENTRY = 'node_modules/@tobilu/qmd/dist/mcp/server.js'
+const DEFAULT_PATCHES_DIRECTORY = resolve(dirname(new URL(import.meta.url).pathname), '..', 'patches')
 const QMD_VERSION = '2.8.3'
 const NATIVE_PREBUILD_TARGETS = new Set([
   'darwin-arm64', 'darwin-x64',
@@ -74,6 +79,36 @@ async function loadLockfile(lockfilePath) {
   return lockfile.packages
 }
 
+
+/**
+ * Apply the memory embed-route patch to the copied QMD bundle.
+ *
+ * The memory backend reuses QMD's loaded embedding model through `POST /embed`;
+ * without this patch the route does not exist and memory reports a degraded
+ * state instead of silently loading a second model. Applying it here keeps the
+ * vendored bundle and the patch in sync at build time.
+ *
+ * Returns 'already' when the route is present, 'applied' when this call added it.
+ */
+export async function applyQmdEmbedRoutePatch(destination, { patchesDirectory = DEFAULT_PATCHES_DIRECTORY } = {}) {
+  const serverFile = join(resolve(destination), QMD_SERVER_ENTRY)
+  const before = await readFile(serverFile, 'utf8')
+  if (before.includes(EMBED_ROUTE_MARKER)) return 'already'
+
+  const patchPath = join(patchesDirectory, EMBED_ROUTE_PATCH)
+  const patch = await readFile(patchPath)
+  const result = spawnSync('patch', ['-p1', '--forward', '--batch', '-d', resolve(destination)], { input: patch })
+  if (result.status !== 0) {
+    const detail = (result.stderr?.toString() || result.stdout?.toString() || '').trim().slice(0, 400)
+    throw new Error(`Failed to apply ${EMBED_ROUTE_PATCH} to the QMD bundle: ${detail}`)
+  }
+  const after = await readFile(serverFile, 'utf8')
+  if (!after.includes(EMBED_ROUTE_MARKER)) {
+    throw new Error(`${EMBED_ROUTE_PATCH} did not add the /embed route (QMD layout changed?)`)
+  }
+  return 'applied'
+}
+
 /**
  * Copy the lockfile-selected production closure of QMD into Electron's
  * extraResources directory. Source-relative locations preserve nested
@@ -83,6 +118,7 @@ export async function prepareQmdResources({
   sourceNodeModules,
   destination,
   lockfilePath = join(resolve(sourceNodeModules), '..', 'package-lock.json'),
+  patchesDirectory = DEFAULT_PATCHES_DIRECTORY,
   platform = process.platform,
   arch = process.arch,
 }) {
@@ -140,15 +176,22 @@ export async function prepareQmdResources({
     })
   }
 
-  return [...new Set([...selected.values()].map(({ packageName }) => packageName))].sort()
+  const patchState = await applyQmdEmbedRoutePatch(destinationRoot, { patchesDirectory })
+
+  return {
+    packages: [...new Set([...selected.values()].map(({ packageName }) => packageName))].sort(),
+    embedRoutePatch: patchState,
+  }
 }
 
 async function main() {
   const scriptRoot = resolve(dirname(new URL(import.meta.url).pathname), '..')
   const sourceNodeModules = process.env.QMD_SOURCE_NODE_MODULES ?? join(scriptRoot, 'node_modules')
   const destination = process.env.QMD_RESOURCES_DIR ?? join(scriptRoot, 'build', 'qmd-resources')
-  const packages = await prepareQmdResources({ sourceNodeModules, destination })
-  console.log(`Prepared QMD resources: ${packages.length} production packages at ${destination}`)
+  const { packages, embedRoutePatch } = await prepareQmdResources({ sourceNodeModules, destination })
+  console.log(
+    `Prepared QMD resources: ${packages.length} production packages at ${destination} (embed route patch: ${embedRoutePatch})`,
+  )
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
