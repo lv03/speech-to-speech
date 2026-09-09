@@ -58,6 +58,21 @@ _METHODS = {
 }
 
 
+class _RawStreamAdapter:
+    """Wraps a backend whose stream takes plain text (no turn identity)."""
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+
+    async def feed_partial(self, turn_id: str, revision: int, text: str):
+        del turn_id, revision
+        return await self._stream.feed_partial(text)
+
+    async def feed_final(self, turn_id: str, revision: int, text: str):
+        del turn_id, revision
+        return await self._stream.feed_text(text)
+
+
 class FakePrefetchStream:
     """Async text stream over the fake store, mirroring voicemem's shape."""
 
@@ -217,15 +232,27 @@ class Sidecar:
         session_id = str(params.get("sessionId", "")).strip() or "default"
         stream = self._streams.get(session_id)
         if stream is None:
-            opener = getattr(self._memory, "open_prefetch", None) or getattr(self._memory, "open_stream", None)
-            if opener is None:
-                raise ValueError("backend does not support prefetch")
-            stream = opener()
+            stream = self._open_stream()
             self._streams[session_id] = stream
+        turn_id = str(params.get("turnId", ""))
+        revision = int(params.get("revision", 0) or 0)
         text = str(params.get("text", ""))
-        state = self._run(stream.feed_text(text) if final else stream.feed_partial(text))
+        if final:
+            state = self._run(stream.feed_final(turn_id, revision, text))
+        else:
+            state = self._run(stream.feed_partial(turn_id, revision, text))
         context = str(getattr(state, "memory_context", "") or "")[: self._max_context_chars]
         return {"context": context, "stale": bool(getattr(state, "stale", False))}
+
+    def _open_stream(self):
+        """Return a turn-aware stream: the adapter's wrapper when available."""
+        opener = getattr(self._memory, "open_prefetch", None)
+        if opener is not None:
+            return opener()
+        opener = getattr(self._memory, "open_stream", None)
+        if opener is None:
+            raise ValueError("backend does not support prefetch")
+        return _RawStreamAdapter(opener())
 
     def _run(self, awaitable):
         """Run a possibly-async backend call on the sidecar's persistent loop.

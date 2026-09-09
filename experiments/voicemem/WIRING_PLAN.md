@@ -135,6 +135,24 @@ leak), `desktop/tests/knowledge-ipc.test.mjs` (settings round-trip).
   (and, for audio mode, several GB more). The desktop must download it only
   after explicit consent, or the feature ships off.
 
+## Product-side end-to-end evidence (2026-09-08)
+
+`cli._build_memory_provider(...)` pointed at the real voicemem venv:
+
+```text
+enabled: True unlocked: True
+flush batches: 1 ms: 36257          # one batched extraction
+recall context chars: 116 has_fact: True
+inject: True reason: injected message_role: system
+health: {'ok': True, 'backend': 'real', 'unlocked': True, 'pendingTurns': 0}
+result: PRODUCT_WIRING_OK
+```
+
+This run also caught a real bug: the sidecar called `feed_text()` on the
+adapter's turn-aware `PrefetchStream` (which exposes `feed_final`), so prefetch
+failed with an `AttributeError` that the provider correctly degraded to an empty
+context. The sidecar now normalises both stream shapes.
+
 ## Open product questions
 
 1. Should injected memory be visible to the user (e.g. a "remembered" badge), or
