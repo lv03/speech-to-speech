@@ -30,6 +30,8 @@ test('memory env is injected only when enabled and consented', () => {
     memorySidecarPython: '/opt/voicemem/bin/python',
     memorySidecarScript: '/opt/sidecar.py',
     memoryRoot: '/tmp/app-memory',
+    memoryExtractionBaseUrl: 'https://api.deepseek.com',
+    memoryExtractionModel: 'deepseek-v4-flash',
     memoryMaxChars: 900,
   }
 
@@ -44,6 +46,8 @@ test('memory env is injected only when enabled and consented', () => {
   expect(both.S2S_MEMORY_SIDECAR_PYTHON).toBe('/opt/voicemem/bin/python')
   expect(both.S2S_MEMORY_SIDECAR_SCRIPT).toBe('/opt/sidecar.py')
   expect(both.S2S_MEMORY_ROOT).toBe('/tmp/app-memory')
+  expect(both.S2S_MEMORY_BASE_URL).toBe('https://api.deepseek.com')
+  expect(both.S2S_MEMORY_MODEL).toBe('deepseek-v4-flash')
   expect(both.S2S_MEMORY_MAX_CHARS).toBe('900')
 })
 
@@ -53,6 +57,7 @@ test('memory env from the parent environment is cleared when memory is off', () 
       S2S_MEMORY_BACKEND: 'voicemem',
       S2S_MEMORY_SIDECAR_PYTHON: '/stale/python',
       S2S_MEMORY_ROOT: '/stale/root',
+      S2S_MEMORY_BASE_URL: 'https://stale.example.com',
     },
     gatewayUrl: 'http://127.0.0.1:3101',
   })
@@ -60,6 +65,7 @@ test('memory env from the parent environment is cleared when memory is off', () 
   expect(env.S2S_MEMORY_BACKEND).toBeUndefined()
   expect(env.S2S_MEMORY_SIDECAR_PYTHON).toBeUndefined()
   expect(env.S2S_MEMORY_ROOT).toBeUndefined()
+  expect(env.S2S_MEMORY_BASE_URL).toBeUndefined()
 })
 
 test('settings round-trip the memory fields and reject out-of-range limits', async () => {
@@ -72,6 +78,8 @@ test('settings round-trip the memory fields and reject out-of-range limits', asy
     memoryCloudConsent: true,
     memorySidecarPython: '  /opt/voicemem/bin/python  ',
     memorySidecarScript: '/opt/sidecar.py',
+    memoryExtractionBaseUrl: '  http://127.0.0.1:8080/v1  ',
+    memoryExtractionModel: 'qwen3-8b',
     memoryMaxChars: 900,
   })
 
@@ -80,6 +88,8 @@ test('settings round-trip the memory fields and reject out-of-range limits', asy
     memoryCloudConsent: true,
     memorySidecarPython: '/opt/voicemem/bin/python',
     memorySidecarScript: '/opt/sidecar.py',
+    memoryExtractionBaseUrl: 'http://127.0.0.1:8080/v1',
+    memoryExtractionModel: 'qwen3-8b',
     memoryMaxChars: 900,
   })
 

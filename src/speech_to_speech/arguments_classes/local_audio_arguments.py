@@ -72,6 +72,23 @@ class LocalAudioArguments:
             "aliases": ["--memory-root"],
         },
     )
+    local_audio_memory_extraction_base_url: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "OpenAI-compatible endpoint used for memory fact extraction. Required when memory "
+                "is enabled; point it at a local server to keep extraction on-device."
+            ),
+            "aliases": ["--memory-extraction-base-url"],
+        },
+    )
+    local_audio_memory_extraction_model: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Chat model used for memory fact extraction (default: voicemem's own default).",
+            "aliases": ["--memory-extraction-model"],
+        },
+    )
     local_audio_memory_max_chars: int = field(
         default=1200,
         metadata={

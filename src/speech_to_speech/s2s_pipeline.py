@@ -513,13 +513,21 @@ def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadMana
     # Memory stays locked until the wake-word gate opens; the gate is the only
     # permission source, so the provider is built locked even when the backend is
     # explicitly enabled.
-    memory_provider = build_memory_provider(
-        backend=local_audio.local_audio_memory_backend,
-        sidecar_python=local_audio.local_audio_memory_sidecar_python,
-        sidecar_script=local_audio.local_audio_memory_sidecar_script,
-        memory_root=local_audio.local_audio_memory_root,
-        max_context_chars=local_audio.local_audio_memory_max_chars,
-    )
+    memory_provider = None
+    memory_error = ""
+    try:
+        memory_provider = build_memory_provider(
+            backend=local_audio.local_audio_memory_backend,
+            sidecar_python=local_audio.local_audio_memory_sidecar_python,
+            sidecar_script=local_audio.local_audio_memory_sidecar_script,
+            memory_root=local_audio.local_audio_memory_root,
+            extraction_base_url=getattr(local_audio, "local_audio_memory_extraction_base_url", None),
+            extraction_model=getattr(local_audio, "local_audio_memory_extraction_model", None),
+            max_context_chars=local_audio.local_audio_memory_max_chars,
+        )
+    except Exception as exc:  # noqa: BLE001 - a bad memory config must not kill the voice engine
+        memory_error = f"{type(exc).__name__}: {exc}"[:200]
+        logger.warning("Memory backend is disabled: %s", memory_error)
 
     # Surface the wake-word security gate's locked/unlocked state to stdout as
     # EVENT lines so the desktop app can mirror it (sleep the orb while locked,
@@ -552,8 +560,12 @@ def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadMana
         memory_provider.set_unlocked(True)
         if local_audio.local_audio_print_json:
             _emit_memory_health(memory_provider)
-    if memory_provider is not None and gate is not None and not local_audio.local_audio_print_json:
-        pass  # health is only surfaced to a parent that asked for EVENT lines
+    if memory_error and local_audio.local_audio_print_json:
+        # Surface a misconfiguration instead of silently running without memory.
+        print(
+            f"EVENT: {json.dumps({'type': 'memory.health', 'ok': False, 'backend': 'voicemem', 'unlocked': False, 'pendingTurns': 0, 'warning': memory_error})}",
+            flush=True,
+        )
     client = RealtimeAudioClient(
         stop_event,
         RealtimeAudioClientConfig(

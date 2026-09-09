@@ -203,6 +203,18 @@ def parse_talk_arguments(argv: Sequence[str]) -> RealtimeAudioClientConfig:
         help="App-private directory for the memory store.",
     )
     parser.add_argument(
+        "--memory-extraction-base-url",
+        dest="memory_extraction_base_url",
+        default=None,
+        help="OpenAI-compatible endpoint used for memory fact extraction (required when memory is on).",
+    )
+    parser.add_argument(
+        "--memory-extraction-model",
+        dest="memory_extraction_model",
+        default=None,
+        help="Chat model used for memory fact extraction.",
+    )
+    parser.add_argument(
         "--memory-max-chars",
         dest="memory_max_chars",
         type=int,
@@ -259,6 +271,8 @@ def _build_memory_provider(namespace: argparse.Namespace, *, unlocked: bool = Fa
         sidecar_python=namespace.memory_sidecar_python,
         sidecar_script=namespace.memory_sidecar_script,
         memory_root=namespace.memory_root,
+        extraction_base_url=getattr(namespace, "memory_extraction_base_url", None),
+        extraction_model=getattr(namespace, "memory_extraction_model", None),
         max_context_chars=int(namespace.memory_max_chars),
         unlocked=unlocked,
     )

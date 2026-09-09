@@ -145,7 +145,17 @@ Files: `desktop/src/main/index.ts`, `desktop/src/main/voice-process.ts`,
 Tests: `desktop/tests/voice-process-tools.test.mjs` (env passthrough, no argv
 leak), `desktop/tests/knowledge-ipc.test.mjs` (settings round-trip).
 
-## Step 5 — Promotion and gates
+## Step 5 — Promotion and gates (partially done)
+
+Done: the product decisions are recorded in `DECISIONS.md` with an acceptance
+checklist, and `license_report.py` inventories the sidecar venv (112 packages,
+3 unresolved, 1 LGPL entry already present in the app wheelhouse).
+
+Open: move the sidecar implementation into the packaged tree, add its license
+inventory to the release report, and implement the consent-driven download of
+the sidecar venv + E5 model.
+
+Original scope:
 
 - Move `experiments/voicemem/` to a packaged location and add it to the license
   report (≈25 new dependencies).

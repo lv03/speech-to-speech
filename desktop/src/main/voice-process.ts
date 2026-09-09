@@ -76,6 +76,10 @@ export interface VoiceOptions {
   memorySidecarScript?: string
   /** app-private 记忆目录 */
   memoryRoot?: string
+  /** 事实抽取端点（启用记忆时必填） */
+  memoryExtractionBaseUrl?: string
+  /** 事实抽取模型 */
+  memoryExtractionModel?: string
   /** 单次响应注入的记忆块最大字符数 */
   memoryMaxChars?: number
 }
@@ -91,6 +95,8 @@ export interface VoiceEnvironmentOptions {
   memorySidecarPython?: string
   memorySidecarScript?: string
   memoryRoot?: string
+  memoryExtractionBaseUrl?: string
+  memoryExtractionModel?: string
   memoryMaxChars?: number
 }
 
@@ -112,6 +118,8 @@ export function buildVoiceEnvironment(options: VoiceEnvironmentOptions): NodeJS.
     'S2S_MEMORY_SIDECAR_PYTHON',
     'S2S_MEMORY_SIDECAR_SCRIPT',
     'S2S_MEMORY_ROOT',
+    'S2S_MEMORY_BASE_URL',
+    'S2S_MEMORY_MODEL',
     'S2S_MEMORY_MAX_CHARS',
   ]) {
     delete env[key]
@@ -121,6 +129,8 @@ export function buildVoiceEnvironment(options: VoiceEnvironmentOptions): NodeJS.
     if (options.memorySidecarPython) env.S2S_MEMORY_SIDECAR_PYTHON = options.memorySidecarPython
     if (options.memorySidecarScript) env.S2S_MEMORY_SIDECAR_SCRIPT = options.memorySidecarScript
     if (options.memoryRoot) env.S2S_MEMORY_ROOT = options.memoryRoot
+    if (options.memoryExtractionBaseUrl) env.S2S_MEMORY_BASE_URL = options.memoryExtractionBaseUrl
+    if (options.memoryExtractionModel) env.S2S_MEMORY_MODEL = options.memoryExtractionModel
     if (options.memoryMaxChars) env.S2S_MEMORY_MAX_CHARS = String(options.memoryMaxChars)
   }
   return env
@@ -149,6 +159,8 @@ export class EmbeddedVoice {
   private readonly memorySidecarPython: string
   private readonly memorySidecarScript: string
   private readonly memoryRoot: string
+  private readonly memoryExtractionBaseUrl: string
+  private readonly memoryExtractionModel: string
   private readonly memoryMaxChars: number
   private readonly startupTimeoutMs: number
   private readonly printJson: boolean
@@ -186,6 +198,8 @@ export class EmbeddedVoice {
     this.memorySidecarPython = options.memorySidecarPython || ''
     this.memorySidecarScript = options.memorySidecarScript || ''
     this.memoryRoot = options.memoryRoot || ''
+    this.memoryExtractionBaseUrl = options.memoryExtractionBaseUrl || ''
+    this.memoryExtractionModel = options.memoryExtractionModel || ''
     this.memoryMaxChars = Number(options.memoryMaxChars) || 1200
     this.startupTimeoutMs = options.startupTimeoutMs ?? 300_000
     this.printJson = options.printJson ?? true
@@ -328,6 +342,8 @@ export class EmbeddedVoice {
       memorySidecarPython: this.memorySidecarPython,
       memorySidecarScript: this.memorySidecarScript,
       memoryRoot: this.memoryRoot,
+      memoryExtractionBaseUrl: this.memoryExtractionBaseUrl,
+      memoryExtractionModel: this.memoryExtractionModel,
       memoryMaxChars: this.memoryMaxChars,
       llmApiKey: this.llmApiKey,
     })

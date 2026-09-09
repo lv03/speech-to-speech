@@ -26,6 +26,8 @@ interface SettingsPayload {
   memoryCloudConsent: boolean
   memorySidecarPython: string
   memorySidecarScript: string
+  memoryExtractionBaseUrl: string
+  memoryExtractionModel: string
   memoryMaxChars: number
 }
 
@@ -59,6 +61,8 @@ const memoryEnabled = document.getElementById('memory-enabled') as HTMLInputElem
 const memoryCloudConsent = document.getElementById('memory-cloud-consent') as HTMLInputElement
 const memorySidecarPython = document.getElementById('memory-sidecar-python') as HTMLInputElement
 const memorySidecarScript = document.getElementById('memory-sidecar-script') as HTMLInputElement
+const memoryExtractionBaseUrl = document.getElementById('memory-extraction-base-url') as HTMLInputElement
+const memoryExtractionModel = document.getElementById('memory-extraction-model') as HTMLInputElement
 const memoryMaxChars = document.getElementById('memory-max-chars') as HTMLInputElement
 const memoryStatusEl = document.getElementById('memory-status')!
 const voiceprintStatusEl = document.getElementById('voiceprint-status')!
@@ -131,6 +135,8 @@ function render(settings: SettingsPayload): void {
   memoryCloudConsent.checked = settings.memoryCloudConsent
   memorySidecarPython.value = settings.memorySidecarPython
   memorySidecarScript.value = settings.memorySidecarScript
+  memoryExtractionBaseUrl.value = settings.memoryExtractionBaseUrl
+  memoryExtractionModel.value = settings.memoryExtractionModel
   memoryMaxChars.value = String(settings.memoryMaxChars)
   renderMemoryHealth(null)
 }
@@ -165,6 +171,8 @@ function collect(): SettingsPayload {
     memoryCloudConsent: memoryCloudConsent.checked,
     memorySidecarPython: memorySidecarPython.value.trim(),
     memorySidecarScript: memorySidecarScript.value.trim(),
+    memoryExtractionBaseUrl: memoryExtractionBaseUrl.value.trim(),
+    memoryExtractionModel: memoryExtractionModel.value.trim(),
     memoryMaxChars: Number(memoryMaxChars.value) || 1200,
   }
 }

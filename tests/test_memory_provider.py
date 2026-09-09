@@ -24,6 +24,8 @@ def _config(tmp_path: Path, **overrides) -> MemoryConfig:
         "sidecar_python": sys.executable,
         "sidecar_script": str(SIDECAR),
         "memory_root": str(tmp_path / "mem"),
+        "extraction_base_url": "http://127.0.0.1:9/v1",
+        "extraction_model": "test-model",
         "sidecar_backend": "fake",
         "interactive_timeout_ms": 15_000,
         "background_timeout_ms": 30_000,
@@ -129,3 +131,25 @@ def test_disabled_provider_close_is_safe():
     instance = MemoryProvider(MemoryConfig())
     instance.close()
     instance.close()
+
+
+def test_extraction_endpoint_is_scoped_to_the_sidecar_child(tmp_path):
+    instance = MemoryProvider(_config(tmp_path))
+    env = instance._config.child_env()  # noqa: SLF001
+    assert env["OPENAI_BASE_URL"] == "http://127.0.0.1:9/v1"
+    assert env["OPENAI_MODEL"] == "test-model"
+    assert env["MEM0_TELEMETRY"] == "false"
+    assert env["VOICEMEM_MEMORY_LANGUAGE"] == "zh"
+    instance.close()
+
+
+def test_missing_extraction_endpoint_is_rejected(tmp_path):
+    with pytest.raises(MemoryConfigError):
+        MemoryProvider(
+            MemoryConfig(
+                backend="voicemem",
+                sidecar_python=sys.executable,
+                sidecar_script=str(SIDECAR),
+                memory_root=str(tmp_path / "mem"),
+            )
+        )

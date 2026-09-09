@@ -212,3 +212,27 @@ def test_local_emits_memory_health_only_for_the_parent(monkeypatch, capsys):
     health = [event for event in events if event["type"] == "memory.health"]
     assert health and health[-1]["ok"] is True and health[-1]["pendingTurns"] == 2
     assert "voicemem" in health[-1]["backend"]
+
+
+def test_local_reports_a_bad_memory_configuration_instead_of_crashing(monkeypatch, capsys):
+    import json
+
+    def exploding_factory(**_kwargs):
+        raise ValueError("memory backend 'voicemem' requires extraction_base_url")
+
+    monkeypatch.setattr("speech_to_speech.memory.build_memory_provider", exploding_factory)
+    unit = SimpleNamespace(handlers=[object()])
+    monkeypatch.setattr("speech_to_speech.pipeline_graph.PipelineGraph.instantiate", lambda self, **_kwargs: unit)
+
+    args = parse_arguments(
+        ["--memory-backend", "voicemem", "--local_audio_print_json"],
+        command="local",
+    )
+    manager = build_local_pipeline(args, Event())
+    client = manager.handlers[-1]
+
+    assert client.config.memory_provider is None
+    out = capsys.readouterr().out
+    events = [json.loads(line[len("EVENT: "):]) for line in out.splitlines() if line.startswith("EVENT: ")]
+    degraded = [event for event in events if event["type"] == "memory.health" and event["ok"] is False]
+    assert degraded and "extraction_base_url" in degraded[-1]["warning"]

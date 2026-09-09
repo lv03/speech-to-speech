@@ -28,6 +28,12 @@ class MemoryConfig:
     sidecar_script: str | None = None
     memory_root: str | None = None
     sidecar_backend: str = "real"  # "real" uses voicemem; "fake" is for tests
+    #: OpenAI-compatible endpoint used for fact extraction (writes). Required:
+    #: voicemem would otherwise default to api.openai.com, which is neither the
+    #: user's choice nor necessarily reachable.
+    extraction_base_url: str | None = None
+    #: Chat model used for fact extraction (empty = voicemem default).
+    extraction_model: str | None = None
     max_context_chars: int = 1200
     min_partial_chars: int = 6
     interactive_timeout_ms: int = 30_000
@@ -48,6 +54,7 @@ class MemoryConfig:
                 ("sidecar_python", self.sidecar_python),
                 ("sidecar_script", self.sidecar_script),
                 ("memory_root", self.memory_root),
+                ("extraction_base_url", self.extraction_base_url),
             )
             if not value
         ]
@@ -67,6 +74,12 @@ class MemoryConfig:
         # mem0 defaults telemetry to on and posts to us.i.posthog.com.
         merged.setdefault("MEM0_TELEMETRY", "false")
         merged.setdefault("VOICEMEM_MEMORY_LANGUAGE", "zh")
+        # The extraction endpoint is scoped to the sidecar child only: exporting
+        # OPENAI_BASE_URL in the voice process could redirect other components.
+        if self.extraction_base_url:
+            merged["OPENAI_BASE_URL"] = self.extraction_base_url
+        if self.extraction_model:
+            merged["OPENAI_MODEL"] = self.extraction_model
         return merged
 
 

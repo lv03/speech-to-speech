@@ -503,6 +503,8 @@ async function startVoice(): Promise<void> {
     memorySidecarPython: settings.memorySidecarPython,
     memorySidecarScript: settings.memorySidecarScript,
     memoryRoot: join(app.getPath('userData'), 'memory'),
+    memoryExtractionBaseUrl: settings.memoryExtractionBaseUrl,
+    memoryExtractionModel: settings.memoryExtractionModel,
     memoryMaxChars: settings.memoryMaxChars,
     onLog: (line) => pushVoiceLog(line),
     onEvent: (event) => {

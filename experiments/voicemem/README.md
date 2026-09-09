@@ -23,7 +23,9 @@ packages it drags in.
 | `check_env.py` | Gate 1: what a voicemem install would change here (zero-install) |
 | `zh_smoke.py` | Gate 5: Chinese ingest/search smoke (needs the venv + a key) |
 | `prefetch_probe.py` | Real prefetch timing probe (needs the venv + a key) |
+| `license_report.py` | Inventory the sidecar venv's dependencies and flag unresolved licenses |
 | `config.example.env` | Env template: endpoint, language, mirror, storage, telemetry off |
+| `DECISIONS.md` | The product decisions the implementation encodes + acceptance checklist |
 | `INTEGRATION_NOTES.md` | What voicemem would introduce: deps, models, network, storage, risk |
 | `GATES.md` | The seven gates: status, evidence, and the work each one still needs |
 | `PRIOR_ART.md` | How qwen-audio-agent integrates VoiceMem, and what we should copy |

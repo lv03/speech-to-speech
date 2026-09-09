@@ -246,11 +246,20 @@
                 <input id="memory-sidecar-script" type="text" placeholder="sidecar.py 的绝对路径" />
               </div>
               <div class="setting-row">
+                <label for="memory-extraction-base-url">抽取端点</label>
+                <input id="memory-extraction-base-url" type="text" placeholder="https://api.deepseek.com 或 http://127.0.0.1:8080/v1" />
+              </div>
+              <div class="setting-row">
+                <label for="memory-extraction-model">抽取模型</label>
+                <input id="memory-extraction-model" type="text" placeholder="空 = 后端默认" />
+              </div>
+              <div class="setting-row">
                 <label for="memory-max-chars">注入字符上限</label>
                 <input id="memory-max-chars" type="number" min="200" max="8000" step="100" />
               </div>
               <p class="setting-hint">
-                记忆由独立进程运行，需要自备装有 voicemem 的解释器；两条路径留空时记忆保持关闭。
+                记忆由独立进程运行，需要自备装有 voicemem 的解释器；路径或抽取端点留空时记忆保持关闭。
+                抽取端点指向本机服务（如 http://127.0.0.1:8080/v1）时，记忆写入不会离开这台机器。
               </p>
             </div>
           </section>

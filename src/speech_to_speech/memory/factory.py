@@ -21,6 +21,8 @@ def build_memory_provider(
     sidecar_python: str | None = None,
     sidecar_script: str | None = None,
     memory_root: str | None = None,
+    extraction_base_url: str | None = None,
+    extraction_model: str | None = None,
     max_context_chars: int = 1200,
     sidecar_backend: str = "real",
     unlocked: bool = False,
@@ -36,6 +38,8 @@ def build_memory_provider(
     sidecar_python = sidecar_python or os.environ.get("S2S_MEMORY_SIDECAR_PYTHON")
     sidecar_script = sidecar_script or os.environ.get("S2S_MEMORY_SIDECAR_SCRIPT")
     memory_root = memory_root or os.environ.get("S2S_MEMORY_ROOT")
+    extraction_base_url = extraction_base_url or os.environ.get("S2S_MEMORY_BASE_URL")
+    extraction_model = extraction_model or os.environ.get("S2S_MEMORY_MODEL")
     raw_chars = os.environ.get("S2S_MEMORY_MAX_CHARS")
     if raw_chars and raw_chars.isdigit():
         max_context_chars = int(raw_chars)
@@ -47,6 +51,8 @@ def build_memory_provider(
             sidecar_python=sidecar_python,
             sidecar_script=sidecar_script,
             memory_root=memory_root,
+            extraction_base_url=extraction_base_url,
+            extraction_model=extraction_model,
             max_context_chars=int(max_context_chars),
             sidecar_backend=sidecar_backend,
         )

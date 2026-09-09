@@ -59,6 +59,10 @@ export interface DesktopSettings {
   memorySidecarPython: string
   /** 记忆 sidecar 入口脚本路径（默认空 = 记忆不可用） */
   memorySidecarScript: string
+  /** 记忆事实抽取用的 OpenAI 兼容端点（启用记忆时必填） */
+  memoryExtractionBaseUrl: string
+  /** 记忆事实抽取用的 chat 模型（空 = 后端默认） */
+  memoryExtractionModel: string
   /** 注入到单次响应的记忆块最大字符数 */
   memoryMaxChars: number
 }
@@ -90,6 +94,8 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   memoryCloudConsent: false,
   memorySidecarPython: '',
   memorySidecarScript: '',
+  memoryExtractionBaseUrl: '',
+  memoryExtractionModel: '',
   memoryMaxChars: 1200,
 }
 
@@ -170,6 +176,8 @@ export class SettingsStore {
     if (typeof raw.memoryCloudConsent === 'boolean') out.memoryCloudConsent = raw.memoryCloudConsent
     if (typeof raw.memorySidecarPython === 'string') out.memorySidecarPython = raw.memorySidecarPython.trim()
     if (typeof raw.memorySidecarScript === 'string') out.memorySidecarScript = raw.memorySidecarScript.trim()
+    if (typeof raw.memoryExtractionBaseUrl === 'string') out.memoryExtractionBaseUrl = raw.memoryExtractionBaseUrl.trim()
+    if (typeof raw.memoryExtractionModel === 'string') out.memoryExtractionModel = raw.memoryExtractionModel.trim()
     if (typeof raw.memoryMaxChars === 'number' && raw.memoryMaxChars >= 200 && raw.memoryMaxChars <= 8000) {
       out.memoryMaxChars = Math.floor(raw.memoryMaxChars)
     }
