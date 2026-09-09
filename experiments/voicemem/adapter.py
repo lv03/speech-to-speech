@@ -110,18 +110,23 @@ class RemoteOpenAIEmbedder:
         self.doc_prefix = doc_prefix
         self.timeout = float(timeout)
         self._dimensions: int | None = None
+        self._client = None
+
+    def _http(self):
+        if self._client is None:
+            import httpx
+
+            self._client = httpx.Client(timeout=self.timeout)
+        return self._client
 
     def _post(self, inputs: list[str]) -> list[list[float]]:
-        import httpx
-
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(
-                f"{self.base_url}/embeddings",
-                json={"model": self.model, "input": inputs},
-                headers={"Authorization": f"Bearer {self.api_key}"},
-            )
-            response.raise_for_status()
-            payload = response.json()
+        response = self._http().post(
+            f"{self.base_url}/embeddings",
+            json={"model": self.model, "input": inputs},
+            headers={"Authorization": f"Bearer {self.api_key}"},
+        )
+        response.raise_for_status()
+        payload = response.json()
         rows = sorted(payload["data"], key=lambda row: row.get("index", 0))
         return [list(map(float, row["embedding"])) for row in rows]
 
@@ -161,6 +166,20 @@ class RemoteOpenAIEmbedder:
         return matrix
 
 
+
+
+
+def _warm_classifier(classifier) -> None:
+    """Build the slot matrix once, before any concurrent classify call.
+
+    Two threads classifying at the same time both see an empty matrix and each
+    embed the 7 slot descriptions; the embedding cache cannot dedupe concurrent
+    identical batches.
+    """
+    try:
+        classifier._slots_matrix()  # noqa: SLF001 - voicemem exposes no public warmup
+    except Exception:  # noqa: BLE001 - warmup must never block startup
+        pass
 
 
 def _embed_cache_resolve(model: str, texts: list[str], compute) -> list[list[float]]:
@@ -277,6 +296,81 @@ class LlamaCppEmbedder:
         ]
         # _embed already L2-normalizes; the slot classifier relies on that.
         return np.asarray(_embed_cache_resolve(self.model_name, prepared, self._embed), dtype="float32")
+
+
+
+class QmdEmbedder:
+    """Embeddings from the QMD daemon's patched ``POST /embed`` route.
+
+    Reuses the model QMD already has loaded (one instance, no extra process, no
+    llama-cpp-python). The route applies the model-specific prompt format, so the
+    caller sends raw text and just says whether it is a query.
+    """
+
+    def __init__(self, *, base_url: str, timeout: float = 30.0) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout = float(timeout)
+        self._dimensions: int | None = None
+        self._client = None
+
+    def _http(self):
+        if self._client is None:
+            import httpx
+
+            self._client = httpx.Client(timeout=self.timeout)
+        return self._client
+
+    def _post(self, texts: list[str], *, is_query: bool) -> list[list[float]]:
+        response = self._http().post(
+            f"{self.base_url}/embed",
+            json={"texts": texts, "isQuery": is_query},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        rows = sorted(payload["data"], key=lambda row: row.get("index", 0))
+        return [list(map(float, row["embedding"])) for row in rows]
+
+    @property
+    def model_name(self) -> str:
+        return f"qmd-embed ({self.base_url})"
+
+    @property
+    def dimensions(self) -> int:
+        if self._dimensions is None:
+            self._dimensions = len(self._post(["dimension probe"], is_query=False)[0])
+        return self._dimensions
+
+    def embed_texts(self, texts):
+        if not texts:
+            return []
+        return _embed_cache_resolve(self.model_name, list(texts), lambda batch: self._post(batch, is_query=False))
+
+    def embed_query_text(self, text: str):
+        return _embed_cache_resolve(self.model_name, [text], lambda batch: self._post(batch, is_query=True))[0]
+
+    def encode(self, texts, normalize_embeddings: bool = True):
+        import numpy as np
+
+        # The slot classifier marks queries with a "query: " prefix; batch by role
+        # so a slot matrix costs one call instead of one per slot.
+        prepared = [(text, text.startswith("query: ")) for text in texts]
+        rows: list[list[float] | None] = [None] * len(prepared)
+        for is_query in (False, True):
+            indexes = [index for index, (_, query) in enumerate(prepared) if query is is_query]
+            if not indexes:
+                continue
+            batch = [prepared[index][0] for index in indexes]
+            vectors = _embed_cache_resolve(
+                self.model_name, batch, lambda items, q=is_query: self._post(items, is_query=q)
+            )
+            for index, vector in zip(indexes, vectors):
+                rows[index] = vector
+        matrix = np.asarray(rows, dtype="float32")
+        if normalize_embeddings:
+            norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            matrix = matrix / norms
+        return matrix
 
 
 class VoiceMemAdapter:
@@ -470,7 +564,23 @@ class _VoicememBackend:
             config["models"] = {"chat": resolved_model}
         kwargs = build_kwargs(config)
         embedder_kind = os.environ.get("S2S_MEMORY_EMBEDDER", "local").strip().lower()
-        if embedder_kind in ("llama-cpp", "llamacpp"):
+        if embedder_kind in ("qmd", "qmd-embed"):
+            embed_base = os.environ.get("S2S_MEMORY_EMBEDDER_BASE_URL", "").strip()
+            if not embed_base:
+                raise MemoryNotConfiguredError(
+                    "S2S_MEMORY_EMBEDDER=qmd requires S2S_MEMORY_EMBEDDER_BASE_URL"
+                )
+            from voicemem.leftbrain.cognitive_graph.local_query_classifier import LocalQueryClassifier
+
+            shared = QmdEmbedder(base_url=embed_base)
+            # One classifier object (not a factory): two instances would build the
+            # slot matrix twice, and the concurrent duplicate misses the embed cache.
+            classifier = LocalQueryClassifier(model=shared)
+            _warm_classifier(classifier)
+            kwargs["embedding"] = lambda: shared
+            for key in ("slots", "schema"):
+                kwargs[key] = classifier
+        elif embedder_kind in ("llama-cpp", "llamacpp"):
             gguf = os.environ.get("S2S_MEMORY_EMBEDDER_GGUF", "").strip()
             if not gguf:
                 raise MemoryNotConfiguredError(
@@ -485,9 +595,11 @@ class _VoicememBackend:
                 n_ctx=int(os.environ.get("S2S_MEMORY_EMBEDDER_CTX", "2048")),
                 n_gpu_layers=int(os.environ.get("S2S_MEMORY_EMBEDDER_GPU_LAYERS", "-1")),
             )
+            classifier = LocalQueryClassifier(model=local)
+            _warm_classifier(classifier)
             kwargs["embedding"] = lambda: local
             for key in ("slots", "schema"):
-                kwargs[key] = lambda: LocalQueryClassifier(model=local)
+                kwargs[key] = classifier
         elif embedder_kind in ("openai-compat", "remote"):
             embed_base = os.environ.get("S2S_MEMORY_EMBEDDER_BASE_URL", "").strip()
             if not embed_base:

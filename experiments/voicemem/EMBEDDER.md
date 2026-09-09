@@ -100,18 +100,60 @@ leaves ~7 calls ≈ 350–700 ms, above the 0–300 ms prefetch budget.
    instead). It reproduced with E5 loaded in the sidecar venv; the E5-in-repo-venv
    path had been lucky. Worth its own look before shipping the E5 path on macOS.
 
+## Option B+ (better than A): patch the bundled QMD daemon with `POST /embed`
+
+QMD's HTTP server already exposes `GET /health`, `POST /query`, `POST /search`
+and `/mcp` — but no embeddings route. Since we build and ship the QMD bundle
+ourselves, a 39-line patch
+(`desktop/patches/qmd-embed-route.patch`) adds `POST /embed`, which calls the
+same `getDefaultLlamaCpp().embed()` the knowledge queries use, with QMD's own
+prompt formatting (`formatQueryForEmbedding` / `formatDocForEmbedding`).
+
+Measured on the patched daemon (existing Qwen3 GGUF, one loaded instance):
+
+```text
+daemon-side per call:        22-25 ms (single), 23 ms/text (batch of 7)
+first call after start:      1.2 s (model load, same as knowledge search today)
+memory turn, fresh question: 90-162 ms
+memory turn, repeat:         8 ms (embedding cache)
+daemon RSS:                  ~30 MiB (weights live in Metal buffers, not host RSS)
+```
+
+`QmdEmbedder` in `adapter.py` (env `S2S_MEMORY_EMBEDDER=qmd` +
+`S2S_MEMORY_EMBEDDER_BASE_URL`) talks to that route. Two fixes were needed to
+reach these numbers: reuse one `httpx.Client` (a fresh client per call cost
+50-80 ms) and precompute the slot matrix at startup (two concurrent classify
+calls each embedded the 7 slot descriptions before either finished).
+
+**What this buys:** one model instance (QMD's), no `llama-cpp-python` build, no
+extra process, memory turns inside the prefetch budget, and VoiceMem keeps its
+own pipeline and store.
+
+**What it costs:** a maintained patch against the vendored bundle (re-apply on
+QMD upgrades, verify with the same numbers), and a runtime dependency: memory
+now needs the QMD daemon to be running. If the user disables the knowledge base,
+the daemon must still start for memory (or the embedder must fall back).
+
 ## Options, with costs
 
 | Option | Reuses existing model | Extra process/RAM | Retrieval latency | Effort |
 |---|---|---|---|---|
-| **A. llama.cpp in-process** — **measured** | yes (same GGUF) | none; sidecar 595 MiB | **102–125 ms warm, 201 ms stream** | done in the experiment; packaging needs a Metal build |
+| **B+. QMD `/embed` route (patch)** — **measured** | yes (QMD's loaded instance) | none | **90–162 ms stream, 8 ms repeat** | 39-line patch + apply step; memory depends on the QMD daemon |
+| **A. llama.cpp in-process** — **measured** | yes (same GGUF) | none; sidecar 595 MiB | 102–125 ms warm, 201 ms stream | done; packaging needs a Metal build |
 | **B. Keep HTTP, cut calls** | yes | 286 MiB server | ~350–700 ms (estimated) | small, but still over budget |
 | **C. Use QMD itself as the memory store** (facts → markdown collection, recall → `qmd query`) | yes, **no second loader at all** | none | 30–110 ms (hot vec query) | large: own the extraction prompt + write path |
 | **D. Keep E5 in-process** (today) | no (470 MB once) | none | 41–92 ms | none |
 
 ## Recommendation
 
-**Option A is viable and is now the preferred way to reuse the existing model:**
+**Option B+ is the best fit for "keep both QMD and VoiceMem, add nothing":** one
+model instance, no compiled dependency, no extra process, and the memory path
+lands at 90–162 ms with repeats at 8 ms. Its two costs are a maintained patch and
+a runtime dependency on the QMD daemon. Option A remains the fallback when the
+daemon must not be a dependency (memory works with the knowledge base disabled),
+and it needs a Metal build at provisioning time.
+
+**Option A, in more detail:**
 it needs no extra process, no extra download, stays inside the 300 ms budget
 (102–125 ms warm recall, 201 ms stream path), and uses *less* memory than the E5
 baseline (595 MiB vs 803 MiB). Chinese Top-1 was 3/3 in both.

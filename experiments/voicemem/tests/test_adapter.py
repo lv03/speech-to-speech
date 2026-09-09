@@ -23,6 +23,7 @@ from adapter import (  # noqa: E402
     LlamaCppEmbedder,
     MemoryHit,
     MemoryLockedError,
+    QmdEmbedder,
     RemoteOpenAIEmbedder,
     VoiceMemAdapter,
     _force_telemetry_off,
@@ -261,3 +262,34 @@ def test_llama_cpp_embedder_requires_the_gguf(monkeypatch):
     monkeypatch.delenv("S2S_MEMORY_EMBEDDER_GGUF", raising=False)
     with pytest.raises(MemoryNotConfiguredError):
         adapter._ensure_backend()  # noqa: SLF001
+
+
+class _RecordingQmd(QmdEmbedder):
+    def __init__(self, **kwargs):
+        super().__init__(base_url="http://127.0.0.1:9", **kwargs)
+        self.calls: list[tuple[list[str], bool]] = []
+
+    def _post(self, texts, *, is_query):
+        self.calls.append((list(texts), is_query))
+        return [[0.5, 0.5] for _ in texts]
+
+
+def test_qmd_embedder_sends_role_and_batches_slot_matrix():
+    embedder = _RecordingQmd()
+    embedder.embed_texts(["事实一", "事实二"])
+    embedder.embed_query_text("问题")
+    embedder.encode(["query: 我住哪里", "passage: work", "passage: health"])
+    assert embedder.calls == [
+        (["事实一", "事实二"], False),
+        (["问题"], True),
+        (["passage: work", "passage: health"], False),
+        (["query: 我住哪里"], True),
+    ]
+
+
+def test_qmd_embedder_reuses_one_http_client():
+    embedder = QmdEmbedder(base_url="http://127.0.0.1:9")
+    first = embedder._http()  # noqa: SLF001 - the reuse is the behaviour under test
+    second = embedder._http()  # noqa: SLF001
+    assert first is second
+    first.close()

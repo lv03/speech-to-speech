@@ -1,0 +1,39 @@
+--- a/node_modules/@tobilu/qmd/dist/mcp/server.js
++++ b/node_modules/@tobilu/qmd/dist/mcp/server.js
+@@ -18,6 +18,7 @@
+ import { createStore, extractSnippet, addLineNumbers, getDefaultDbPath, DEFAULT_MULTI_GET_MAX_BYTES, } from "../index.js";
+ import { getConfigPath } from "../collections.js";
+ import { enableProductionMode } from "../store.js";
++import { getDefaultLlamaCpp, resolveEmbedModel, formatQueryForEmbedding, formatDocForEmbedding } from "../llm.js";
+ import { checkRequestOrigin, resolveOriginGuard } from "./origin-guard.js";
+ // =============================================================================
+ // Helper functions
+@@ -806,6 +807,28 @@
+                 log(`${ts()} POST /query ${params.searches.length} queries (${Date.now() - reqStart}ms)`);
+                 return;
+             }
++            // REST endpoint: POST /embed — reuse the daemon's loaded embedding model.
++            if (pathname === "/embed" && nodeReq.method === "POST") {
++                const rawBody = await collectBody(nodeReq);
++                const body = JSON.parse(rawBody);
++                const texts = Array.isArray(body.texts) ? body.texts.map(String) : [String(body.text ?? "")];
++                const isQuery = body.isQuery === true;
++                const model = resolveEmbedModel();
++                const llama = getDefaultLlamaCpp();
++                const data = [];
++                for (let index = 0; index < texts.length; index += 1) {
++                    const prepared = isQuery
++                        ? formatQueryForEmbedding(texts[index], model)
++                        : formatDocForEmbedding(texts[index], "", model);
++                    const embedded = await llama.embed(prepared, { model, isQuery });
++                    if (!embedded || !embedded.embedding) throw new Error("embedding failed");
++                    data.push({ index, embedding: embedded.embedding });
++                }
++                nodeRes.writeHead(200, { "Content-Type": "application/json" });
++                nodeRes.end(JSON.stringify({ model, data }));
++                log(`${ts()} POST /embed ${texts.length} texts (${Date.now() - reqStart}ms)`);
++                return;
++            }
+             if (pathname === "/mcp") {
+                 const rawBody = nodeReq.method !== "GET" && nodeReq.method !== "HEAD"
+                     ? await collectBody(nodeReq)
