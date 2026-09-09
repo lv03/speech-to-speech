@@ -27,6 +27,8 @@ from pathlib import Path
 VOICEMEM_SHA = "a450911fc8cbb44c46d810aace2f3288bad287e4"
 TARBALL_URL = f"https://codeload.github.com/xzf-thu/VoiceMem/tar.gz/{VOICEMEM_SHA}"
 E5_MODEL = "intfloat/multilingual-e5-small"
+#: QMD already installs this GGUF; the llama.cpp embedder reuses it (no download).
+QWEN3_GGUF_NAME = "hf_Qwen_Qwen3-Embedding-0.6B-Q8_0.gguf"
 DEFAULT_VENV = Path.home() / ".cache" / "speech-to-speech" / "voicemem-venv"
 DEFAULT_MODELS = Path.home() / ".cache" / "speech-to-speech" / "voicemem-models"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,7 +41,14 @@ class Step:
     skip: bool = False
 
 
-def build_plan(*, venv: Path, models: Path, skip_models: bool, python: str = "3.11") -> list[Step]:
+def build_plan(
+    *,
+    venv: Path,
+    models: Path,
+    skip_models: bool,
+    python: str = "3.11",
+    embedder: str = "e5",
+) -> list[Step]:
     steps = [
         Step(f"create venv {venv}", ["uv", "venv", str(venv), "--python", python]),
         Step(
@@ -51,7 +60,23 @@ def build_plan(*, venv: Path, models: Path, skip_models: bool, python: str = "3.
             ["uv", "pip", "install", "--python", str(venv / "bin" / "python"), "httpx<1"],
         ),
     ]
-    if not skip_models:
+    if embedder == "llama-cpp":
+        steps.append(
+            Step(
+                "install llama-cpp-python with Metal (reuses QMD's Qwen3 GGUF)",
+                [
+                    "env",
+                    "CMAKE_ARGS=-DGGML_METAL=on",
+                    "uv",
+                    "pip",
+                    "install",
+                    "--python",
+                    str(venv / "bin" / "python"),
+                    "llama-cpp-python",
+                ],
+            )
+        )
+    elif not skip_models:
         steps.append(
             Step(
                 f"download {E5_MODEL} into {models}",
@@ -69,7 +94,7 @@ def build_plan(*, venv: Path, models: Path, skip_models: bool, python: str = "3.
     return steps
 
 
-def render_plan(steps: list[Step], *, venv: Path, models: Path) -> str:
+def render_plan(steps: list[Step], *, venv: Path, models: Path, embedder: str = "e5") -> str:
     lines = ["memory sidecar provisioning plan:", ""]
     for index, step in enumerate(steps, start=1):
         lines.append(f"  {index}. {step.title}")
@@ -82,7 +107,12 @@ def render_plan(steps: list[Step], *, venv: Path, models: Path) -> str:
         "  抽取端点         http://127.0.0.1:8080/v1（本机服务）或云端 OpenAI 兼容地址",
         "  注入字符上限     1200",
         "",
-        f"and export VOICEMEM_MODELS_DIR={models} for the sidecar process.",
+        (
+            "embedder: llama-cpp -> export S2S_MEMORY_EMBEDDER=llama-cpp and "
+            f"S2S_MEMORY_EMBEDDER_GGUF=<path to {QWEN3_GGUF_NAME}>"
+            if embedder == "llama-cpp"
+            else f"and export VOICEMEM_MODELS_DIR={models} for the sidecar process."
+        ),
     ]
     return "\n".join(lines)
 
@@ -103,6 +133,12 @@ def main() -> int:
     parser.add_argument("--models", type=Path, default=DEFAULT_MODELS)
     parser.add_argument("--python", default="3.11")
     parser.add_argument("--skip-models", action="store_true", help="skip the E5 download")
+    parser.add_argument(
+        "--embedder",
+        choices=("e5", "llama-cpp"),
+        default="e5",
+        help="e5 downloads the local E5 model; llama-cpp reuses QMD's Qwen3 GGUF in-process.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="print the plan and exit")
     parser.add_argument("--yes", action="store_true", help="run without an interactive prompt")
     args = parser.parse_args()
@@ -111,8 +147,14 @@ def main() -> int:
         print("uv is required (https://docs.astral.sh/uv/)", file=sys.stderr)
         return 2
 
-    steps = build_plan(venv=args.venv, models=args.models, skip_models=args.skip_models, python=args.python)
-    print(render_plan(steps, venv=args.venv, models=args.models))
+    steps = build_plan(
+        venv=args.venv,
+        models=args.models,
+        skip_models=args.skip_models,
+        python=args.python,
+        embedder=args.embedder,
+    )
+    print(render_plan(steps, venv=args.venv, models=args.models, embedder=args.embedder))
     if args.dry_run:
         return 0
     if not args.yes:

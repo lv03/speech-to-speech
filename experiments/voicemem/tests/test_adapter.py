@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from adapter import (  # noqa: E402
     QWEN3_QUERY_PREFIX,
     CloudExtractionNotConsentedError,
+    LlamaCppEmbedder,
     MemoryHit,
     MemoryLockedError,
     RemoteOpenAIEmbedder,
@@ -232,3 +233,31 @@ def test_remote_embedder_caches_dimensions():
 
 def test_remote_embedder_uses_qwen3_instruct_prefix_by_default():
     assert QWEN3_QUERY_PREFIX.startswith("Instruct: Retrieve relevant documents")
+
+
+class _RecordingLlama(LlamaCppEmbedder):
+    def __init__(self, **kwargs):
+        super().__init__(model_path="/tmp/fake.gguf", **kwargs)
+        self.calls: list[list[str]] = []
+
+    def _embed(self, texts):
+        self.calls.append(list(texts))
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+
+def test_llama_cpp_embedder_prefixes_and_encode_shim():
+    embedder = _RecordingLlama(query_prefix="Q:", doc_prefix="D:")
+    embedder.embed_texts(["事实"])
+    embedder.embed_query_text("问题")
+    embedder.encode(["query: 我住哪里", "passage: work"])
+    assert embedder.calls == [["D:事实"], ["Q:问题"], ["Q:我住哪里", "D:passage: work"]]
+
+
+def test_llama_cpp_embedder_requires_the_gguf(monkeypatch):
+    from adapter import MemoryNotConfiguredError, VoiceMemAdapter
+
+    adapter = VoiceMemAdapter(memory_root="/tmp/vm-llama-test-root", allow_cloud_extraction=True)
+    monkeypatch.setenv("S2S_MEMORY_EMBEDDER", "llama-cpp")
+    monkeypatch.delenv("S2S_MEMORY_EMBEDDER_GGUF", raising=False)
+    with pytest.raises(MemoryNotConfiguredError):
+        adapter._ensure_backend()  # noqa: SLF001

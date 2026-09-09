@@ -32,9 +32,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Protocol, Sequence, runtime_checkable
+from typing import Any, Callable, Protocol, Sequence, runtime_checkable
 
 DEFAULT_TOP_K = 5
 
@@ -158,6 +159,108 @@ class RemoteOpenAIEmbedder:
             norms[norms == 0] = 1.0
             matrix = matrix / norms
         return matrix
+
+
+
+#: Loaded llama.cpp models, keyed by (path, n_ctx). voicemem issues ~11 embedding
+#: calls per turn, so the model must be loaded once and reused.
+_LLAMA_CACHE: dict[tuple[str, int], Any] = {}
+
+
+def _l2_normalize(rows: list[list[float]]) -> list[list[float]]:
+    import numpy as np
+
+    matrix = np.asarray(rows, dtype="float32")
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return (matrix / norms).tolist()
+
+
+class LlamaCppEmbedder:
+    """In-process embeddings from a GGUF via llama.cpp (Metal on macOS).
+
+    Reuses the model file the project already ships for QMD, without an HTTP
+    hop: voicemem issues ~11 embedding calls per turn, and a network round trip
+    per call is what made the llama-server variant 10x slower.
+    """
+
+    def __init__(
+        self,
+        *,
+        model_path: str,
+        n_ctx: int = 2048,
+        n_gpu_layers: int = -1,
+        query_prefix: str = "",
+        doc_prefix: str = "",
+        verbose: bool = False,
+    ) -> None:
+        self.model_path = str(Path(model_path).expanduser())
+        self.query_prefix = query_prefix
+        self.doc_prefix = doc_prefix
+        self._n_ctx = int(n_ctx)
+        self._n_gpu_layers = int(n_gpu_layers)
+        self._verbose = bool(verbose)
+        self._dimensions: int | None = None
+        # llama.cpp contexts are not thread-safe; voicemem calls embeddings from
+        # the speculation worker thread, so every call is serialized.
+        self._lock = threading.Lock()
+
+    def _llama(self):
+        key = (self.model_path, self._n_ctx)
+        instance = _LLAMA_CACHE.get(key)
+        if instance is None:
+            try:
+                import llama_cpp
+            except ImportError as exc:
+                raise MemoryNotConfiguredError(
+                    "S2S_MEMORY_EMBEDDER=llama-cpp requires llama-cpp-python in the sidecar venv"
+                ) from exc
+            instance = llama_cpp.Llama(
+                model_path=self.model_path,
+                embedding=True,
+                n_ctx=self._n_ctx,
+                n_gpu_layers=self._n_gpu_layers,
+                pooling_type=llama_cpp.LLAMA_POOLING_TYPE_LAST,
+                verbose=self._verbose,
+            )
+            _LLAMA_CACHE[key] = instance
+        return instance
+
+    @property
+    def model_name(self) -> str:
+        return f"{Path(self.model_path).name} (llama.cpp)"
+
+    @property
+    def dimensions(self) -> int:
+        if self._dimensions is None:
+            self._dimensions = int(self._llama().n_embd())
+        return self._dimensions
+
+    def _embed(self, texts: list[str]) -> list[list[float]]:
+        with self._lock:
+            payload = self._llama().create_embedding(texts)
+        rows = sorted(payload["data"], key=lambda row: row.get("index", 0))
+        return _l2_normalize([list(map(float, row["embedding"])) for row in rows])
+
+    def embed_texts(self, texts):
+        if not texts:
+            return []
+        return self._embed([f"{self.doc_prefix}{text}" for text in texts])
+
+    def embed_query_text(self, text: str):
+        return self._embed([f"{self.query_prefix}{text}"])[0]
+
+    def encode(self, texts, normalize_embeddings: bool = True):
+        import numpy as np
+
+        prepared = [
+            f"{self.query_prefix}{text[len('query: '):]}"
+            if text.startswith("query: ")
+            else f"{self.doc_prefix}{text}"
+            for text in texts
+        ]
+        # _embed already L2-normalizes; the slot classifier relies on that.
+        return np.asarray(self._embed(prepared), dtype="float32")
 
 
 class VoiceMemAdapter:
@@ -351,7 +454,25 @@ class _VoicememBackend:
             config["models"] = {"chat": resolved_model}
         kwargs = build_kwargs(config)
         embedder_kind = os.environ.get("S2S_MEMORY_EMBEDDER", "local").strip().lower()
-        if embedder_kind in ("openai-compat", "remote"):
+        if embedder_kind in ("llama-cpp", "llamacpp"):
+            gguf = os.environ.get("S2S_MEMORY_EMBEDDER_GGUF", "").strip()
+            if not gguf:
+                raise MemoryNotConfiguredError(
+                    "S2S_MEMORY_EMBEDDER=llama-cpp requires S2S_MEMORY_EMBEDDER_GGUF"
+                )
+            from voicemem.leftbrain.cognitive_graph.local_query_classifier import LocalQueryClassifier
+
+            local = LlamaCppEmbedder(
+                model_path=gguf,
+                query_prefix=os.environ.get("S2S_MEMORY_EMBEDDER_QUERY_PREFIX", QWEN3_QUERY_PREFIX),
+                doc_prefix=os.environ.get("S2S_MEMORY_EMBEDDER_DOC_PREFIX", ""),
+                n_ctx=int(os.environ.get("S2S_MEMORY_EMBEDDER_CTX", "2048")),
+                n_gpu_layers=int(os.environ.get("S2S_MEMORY_EMBEDDER_GPU_LAYERS", "-1")),
+            )
+            kwargs["embedding"] = lambda: local
+            for key in ("slots", "schema"):
+                kwargs[key] = lambda: LocalQueryClassifier(model=local)
+        elif embedder_kind in ("openai-compat", "remote"):
             embed_base = os.environ.get("S2S_MEMORY_EMBEDDER_BASE_URL", "").strip()
             if not embed_base:
                 raise MemoryNotConfiguredError(

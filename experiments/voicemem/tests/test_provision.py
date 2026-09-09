@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from provision import (  # noqa: E402
     E5_MODEL,
+    QWEN3_GGUF_NAME,
     TARBALL_URL,
     VOICEMEM_SHA,
     build_plan,
@@ -67,3 +68,28 @@ def test_dry_run_creates_nothing(tmp_path, capsys):
     assert not models.exists()
     out = capsys.readouterr().out
     assert VOICEMEM_SHA[:12] in out
+
+
+def test_llama_cpp_plan_builds_metal_and_skips_the_e5_download(tmp_path):
+    steps = build_plan(
+        venv=tmp_path / "venv",
+        models=tmp_path / "models",
+        skip_models=False,
+        embedder="llama-cpp",
+    )
+    commands = [" ".join(step.command) for step in steps]
+
+    assert any("CMAKE_ARGS=-DGGML_METAL=on" in command and "llama-cpp-python" in command for command in commands)
+    assert not any(E5_MODEL in command for command in commands)
+
+
+def test_llama_cpp_plan_tells_the_operator_which_env_to_export(tmp_path):
+    venv, models = tmp_path / "venv", tmp_path / "models"
+    text = render_plan(
+        build_plan(venv=venv, models=models, skip_models=False, embedder="llama-cpp"),
+        venv=venv,
+        models=models,
+        embedder="llama-cpp",
+    )
+    assert "S2S_MEMORY_EMBEDDER=llama-cpp" in text
+    assert QWEN3_GGUF_NAME in text

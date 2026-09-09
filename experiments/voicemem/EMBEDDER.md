@@ -18,19 +18,26 @@ Verified 2026-09-09 on this machine.
    and an `encode()` shim so voicemem's slot classifier shares the same model.
 3. Ran the Chinese smoke and the per-turn prefetch path against it.
 
+4. **Option A measured (2026-09-09):** installed `llama-cpp-python 0.3.35`
+   built with Metal (`CMAKE_ARGS=-DGGML_METAL=on`, ~47 s) into the sidecar venv and
+   added `LlamaCppEmbedder`, which loads the same QMD GGUF **in-process** and
+   serializes calls with a lock.
+
 ## Results
 
-| | E5-small in-process (baseline) | Qwen3-Embedding-0.6B over HTTP |
+| | E5-small in-process (baseline) | Qwen3 over HTTP | Qwen3 in-process (llama.cpp) |
 |---|---|---|
-| Model source | new download, 470 MB | **reuses the QMD GGUF, 0 MB** |
-| Process | inside the sidecar | extra `llama-server`, RSS 286 MiB (weights mmap-shared with QMD's copy) |
-| Dims | 384 | 1024 |
-| Chinese Top-1 (3 queries) | 3/3 | 3/3 |
-| Retrieval, warm | **41–92 ms** | 112–149 ms (`adapter.recall`) |
-| Retrieval via the stream path | ~140 ms | **1050–1290 ms** |
-| First retrieval after start | ~200 ms | 2.8–4.8 s (slot matrix + warmup) |
-| Embedding calls per turn | 11 (in-process, ~5–15 ms each) | **11 (HTTP, 38–239 ms each)** |
-| Memory dir for 4 facts | ~1.1 MB | ~760 KB |
+| Model source | new download, 470 MB | **reuses the QMD GGUF, 0 MB** | **reuses the QMD GGUF, 0 MB** |
+| Process | inside the sidecar | extra `llama-server`, 286 MiB (weights mmap-shared) | none |
+| Sidecar RSS (loaded) | 803 MiB | 24 MiB (+286 MiB server) | **595 MiB** |
+| Dims | 384 | 1024 | 1024 |
+| Chinese Top-1 (3 queries) | 3/3 | 3/3 | 3/3 |
+| Retrieval, warm (`recall`) | **41–92 ms** | 112–149 ms | 102–125 ms |
+| Retrieval via the stream path | ~140 ms | **1050–1290 ms** | **201 ms** |
+| First retrieval after start | ~200 ms | 2.8–4.8 s | 0.99–1.12 s (model load + slot matrix) |
+| Embedding calls per turn | 11 (5–15 ms each) | 11 (38–239 ms each) | 8–11 (24–97 ms each) |
+| Memory dir for 4 facts | ~1.1 MB | ~760 KB | ~760 KB |
+| Extra install | wheels only | `llama-server` binary | **`llama-cpp-python` Metal build (toolchain needed)** |
 
 The per-call decomposition of one `feed_final` (11 calls, 1079 ms total):
 
@@ -39,6 +46,18 @@ batch=1  93 ms   batch=1  94 ms     # dimension probes (one per embedder instanc
 batch=7 167 ms   batch=7 239 ms     # slot matrix, built twice (two classifier instances)
 batch=1  38 / 175 / 204 / 205 / 210 / 45 / 36 ms   # per-query embeddings
 ```
+
+### Option A details
+
+- **Thread safety is mandatory.** Without a lock around `create_embedding`, the
+  speculation worker thread and the caller corrupt the llama.cpp context and it
+  raises `ValueError: NULL pointer access`. With a lock the calls serialize and
+  the numbers above hold.
+- torch MPS and llama.cpp Metal coexist in one process (verified: an MPS tensor
+  allocation before and after llama.cpp embeddings).
+- Per-call latency inside a turn drifts upward (24 → 97 ms across 8 calls), so a
+  turn's embedding work is ~200 ms even though a single call is ~25 ms.
+- The model must be warmed at startup; the first retrieval pays ~1 s.
 
 ## Why the remote path is ~10× slower
 
@@ -68,20 +87,28 @@ leaves ~7 calls ≈ 350–700 ms, above the 0–300 ms prefetch budget.
 
 | Option | Reuses existing model | Extra process/RAM | Retrieval latency | Effort |
 |---|---|---|---|---|
-| **A. llama.cpp in-process** (`llama-cpp-python` 0.3.35 in the sidecar, same GGUF) | yes (file) | second loader, ~300–600 MiB; new dependency (Metal build) | est. 11 × 15–30 ms ≈ 150–330 ms | small-medium |
-| **B. Keep HTTP, cut calls** (one classifier instance, cached dims, precomputed slot matrix) | yes | 286 MiB server | ~350–700 ms | small |
+| **A. llama.cpp in-process** — **measured** | yes (same GGUF) | none; sidecar 595 MiB | **102–125 ms warm, 201 ms stream** | done in the experiment; packaging needs a Metal build |
+| **B. Keep HTTP, cut calls** | yes | 286 MiB server | ~350–700 ms (estimated) | small, but still over budget |
 | **C. Use QMD itself as the memory store** (facts → markdown collection, recall → `qmd query`) | yes, **no second loader at all** | none | 30–110 ms (hot vec query) | large: own the extraction prompt + write path |
-| **D. Keep E5 in-process** (today) | no (470 MB once) | none | **41–92 ms** | none |
+| **D. Keep E5 in-process** (today) | no (470 MB once) | none | 41–92 ms | none |
 
 ## Recommendation
 
-- If the goal is "no extra model download and no extra process", option **C** is
-  the only one that truly satisfies it, but it means reimplementing fact
-  extraction and dropping voicemem's retrieval.
-- If the goal is "reuse the existing model file", option **A** is the only
-  variant that stays inside the prefetch budget; option **B** does not.
-- Option **D** remains the tested baseline and is what the product currently
-  ships behind the off-by-default flag.
+**Option A is viable and is now the preferred way to reuse the existing model:**
+it needs no extra process, no extra download, stays inside the 300 ms budget
+(102–125 ms warm recall, 201 ms stream path), and uses *less* memory than the E5
+baseline (595 MiB vs 803 MiB). Chinese Top-1 was 3/3 in both.
 
-The remote-embedder knob (`S2S_MEMORY_EMBEDDER=openai-compat`) stays in the
-adapter as the harness for A/B/C experiments; it is not wired into the desktop.
+The one real cost is packaging: `llama-cpp-python` had to be **built with Metal**
+from source (no wheel for this platform/version), so provisioning a user machine
+needs a compiler/CMake. E5 (option D) installs as a pure wheel. That tradeoff —
+"reuse the model file, but build a native extension" vs "download a second model,
+but install cleanly" — is the decision to make before wiring this into the
+desktop. `provision.py --embedder llama-cpp` now emits that plan.
+
+Option C remains the cleanest end state if we are willing to own fact extraction
+and drop voicemem's retrieval entirely.
+
+Knobs stay experiment-only: `S2S_MEMORY_EMBEDDER=llama-cpp|openai-compat|local`
+(`local` = E5) with `S2S_MEMORY_EMBEDDER_GGUF`; none of them are wired into the
+desktop yet.
