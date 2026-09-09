@@ -39,8 +39,10 @@ reachable. The endpoint and model are scoped to the sidecar child process only
 (`OPENAI_BASE_URL`/`OPENAI_MODEL` in its environment) so they cannot redirect
 other components such as the STT/TTS backends.
 
-Reads never leave the machine: retrieval uses the local E5 model plus a local
-Qdrant store inside the sidecar.
+Reads never leave the machine: retrieval embeds locally through the QMD daemon's
+patched `/embed` route (`EMBEDDER.md`; no E5 model is loaded) and searches a
+local vector store inside the sidecar — mem0's embedded Qdrant today, with
+`STORE_SWAP.md` proposing SQLite/sqlite-vec as the replacement.
 
 ## D3 — Injection is silent, and that is deliberate
 

@@ -20,6 +20,7 @@ packages it drags in.
 | `tests/test_adapter.py` | 15 mock-based tests for the adapter |
 | `tests/test_pipeline.py` | 22 mock-based tests for batching, prefetch and injection |
 | `tests/test_sidecar.py` | 9 tests spawning `sidecar.py --backend fake` |
+| `tests/test_mem0_sqlite_vec.py` | 12 store-contract tests (skipped without mem0 + sqlite-vec) |
 | `check_env.py` | Gate 1: what a voicemem install would change here (zero-install) |
 | `zh_smoke.py` | Gate 5: Chinese ingest/search smoke (needs the venv + a key) |
 | `prefetch_probe.py` | Real prefetch timing probe (needs the venv + a key) |
@@ -28,8 +29,10 @@ packages it drags in.
 | `config.example.env` | Env template: endpoint, language, mirror, storage, telemetry off |
 | `DECISIONS.md` | The product decisions the implementation encodes + acceptance checklist |
 | `EMBEDDER.md` | Verification: reusing QMD's Qwen3-Embedding GGUF instead of E5 |
-| `QMD_STORE.md` | Feasibility: replacing mem0+Qdrant with QMD as the memory store |
+| `QMD_STORE.md` | Feasibility: replacing mem0+Qdrant with QMD as the memory store (rejected route) |
 | `qmd_store.py` / `qmd_store_probe.py` | Prototype store + A/B probe behind that report |
+| `STORE_SWAP.md` | Feasibility: keeping mem0 but swapping its vector store Qdrant → SQLite/sqlite-vec |
+| `mem0_sqlite_vec.py` / `mem0_store_probe.py` / `store_swap_smoke.py` | Prototype store, mem0-level A/B, end-to-end VoiceMem probe |
 | `INTEGRATION_NOTES.md` | What voicemem would introduce: deps, models, network, storage, risk |
 | `GATES.md` | The seven gates: status, evidence, and the work each one still needs |
 | `PRIOR_ART.md` | How qwen-audio-agent integrates VoiceMem, and what we should copy |

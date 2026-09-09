@@ -1,5 +1,11 @@
 # Feasibility: replacing mem0 + Qdrant with QMD as the memory store (route 2)
 
+> **Not the chosen route.** This report answers "can QMD *be* the memory store"
+> (mem0 removed, memories as Markdown). The accepted scope is narrower: keep
+> mem0, swap only its vector backend to SQLite/sqlite-vec — see `STORE_SWAP.md`.
+> QMD's index cannot host mem0's rows, so only the `sqlite-vec` engine is reused
+> there. Kept for the retrieval measurements below (vec-only vs hybrid+rerank).
+
 Status 2026-09-09. Prototype only — nothing in `src/` uses it.
 
 ## What was built
