@@ -78,6 +78,88 @@ class MemoryBackend(Protocol):
     def delete_all(self) -> None: ...
 
 
+
+#: Qwen3-Embedding's documented query format (documents are raw text).
+QWEN3_QUERY_PREFIX = "Instruct: Retrieve relevant documents for the given query\nQuery: "
+
+
+class RemoteOpenAIEmbedder:
+    """Embeddings from an OpenAI-compatible ``/embeddings`` endpoint.
+
+    Exists so the memory store can reuse an embedding model the project already
+    runs elsewhere (e.g. the QMD GGUF served by llama-server) instead of
+    downloading and loading a second model. Also exposes ``encode()`` so
+    voicemem's local slot classifier can share the same remote model.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        model: str = "embedding",
+        api_key: str = "sk-local",
+        query_prefix: str = "",
+        doc_prefix: str = "",
+        timeout: float = 30.0,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key = api_key
+        self.query_prefix = query_prefix
+        self.doc_prefix = doc_prefix
+        self.timeout = float(timeout)
+        self._dimensions: int | None = None
+
+    def _post(self, inputs: list[str]) -> list[list[float]]:
+        import httpx
+
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(
+                f"{self.base_url}/embeddings",
+                json={"model": self.model, "input": inputs},
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        rows = sorted(payload["data"], key=lambda row: row.get("index", 0))
+        return [list(map(float, row["embedding"])) for row in rows]
+
+    @property
+    def model_name(self) -> str:
+        return f"{self.model} (remote {self.base_url})"
+
+    @property
+    def dimensions(self) -> int:
+        if self._dimensions is None:
+            self._dimensions = len(self._post(["dimension probe"])[0])
+        return self._dimensions
+
+    def embed_texts(self, texts):
+        if not texts:
+            return []
+        return self._post([f"{self.doc_prefix}{text}" for text in texts])
+
+    def embed_query_text(self, text: str):
+        return self._post([f"{self.query_prefix}{text}"])[0]
+
+    def encode(self, texts, normalize_embeddings: bool = True):
+        """SentenceTransformer-compatible shim for voicemem's slot classifier."""
+        import numpy as np
+
+        prepared = [
+            f"{self.query_prefix}{text[len('query: '):]}"
+            if text.startswith("query: ")
+            else f"{self.doc_prefix}{text}"
+            for text in texts
+        ]
+        matrix = np.asarray(self._post(prepared), dtype="float32")
+        if normalize_embeddings:
+            norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            matrix = matrix / norms
+        return matrix
+
+
 class VoiceMemAdapter:
     """Three-interface, fail-closed wrapper around a memory backend.
 
@@ -268,6 +350,28 @@ class _VoicememBackend:
         if resolved_model:
             config["models"] = {"chat": resolved_model}
         kwargs = build_kwargs(config)
+        embedder_kind = os.environ.get("S2S_MEMORY_EMBEDDER", "local").strip().lower()
+        if embedder_kind in ("openai-compat", "remote"):
+            embed_base = os.environ.get("S2S_MEMORY_EMBEDDER_BASE_URL", "").strip()
+            if not embed_base:
+                raise MemoryNotConfiguredError(
+                    "S2S_MEMORY_EMBEDDER=openai-compat requires S2S_MEMORY_EMBEDDER_BASE_URL"
+                )
+            remote = RemoteOpenAIEmbedder(
+                base_url=embed_base,
+                model=os.environ.get("S2S_MEMORY_EMBEDDER_MODEL", "embedding"),
+                query_prefix=os.environ.get("S2S_MEMORY_EMBEDDER_QUERY_PREFIX", QWEN3_QUERY_PREFIX),
+                doc_prefix=os.environ.get("S2S_MEMORY_EMBEDDER_DOC_PREFIX", ""),
+            )
+            from voicemem.leftbrain.cognitive_graph.local_query_classifier import LocalQueryClassifier
+
+            kwargs["embedding"] = lambda: remote
+            # main's build_kwargs emits the canonical key `slots`; older builds used
+            # `schema`. Overriding only the alias lets the default factory win
+            # (`_canon` uses setdefault), which silently keeps loading E5.
+            for key in ("slots", "schema"):
+                kwargs[key] = lambda: LocalQueryClassifier(model=remote)
+
         kwargs.update(
             enable_scene=False,
             enable_music=False,

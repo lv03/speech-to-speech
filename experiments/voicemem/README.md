@@ -27,6 +27,7 @@ packages it drags in.
 | `license_report.py` | Inventory the sidecar venv's dependencies and flag unresolved licenses |
 | `config.example.env` | Env template: endpoint, language, mirror, storage, telemetry off |
 | `DECISIONS.md` | The product decisions the implementation encodes + acceptance checklist |
+| `EMBEDDER.md` | Verification: reusing QMD's Qwen3-Embedding GGUF instead of E5 |
 | `INTEGRATION_NOTES.md` | What voicemem would introduce: deps, models, network, storage, risk |
 | `GATES.md` | The seven gates: status, evidence, and the work each one still needs |
 | `PRIOR_ART.md` | How qwen-audio-agent integrates VoiceMem, and what we should copy |

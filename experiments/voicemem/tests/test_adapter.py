@@ -18,9 +18,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from adapter import (  # noqa: E402
+    QWEN3_QUERY_PREFIX,
     CloudExtractionNotConsentedError,
     MemoryHit,
     MemoryLockedError,
+    RemoteOpenAIEmbedder,
     VoiceMemAdapter,
     _force_telemetry_off,
 )
@@ -193,3 +195,40 @@ def test_telemetry_guard_rejects_enabled(monkeypatch):
     monkeypatch.setenv("MEM0_TELEMETRY", "true")
     with pytest.raises(Exception):
         _force_telemetry_off()
+
+
+# ── remote embedder (reuse an existing model over an OpenAI-compatible endpoint) ──
+
+
+class _RecordingEmbedder(RemoteOpenAIEmbedder):
+    def __init__(self, **kwargs):
+        super().__init__(base_url="http://127.0.0.1:9/v1", **kwargs)
+        self.calls: list[list[str]] = []
+
+    def _post(self, inputs):
+        self.calls.append(list(inputs))
+        return [[0.1, 0.2, 0.3] for _ in inputs]
+
+
+def test_remote_embedder_applies_role_specific_prefixes():
+    embedder = _RecordingEmbedder(query_prefix="Q:", doc_prefix="D:")
+    embedder.embed_texts(["事实一", "事实二"])
+    embedder.embed_query_text("问题")
+    assert embedder.calls == [["D:事实一", "D:事实二"], ["Q:问题"]]
+
+
+def test_remote_embedder_encode_rewrites_the_classifier_query_prefix():
+    embedder = _RecordingEmbedder(query_prefix="Q:", doc_prefix="D:")
+    embedder.encode(["query: 我住哪里", "passage: work: 工作"])
+    assert embedder.calls == [["Q:我住哪里", "D:passage: work: 工作"]]
+
+
+def test_remote_embedder_caches_dimensions():
+    embedder = _RecordingEmbedder()
+    assert embedder.dimensions == 3
+    assert embedder.dimensions == 3
+    assert len(embedder.calls) == 1
+
+
+def test_remote_embedder_uses_qwen3_instruct_prefix_by_default():
+    assert QWEN3_QUERY_PREFIX.startswith("Instruct: Retrieve relevant documents")
