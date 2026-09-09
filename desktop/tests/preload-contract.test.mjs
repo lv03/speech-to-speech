@@ -20,3 +20,8 @@ test('exposes one knowledge snapshot subscription method', () => {
   expect(exposedApi).toHaveProperty('onKnowledgeSnapshot')
   expect(exposedApi).not.toHaveProperty('onKnowledgeSnapshotChanged')
 })
+
+test('exposes the memory health subscription and getter', () => {
+  expect(exposedApi).toHaveProperty('onMemoryHealth')
+  expect(exposedApi).toHaveProperty('memoryHealth')
+})

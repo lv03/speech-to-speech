@@ -25,7 +25,8 @@ inject per response — with the four-gate policy in
 | Voice-loop event mapping + per-response injection | `audio_client.py` | done, tested |
 | Local-pipeline gate mirroring | `s2s_pipeline.py`, `memory/factory.py` | done, tested |
 | Desktop settings, env passthrough, UI | `desktop/src/...` | done, tested |
-| Sidecar lifecycle/health in the UI | — | **next** |
+| Sidecar lifecycle/health in the UI | `s2s_pipeline.py`, `desktop/src/...` | done, tested |
+| Promotion (packaging, licenses, model download) | — | **next** |
 
 ## Step 1 — CLI and config plumbing (done for `talk`)
 
@@ -121,8 +122,12 @@ rather than `off`, so the environment can enable memory while an explicit `off`
 still wins. Tests: `desktop/tests/memory-settings.test.mjs` (4) plus the Python
 env-fallback tests.
 
-Still open: live sidecar health in the UI (needs a health event from the voice
-process) and stopping the sidecar on `will-quit` when no session ever started.
+Live health is now wired: the local pipeline emits
+`EVENT: {"type":"memory.health","ok":…,"backend":…,"unlocked":…,"pendingTurns":…,"warning":…}`
+at startup and on every gate change (counts and booleans only — no paths, no
+content); `index.ts` caches it and exposes `memory:health`; the settings page
+shows 已连接/降级/未启用. The provider also registers an `atexit` hook so the
+sidecar child is stopped even when no session ever started.
 
 Original scope:
 

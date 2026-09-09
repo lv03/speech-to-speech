@@ -60,6 +60,7 @@ const memoryCloudConsent = document.getElementById('memory-cloud-consent') as HT
 const memorySidecarPython = document.getElementById('memory-sidecar-python') as HTMLInputElement
 const memorySidecarScript = document.getElementById('memory-sidecar-script') as HTMLInputElement
 const memoryMaxChars = document.getElementById('memory-max-chars') as HTMLInputElement
+const memoryStatusEl = document.getElementById('memory-status')!
 const voiceprintStatusEl = document.getElementById('voiceprint-status')!
 const voiceprintEnrollBtn = document.getElementById('voiceprint-enroll') as HTMLButtonElement
 const voiceprintVerifyBtn = document.getElementById('voiceprint-verify') as HTMLButtonElement
@@ -131,6 +132,7 @@ function render(settings: SettingsPayload): void {
   memorySidecarPython.value = settings.memorySidecarPython
   memorySidecarScript.value = settings.memorySidecarScript
   memoryMaxChars.value = String(settings.memoryMaxChars)
+  renderMemoryHealth(null)
 }
 
 function collect(): SettingsPayload {
@@ -193,6 +195,21 @@ const knowledgeModel = document.getElementById('knowledge-model')!
 const knowledgeCollections = document.getElementById('knowledge-collections')!
 const knowledgeAdd = document.getElementById('knowledge-add') as HTMLButtonElement
 const knowledgeCancel = document.getElementById('knowledge-cancel') as HTMLButtonElement
+
+function renderMemoryHealth(health: Record<string, unknown> | null): void {
+  if (!health) {
+    memoryStatusEl.textContent = memoryEnabled.checked ? '等待语音引擎启动…' : '未启用'
+    return
+  }
+  if (health.ok === false) {
+    const warning = String(health.warning ?? '').trim()
+    memoryStatusEl.textContent = `降级${warning ? `：${warning}` : ''}`
+    return
+  }
+  const unlocked = health.unlocked === true ? '已解锁' : '已锁定'
+  const pending = Number(health.pendingTurns ?? 0)
+  memoryStatusEl.textContent = `已连接（${String(health.backend ?? 'voicemem')}，${unlocked}，待写入 ${pending}）`
+}
 
 function updateRetrievalModeAvailability(availableModes: string[] = []): void {
   const hybridApproved = availableModes.includes('hybrid')
@@ -262,10 +279,15 @@ function renderKnowledge(snapshot: KnowledgeSnapshot): void {
 async function refreshKnowledge(): Promise<void> {
   try {
     renderKnowledge((await window.desktop.knowledgeSnapshot()) as unknown as KnowledgeSnapshot)
+    renderMemoryHealth((await window.desktop.memoryHealth()) as Record<string, unknown> | null)
   } catch {
     knowledgeState.textContent = '状态未知'
   }
 }
+
+window.desktop.onMemoryHealth((health) => {
+  renderMemoryHealth(health)
+})
 
 window.desktop.onKnowledgeSnapshot((snapshot) => {
   renderKnowledge(snapshot as unknown as KnowledgeSnapshot)

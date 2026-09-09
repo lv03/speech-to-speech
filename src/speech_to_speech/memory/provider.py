@@ -7,6 +7,7 @@ because a memory outage must never break a conversation.
 
 from __future__ import annotations
 
+import atexit
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
@@ -39,6 +40,9 @@ class MemoryProvider:
         self._client = client
         self._client_factory = client_factory or self._default_client_factory
         self._max_chars = int(config.max_context_chars or DEFAULT_MAX_CHARS)
+        # The sidecar is a child process; make sure it is stopped even when the
+        # session never started (e.g. the voice engine exits right after boot).
+        atexit.register(self.close)
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -79,6 +83,10 @@ class MemoryProvider:
             self._degrade("set_permission", exc)
 
     def close(self) -> None:
+        try:
+            atexit.unregister(self.close)
+        except Exception:  # pragma: no cover - unregister is best effort
+            pass
         if self._client is not None:
             try:
                 self._client.close()

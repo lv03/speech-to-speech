@@ -94,6 +94,7 @@ const api: DesktopApi = {
   setTaskCount: (count) => ipcRenderer.send('orb:task-count', count),
   toggleVoice: () => ipcRenderer.invoke('voice:toggle'),
   voiceStatus: () => ipcRenderer.invoke('voice:status'),
+  memoryHealth: () => ipcRenderer.invoke('memory:health'),
   onVoiceReady: (cb) => {
     ipcRenderer.on('voice:ready', () => cb())
   },
@@ -102,6 +103,9 @@ const api: DesktopApi = {
   },
   onVoiceStatusChange: (cb) => {
     ipcRenderer.on('voice:status-change', (_e, status: string) => cb(status))
+  },
+  onMemoryHealth: (cb: (health: Record<string, unknown> | null) => void) => {
+    ipcRenderer.on('memory:health', (_e, health) => cb(health))
   },
   onVoiceLog: (cb) => {
     ipcRenderer.on('voice:log', (_e, line: string) => cb(line))

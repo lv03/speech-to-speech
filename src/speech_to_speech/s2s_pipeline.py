@@ -464,6 +464,25 @@ def _emit_security_state(locked: bool) -> None:
     print(f"EVENT: {json.dumps({'type': event_type})}", flush=True)
 
 
+def _emit_memory_health(provider: Any) -> None:
+    """Print the memory backend health as an EVENT line for the desktop app.
+
+    Only counts and booleans are emitted: no paths, no memory content.
+    """
+    if provider is None:
+        return
+    health = provider.health()
+    event = {
+        "type": "memory.health",
+        "ok": bool(health.get("ok")),
+        "backend": str(health.get("backend", "unknown")),
+        "unlocked": bool(provider.unlocked),
+        "pendingTurns": int(health.get("pendingTurns", 0) or 0),
+        "warning": str(health.get("warning", ""))[:200],
+    }
+    print(f"EVENT: {json.dumps(event)}", flush=True)
+
+
 def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadManager:
     """Compose the canonical server and audio client over a forced loopback URL."""
 
@@ -522,6 +541,7 @@ def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadMana
                 memory_provider.set_unlocked(not locked)
             if local_audio.local_audio_print_json:
                 _emit_security_state(locked)
+                _emit_memory_health(memory_provider)
 
         gate.set_state_change_callback(_on_security_state)
         initial_locked = getattr(gate, "is_locked", None)
@@ -530,6 +550,10 @@ def build_local_pipeline(args: ParsedArguments, stop_event: Event) -> ThreadMana
     elif memory_provider is not None:
         # No wake-word gate: the explicit CLI opt-in is the permission.
         memory_provider.set_unlocked(True)
+        if local_audio.local_audio_print_json:
+            _emit_memory_health(memory_provider)
+    if memory_provider is not None and gate is not None and not local_audio.local_audio_print_json:
+        pass  # health is only surfaced to a parent that asked for EVENT lines
     client = RealtimeAudioClient(
         stop_event,
         RealtimeAudioClientConfig(

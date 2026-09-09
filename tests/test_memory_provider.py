@@ -116,3 +116,16 @@ def test_sidecar_crash_is_self_healing_but_stays_locked(provider):
     provider.observe(session_id="s1", turns=[{"turn_id": "t1", "text": "我住在杭州"}])
     provider.flush(session_id="s1")
     assert "我住在杭州" in provider.prefetch_final(session_id="s1", turn_id="t2", revision=1, text="我住哪里")
+
+
+def test_close_is_idempotent_and_unregisters_the_atexit_hook(tmp_path):
+    instance = MemoryProvider(_config(tmp_path))
+    instance.close()
+    instance.close()  # must not raise
+    assert instance._client is None  # noqa: SLF001
+
+
+def test_disabled_provider_close_is_safe():
+    instance = MemoryProvider(MemoryConfig())
+    instance.close()
+    instance.close()

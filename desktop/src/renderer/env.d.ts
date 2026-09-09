@@ -12,6 +12,8 @@ declare global {
       saveSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>>
       setLlmApiKey(value: string): Promise<{ llmApiKeyPresent: boolean }>
       clearLlmApiKey(): Promise<{ llmApiKeyPresent: boolean }>
+      memoryHealth(): Promise<Record<string, unknown> | null>
+      onMemoryHealth(cb: (health: Record<string, unknown> | null) => void): void
       knowledgeSnapshot(): Promise<Record<string, unknown>>
       onKnowledgeSnapshot(cb: (snapshot: Record<string, unknown>) => void): void
       addKnowledgeCollection(): Promise<Record<string, unknown>>

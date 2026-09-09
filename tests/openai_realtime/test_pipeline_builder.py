@@ -177,3 +177,38 @@ def test_local_unlocks_memory_when_there_is_no_security_gate(monkeypatch):
     build_local_pipeline(args, Event())
 
     assert calls == [True]
+
+
+def test_local_emits_memory_health_only_for_the_parent(monkeypatch, capsys):
+    import json
+
+    class FakeProvider:
+        enabled = True
+        unlocked = False
+
+        def set_unlocked(self, unlocked):
+            self.unlocked = bool(unlocked)
+
+        def health(self):
+            return {"ok": True, "backend": "voicemem", "pendingTurns": 2, "warning": ""}
+
+    provider = FakeProvider()
+    monkeypatch.setattr("speech_to_speech.memory.build_memory_provider", lambda **_kwargs: provider)
+    unit = SimpleNamespace(handlers=[object()])
+    monkeypatch.setattr("speech_to_speech.pipeline_graph.PipelineGraph.instantiate", lambda self, **_kwargs: unit)
+
+    # Without print_json the parent gets no EVENT lines at all.
+    quiet = parse_arguments(["--memory-backend", "voicemem"], command="local")
+    build_local_pipeline(quiet, Event())
+    assert "memory.health" not in capsys.readouterr().out
+
+    loud = parse_arguments(
+        ["--memory-backend", "voicemem", "--local_audio_print_json"],
+        command="local",
+    )
+    build_local_pipeline(loud, Event())
+    out = capsys.readouterr().out
+    events = [json.loads(line[len("EVENT: "):]) for line in out.splitlines() if line.startswith("EVENT: ")]
+    health = [event for event in events if event["type"] == "memory.health"]
+    assert health and health[-1]["ok"] is True and health[-1]["pendingTurns"] == 2
+    assert "voicemem" in health[-1]["backend"]

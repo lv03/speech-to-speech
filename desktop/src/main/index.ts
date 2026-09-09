@@ -38,6 +38,8 @@ let settingsWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let gateway: EmbeddedGateway | null = null
 let voice: EmbeddedVoice | null = null
+/** 最近一次记忆后端健康状态（由语音进程的 EVENT 行推送）。 */
+let memoryHealth: Record<string, unknown> | null = null
 let settingsStore: SettingsStore | null = null
 let secretStore: SecretStore | null = null
 let knowledgeService: QmdService | null = null
@@ -504,6 +506,13 @@ async function startVoice(): Promise<void> {
     memoryMaxChars: settings.memoryMaxChars,
     onLog: (line) => pushVoiceLog(line),
     onEvent: (event) => {
+      if (String(event.type ?? '') === 'memory.health') {
+        memoryHealth = { ...event, at: Date.now() }
+        if (settingsWindow && !settingsWindow.isDestroyed()) {
+          settingsWindow.webContents.send('memory:health', memoryHealth)
+        }
+        return
+      }
       const state = voiceStateFromEvent(event)
       if (state && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('voice:state', state)
@@ -1074,6 +1083,7 @@ app.whenReady().then(async () => {
   ipcMain.on('orb:task-count', (_e, count: number) => setTaskCount(Number(count) || 0))
   ipcMain.handle('voice:toggle', () => toggleVoice())
   ipcMain.handle('voice:status', () => ({ running: voice?.running ?? false }))
+  ipcMain.handle('memory:health', () => memoryHealth)
   ipcMain.on('app:open-settings', () => showSettings())
 
   createTray()
