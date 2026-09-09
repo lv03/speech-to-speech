@@ -46,7 +46,7 @@ def test_enabled_provider_starts_and_unlocks_when_requested(monkeypatch):
         def set_unlocked(self, unlocked):
             calls.append(f"unlocked:{unlocked}")
 
-    monkeypatch.setattr("speech_to_speech.memory.MemoryProvider", FakeProvider)
+    monkeypatch.setattr("speech_to_speech.memory.factory.MemoryProvider", FakeProvider)
     provider = cli._build_memory_provider(
         _namespace(
             memory_backend="voicemem",
@@ -75,7 +75,7 @@ def test_failed_start_leaves_the_provider_locked(monkeypatch):
         def set_unlocked(self, unlocked):
             calls.append(f"unlocked:{unlocked}")
 
-    monkeypatch.setattr("speech_to_speech.memory.MemoryProvider", FakeProvider)
+    monkeypatch.setattr("speech_to_speech.memory.factory.MemoryProvider", FakeProvider)
     provider = cli._build_memory_provider(
         _namespace(
             memory_backend="voicemem",
