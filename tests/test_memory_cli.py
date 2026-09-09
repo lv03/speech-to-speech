@@ -11,7 +11,7 @@ from speech_to_speech import cli
 
 def _namespace(**overrides):
     values = {
-        "memory_backend": "off",
+        "memory_backend": None,
         "memory_sidecar_python": None,
         "memory_sidecar_script": None,
         "memory_root": None,
@@ -21,8 +21,17 @@ def _namespace(**overrides):
     return argparse.Namespace(**values)
 
 
-def test_memory_is_off_by_default():
+def test_memory_is_off_by_default(monkeypatch):
+    monkeypatch.delenv("S2S_MEMORY_BACKEND", raising=False)
     assert cli._build_memory_provider(_namespace()) is None
+
+
+def test_explicit_off_beats_the_environment(monkeypatch):
+    monkeypatch.setenv("S2S_MEMORY_BACKEND", "voicemem")
+    monkeypatch.setenv("S2S_MEMORY_SIDECAR_PYTHON", "/opt/voicemem/bin/python")
+    monkeypatch.setenv("S2S_MEMORY_SIDECAR_SCRIPT", "/opt/sidecar.py")
+    monkeypatch.setenv("S2S_MEMORY_ROOT", "/tmp/mem")
+    assert cli._build_memory_provider(_namespace(memory_backend="off")) is None
 
 
 def test_enabling_without_paths_fails_closed():
@@ -87,3 +96,38 @@ def test_failed_start_leaves_the_provider_locked(monkeypatch):
     )
     assert provider is not None
     assert calls == []
+
+
+def test_env_fallback_supplies_the_sidecar_paths(monkeypatch, tmp_path):
+    """The desktop app passes paths through the environment, never argv."""
+    captured = {}
+
+    class FakeProvider:
+        degraded_reason = ""
+
+        def __init__(self, config):
+            captured["config"] = config
+
+        def start(self):
+            return True
+
+        def set_unlocked(self, unlocked):
+            captured["unlocked"] = unlocked
+
+    monkeypatch.setattr("speech_to_speech.memory.factory.MemoryProvider", FakeProvider)
+    monkeypatch.setenv("S2S_MEMORY_BACKEND", "voicemem")
+    monkeypatch.setenv("S2S_MEMORY_SIDECAR_PYTHON", "/opt/voicemem/bin/python")
+    monkeypatch.setenv("S2S_MEMORY_SIDECAR_SCRIPT", "/opt/sidecar.py")
+    monkeypatch.setenv("S2S_MEMORY_ROOT", str(tmp_path / "mem"))
+    monkeypatch.setenv("S2S_MEMORY_MAX_CHARS", "900")
+
+    provider = cli._build_memory_provider(_namespace(), unlocked=False)
+
+    assert isinstance(provider, FakeProvider)
+    config = captured["config"]
+    assert config.backend == "voicemem"
+    assert config.sidecar_python == "/opt/voicemem/bin/python"
+    assert config.sidecar_script == "/opt/sidecar.py"
+    assert config.memory_root == str(tmp_path / "mem")
+    assert config.max_context_chars == 900
+    assert "unlocked" not in captured

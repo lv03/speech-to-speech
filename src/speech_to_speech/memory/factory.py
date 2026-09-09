@@ -7,6 +7,7 @@ same logic without importing the CLI module.
 from __future__ import annotations
 
 import logging
+import os
 
 from .config import MemoryConfig
 from .provider import MemoryProvider
@@ -29,6 +30,15 @@ def build_memory_provider(
     ``unlocked`` must stay False for callers that own a security gate; they
     unlock the provider from the gate callback instead.
     """
+    # Environment fallback so a parent process (the desktop app) can pass paths
+    # without putting them in argv, where they would surface in process listings.
+    backend = backend or os.environ.get("S2S_MEMORY_BACKEND")
+    sidecar_python = sidecar_python or os.environ.get("S2S_MEMORY_SIDECAR_PYTHON")
+    sidecar_script = sidecar_script or os.environ.get("S2S_MEMORY_SIDECAR_SCRIPT")
+    memory_root = memory_root or os.environ.get("S2S_MEMORY_ROOT")
+    raw_chars = os.environ.get("S2S_MEMORY_MAX_CHARS")
+    if raw_chars and raw_chars.isdigit():
+        max_context_chars = int(raw_chars)
     if not backend or backend == "off":
         return None
     provider = MemoryProvider(

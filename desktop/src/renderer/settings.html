@@ -211,6 +211,43 @@
                 <button id="knowledge-cancel" type="button">取消</button>
               </div>
               <p class="setting-hint">删除索引不会删除原文件。</p>
+
+              <h3 class="setting-section-title">长期记忆（实验）</h3>
+              <div class="setting-row">
+                <label for="memory-enabled">启用长期记忆</label>
+                <div class="toggle-field">
+                  <label class="toggle-switch">
+                    <input id="memory-enabled" type="checkbox" />
+                    <span class="toggle-track"></span>
+                  </label>
+                  <span class="toggle-hint">关闭时语音引擎完全不会加载记忆后端</span>
+                </div>
+              </div>
+              <div class="setting-row">
+                <label for="memory-cloud-consent">允许云端事实抽取</label>
+                <div class="toggle-field">
+                  <label class="toggle-switch">
+                    <input id="memory-cloud-consent" type="checkbox" />
+                    <span class="toggle-track"></span>
+                  </label>
+                  <span class="toggle-hint">记忆写入需要把用户话语发往配置的云端接口；关闭则记忆不可用</span>
+                </div>
+              </div>
+              <div class="setting-row">
+                <label for="memory-sidecar-python">记忆解释器路径</label>
+                <input id="memory-sidecar-python" type="text" placeholder="装有 voicemem 的独立 venv python" />
+              </div>
+              <div class="setting-row">
+                <label for="memory-sidecar-script">记忆 sidecar 脚本</label>
+                <input id="memory-sidecar-script" type="text" placeholder="sidecar.py 的绝对路径" />
+              </div>
+              <div class="setting-row">
+                <label for="memory-max-chars">注入字符上限</label>
+                <input id="memory-max-chars" type="number" min="200" max="8000" step="100" />
+              </div>
+              <p class="setting-hint">
+                记忆由独立进程运行，需要自备装有 voicemem 的解释器；两条路径留空时记忆保持关闭。
+              </p>
             </div>
           </section>
 

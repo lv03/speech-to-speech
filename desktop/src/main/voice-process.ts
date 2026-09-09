@@ -66,6 +66,18 @@ export interface VoiceOptions {
   ttsVoice?: string
   /** LLM 推理等级（none/low/medium/high，仅 responses-api / chat-completions 后端生效） */
   llmReasoningEffort?: 'none' | 'low' | 'medium' | 'high'
+  /** 长期记忆开关（默认关闭） */
+  memoryEnabled?: boolean
+  /** 允许云端事实抽取（记忆写入的必要条件） */
+  memoryCloudConsent?: boolean
+  /** 装有 voicemem 的解释器路径 */
+  memorySidecarPython?: string
+  /** 记忆 sidecar 入口脚本路径 */
+  memorySidecarScript?: string
+  /** app-private 记忆目录 */
+  memoryRoot?: string
+  /** 单次响应注入的记忆块最大字符数 */
+  memoryMaxChars?: number
 }
 
 export interface VoiceEnvironmentOptions {
@@ -74,6 +86,12 @@ export interface VoiceEnvironmentOptions {
   qmdProxyUrl?: string
   qmdProxyToken?: string
   llmApiKey?: string
+  memoryEnabled?: boolean
+  memoryCloudConsent?: boolean
+  memorySidecarPython?: string
+  memorySidecarScript?: string
+  memoryRoot?: string
+  memoryMaxChars?: number
 }
 
 /** Build the child-only environment without putting knowledge credentials in argv. */
@@ -87,6 +105,24 @@ export function buildVoiceEnvironment(options: VoiceEnvironmentOptions): NodeJS.
     env.QMD_PROXY_TOKEN = options.qmdProxyToken
   }
   if (options.llmApiKey) env.OPENAI_API_KEY = options.llmApiKey
+  // Memory paths travel through the environment, never argv: they would
+  // otherwise show up in process listings and voice logs.
+  for (const key of [
+    'S2S_MEMORY_BACKEND',
+    'S2S_MEMORY_SIDECAR_PYTHON',
+    'S2S_MEMORY_SIDECAR_SCRIPT',
+    'S2S_MEMORY_ROOT',
+    'S2S_MEMORY_MAX_CHARS',
+  ]) {
+    delete env[key]
+  }
+  if (options.memoryEnabled && options.memoryCloudConsent) {
+    env.S2S_MEMORY_BACKEND = 'voicemem'
+    if (options.memorySidecarPython) env.S2S_MEMORY_SIDECAR_PYTHON = options.memorySidecarPython
+    if (options.memorySidecarScript) env.S2S_MEMORY_SIDECAR_SCRIPT = options.memorySidecarScript
+    if (options.memoryRoot) env.S2S_MEMORY_ROOT = options.memoryRoot
+    if (options.memoryMaxChars) env.S2S_MEMORY_MAX_CHARS = String(options.memoryMaxChars)
+  }
   return env
 }
 
@@ -108,6 +144,12 @@ export class EmbeddedVoice {
   private readonly gatewayUrl: string
   private readonly qmdProxyUrl: string
   private readonly qmdProxyToken: string
+  private readonly memoryEnabled: boolean
+  private readonly memoryCloudConsent: boolean
+  private readonly memorySidecarPython: string
+  private readonly memorySidecarScript: string
+  private readonly memoryRoot: string
+  private readonly memoryMaxChars: number
   private readonly startupTimeoutMs: number
   private readonly printJson: boolean
   private readonly onEvent: ((event: Record<string, unknown>) => void) | undefined
@@ -139,6 +181,12 @@ export class EmbeddedVoice {
     this.gatewayUrl = options.gatewayUrl || process.env.GATEWAY_URL || 'http://127.0.0.1:3101'
     this.qmdProxyUrl = options.qmdProxyUrl || ''
     this.qmdProxyToken = options.qmdProxyToken || ''
+    this.memoryEnabled = options.memoryEnabled === true
+    this.memoryCloudConsent = options.memoryCloudConsent === true
+    this.memorySidecarPython = options.memorySidecarPython || ''
+    this.memorySidecarScript = options.memorySidecarScript || ''
+    this.memoryRoot = options.memoryRoot || ''
+    this.memoryMaxChars = Number(options.memoryMaxChars) || 1200
     this.startupTimeoutMs = options.startupTimeoutMs ?? 300_000
     this.printJson = options.printJson ?? true
     this.onEvent = options.onEvent
@@ -275,6 +323,12 @@ export class EmbeddedVoice {
       gatewayUrl: this.gatewayUrl,
       qmdProxyUrl: this.qmdProxyUrl,
       qmdProxyToken: this.qmdProxyToken,
+      memoryEnabled: this.memoryEnabled,
+      memoryCloudConsent: this.memoryCloudConsent,
+      memorySidecarPython: this.memorySidecarPython,
+      memorySidecarScript: this.memorySidecarScript,
+      memoryRoot: this.memoryRoot,
+      memoryMaxChars: this.memoryMaxChars,
       llmApiKey: this.llmApiKey,
     })
 

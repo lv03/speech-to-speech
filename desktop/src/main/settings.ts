@@ -51,6 +51,16 @@ export interface DesktopSettings {
   knowledgeRetrievalMode: RetrievalPreference
   /** Run a bounded local query after startup/indexing to warm the daemon. */
   knowledgePreheatEnabled: boolean
+  /** 长期记忆（VoiceMem）开关，默认关闭 */
+  memoryEnabled: boolean
+  /** 允许把用户话语发往云端做事实抽取（记忆写入的必要条件） */
+  memoryCloudConsent: boolean
+  /** 装有 voicemem 的独立解释器路径（默认空 = 记忆不可用） */
+  memorySidecarPython: string
+  /** 记忆 sidecar 入口脚本路径（默认空 = 记忆不可用） */
+  memorySidecarScript: string
+  /** 注入到单次响应的记忆块最大字符数 */
+  memoryMaxChars: number
 }
 
 export const DEFAULT_SETTINGS: DesktopSettings = {
@@ -76,6 +86,11 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   llmReasoningEffort: 'none',
   knowledgeRetrievalMode: 'auto',
   knowledgePreheatEnabled: true,
+  memoryEnabled: false,
+  memoryCloudConsent: false,
+  memorySidecarPython: '',
+  memorySidecarScript: '',
+  memoryMaxChars: 1200,
 }
 
 export class SettingsStore {
@@ -151,6 +166,13 @@ export class SettingsStore {
       out.knowledgeRetrievalMode = raw.knowledgeRetrievalMode as RetrievalPreference
     }
     if (typeof raw.knowledgePreheatEnabled === 'boolean') out.knowledgePreheatEnabled = raw.knowledgePreheatEnabled
+    if (typeof raw.memoryEnabled === 'boolean') out.memoryEnabled = raw.memoryEnabled
+    if (typeof raw.memoryCloudConsent === 'boolean') out.memoryCloudConsent = raw.memoryCloudConsent
+    if (typeof raw.memorySidecarPython === 'string') out.memorySidecarPython = raw.memorySidecarPython.trim()
+    if (typeof raw.memorySidecarScript === 'string') out.memorySidecarScript = raw.memorySidecarScript.trim()
+    if (typeof raw.memoryMaxChars === 'number' && raw.memoryMaxChars >= 200 && raw.memoryMaxChars <= 8000) {
+      out.memoryMaxChars = Math.floor(raw.memoryMaxChars)
+    }
     return out
   }
 

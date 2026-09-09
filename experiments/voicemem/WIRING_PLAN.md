@@ -24,7 +24,8 @@ inject per response — with the four-gate policy in
 | CLI flags + provider construction | `src/speech_to_speech/cli.py` | done, tested (talk path) |
 | Voice-loop event mapping + per-response injection | `audio_client.py` | done, tested |
 | Local-pipeline gate mirroring | `s2s_pipeline.py`, `memory/factory.py` | done, tested |
-| Desktop settings, IPC, lifecycle | — | **next** |
+| Desktop settings, env passthrough, UI | `desktop/src/...` | done, tested |
+| Sidecar lifecycle/health in the UI | — | **next** |
 
 ## Step 1 — CLI and config plumbing (done for `talk`)
 
@@ -108,7 +109,22 @@ Tests: assert the injected `response.create` carries the memory block, that a
 locked/disabled provider produces no injection, and that tool follow-up
 responses are unaffected.
 
-## Step 4 — Desktop settings, IPC and lifecycle
+## Step 4 — Desktop settings, IPC and lifecycle (done)
+
+Implemented: settings `memoryEnabled` / `memoryCloudConsent` / `memorySidecarPython`
+/ `memorySidecarScript` / `memoryMaxChars` (all off/empty by default, sanitized on
+load); a 「长期记忆（实验）」 section in the knowledge tab; `EmbeddedVoice` passes
+`S2S_MEMORY_*` **through the environment only** (cleared when memory is off, so a
+stale parent value cannot enable it); `index.ts` supplies the app-private
+`<userData>/memory` root. The CLI defaults for `--memory-backend` are now unset
+rather than `off`, so the environment can enable memory while an explicit `off`
+still wins. Tests: `desktop/tests/memory-settings.test.mjs` (4) plus the Python
+env-fallback tests.
+
+Still open: live sidecar health in the UI (needs a health event from the voice
+process) and stopping the sidecar on `will-quit` when no session ever started.
+
+Original scope:
 
 Files: `desktop/src/main/index.ts`, `desktop/src/main/voice-process.ts`,
 `desktop/src/preload/index.ts`, `desktop/src/renderer/settings.html/.ts`.

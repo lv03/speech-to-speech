@@ -40,9 +40,13 @@ class LocalAudioArguments:
         },
     )
     local_audio_memory_backend: Optional[str] = field(
-        default="off",
+        default=None,
         metadata={
-            "help": "Optional long-term memory backend for the local command: off (default) or voicemem.",
+            "help": (
+                "Optional long-term memory backend for the local command: off or voicemem. "
+                "Unset falls back to S2S_MEMORY_BACKEND, so a parent process can enable it "
+                "without argv."
+            ),
             "choices": ("off", "voicemem"),
             "aliases": ["--memory-backend"],
         },

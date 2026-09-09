@@ -178,8 +178,11 @@ def parse_talk_arguments(argv: Sequence[str]) -> RealtimeAudioClientConfig:
         "--memory-backend",
         dest="memory_backend",
         choices=("off", "voicemem"),
-        default="off",
-        help="Optional long-term memory backend. Off by default; voicemem requires its own venv and sidecar paths.",
+        default=None,
+        help=(
+            "Optional long-term memory backend: off or voicemem. Unset falls back to "
+            "S2S_MEMORY_BACKEND; voicemem requires its own venv and sidecar paths."
+        ),
     )
     parser.add_argument(
         "--memory-sidecar-python",

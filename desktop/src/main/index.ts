@@ -496,6 +496,12 @@ async function startVoice(): Promise<void> {
     ttsBackend: settings.ttsBackend,
     ttsVoice: settings.ttsVoice,
     llmReasoningEffort: settings.llmReasoningEffort,
+    memoryEnabled: settings.memoryEnabled,
+    memoryCloudConsent: settings.memoryCloudConsent,
+    memorySidecarPython: settings.memorySidecarPython,
+    memorySidecarScript: settings.memorySidecarScript,
+    memoryRoot: join(app.getPath('userData'), 'memory'),
+    memoryMaxChars: settings.memoryMaxChars,
     onLog: (line) => pushVoiceLog(line),
     onEvent: (event) => {
       const state = voiceStateFromEvent(event)

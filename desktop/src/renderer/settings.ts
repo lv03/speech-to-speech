@@ -22,6 +22,11 @@ interface SettingsPayload {
   llmReasoningEffort: 'none' | 'low' | 'medium' | 'high'
   knowledgeRetrievalMode: 'auto' | 'vec-only' | 'hybrid' | 'full'
   knowledgePreheatEnabled: boolean
+  memoryEnabled: boolean
+  memoryCloudConsent: boolean
+  memorySidecarPython: string
+  memorySidecarScript: string
+  memoryMaxChars: number
 }
 
 // ── DOM 引用 ────────────────────────────────────────────────────────────
@@ -50,6 +55,11 @@ const wakeShortcut = document.getElementById('wake-shortcut') as HTMLInputElemen
 const language = document.getElementById('language') as HTMLSelectElement
 const knowledgeRetrievalMode = document.getElementById('knowledge-retrieval-mode') as HTMLSelectElement
 const knowledgePreheatEnabled = document.getElementById('knowledge-preheat-enabled') as HTMLInputElement
+const memoryEnabled = document.getElementById('memory-enabled') as HTMLInputElement
+const memoryCloudConsent = document.getElementById('memory-cloud-consent') as HTMLInputElement
+const memorySidecarPython = document.getElementById('memory-sidecar-python') as HTMLInputElement
+const memorySidecarScript = document.getElementById('memory-sidecar-script') as HTMLInputElement
+const memoryMaxChars = document.getElementById('memory-max-chars') as HTMLInputElement
 const voiceprintStatusEl = document.getElementById('voiceprint-status')!
 const voiceprintEnrollBtn = document.getElementById('voiceprint-enroll') as HTMLButtonElement
 const voiceprintVerifyBtn = document.getElementById('voiceprint-verify') as HTMLButtonElement
@@ -116,6 +126,11 @@ function render(settings: SettingsPayload): void {
   language.value = settings.language
   knowledgeRetrievalMode.value = settings.knowledgeRetrievalMode
   knowledgePreheatEnabled.checked = settings.knowledgePreheatEnabled
+  memoryEnabled.checked = settings.memoryEnabled
+  memoryCloudConsent.checked = settings.memoryCloudConsent
+  memorySidecarPython.value = settings.memorySidecarPython
+  memorySidecarScript.value = settings.memorySidecarScript
+  memoryMaxChars.value = String(settings.memoryMaxChars)
 }
 
 function collect(): SettingsPayload {
@@ -144,6 +159,11 @@ function collect(): SettingsPayload {
       ? knowledgeRetrievalMode.value
       : 'auto') as 'auto' | 'vec-only' | 'hybrid' | 'full',
     knowledgePreheatEnabled: knowledgePreheatEnabled.checked,
+    memoryEnabled: memoryEnabled.checked,
+    memoryCloudConsent: memoryCloudConsent.checked,
+    memorySidecarPython: memorySidecarPython.value.trim(),
+    memorySidecarScript: memorySidecarScript.value.trim(),
+    memoryMaxChars: Number(memoryMaxChars.value) || 1200,
   }
 }
 
