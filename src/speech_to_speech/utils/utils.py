@@ -1,58 +1,12 @@
 from __future__ import annotations
 
-import ipaddress
 import uuid
 from typing import TYPE_CHECKING
-from urllib.parse import urlsplit
 
 import numpy as np
 
 if TYPE_CHECKING:
     from openai.types.realtime.realtime_response_create_params import RealtimeResponseCreateParams
-
-
-def url_host(url: str | None) -> str | None:
-    """Return the lowercased hostname of *url*, or ``None`` when it has none."""
-    if not url:
-        return None
-    try:
-        hostname = urlsplit(str(url).strip()).hostname
-    except ValueError:
-        return None
-    return hostname.rstrip(".").lower() if hostname else None
-
-
-def is_local_url(url: str | None) -> bool:
-    """Whether *url* points at this machine (loopback hostname or loopback IP)."""
-    host = url_host(url)
-    if host is None:
-        return False
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
-def is_local_or_private_url(url: str | None) -> bool:
-    """Whether *url* points at loopback or a private/LAN address.
-
-    Used to keep local inference servers out of the caller's proxy environment:
-    macOS system proxies (and ``ALL_PROXY``/``*_PROXY``) would otherwise route
-    ``127.0.0.1`` requests through a remote proxy, which either fails or leaks
-    local traffic off the machine.
-    """
-    host = url_host(url)
-    if host is None:
-        return False
-    if host == "localhost":
-        return True
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return address.is_loopback or address.is_private or address.is_link_local
 
 
 def response_wants_audio(response: RealtimeResponseCreateParams | None) -> bool:

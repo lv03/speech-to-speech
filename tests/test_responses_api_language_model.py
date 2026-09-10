@@ -931,10 +931,9 @@ def test_setup_uses_dummy_api_key_for_custom_base_url(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     class FakeOpenAI:
-        def __init__(self, *, api_key, base_url, http_client=None):
+        def __init__(self, *, api_key, base_url):
             captured["api_key"] = api_key
             captured["base_url"] = base_url
-            captured["http_client"] = http_client
 
     monkeypatch.setattr(base_openai_compatible_language_model, "OpenAI", FakeOpenAI)
     monkeypatch.setattr(ResponsesApiModelHandler, "warmup", lambda self: None)
@@ -942,10 +941,10 @@ def test_setup_uses_dummy_api_key_for_custom_base_url(monkeypatch):
     handler = object.__new__(ResponsesApiModelHandler)
     handler.setup(base_url="http://127.0.0.1:8080/v1", api_key=None, compact_history=False)
 
-    assert captured["api_key"] == "none"
-    assert captured["base_url"] == "http://127.0.0.1:8080/v1"
-    # The loopback endpoint must not inherit the caller's proxy environment.
-    assert captured["http_client"]._trust_env is False
+    assert captured == {
+        "api_key": "none",
+        "base_url": "http://127.0.0.1:8080/v1",
+    }
 
 
 def test_setup_preserves_environment_api_key_for_custom_base_url(monkeypatch):
@@ -953,10 +952,9 @@ def test_setup_preserves_environment_api_key_for_custom_base_url(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "secret-from-environment")
 
     class FakeOpenAI:
-        def __init__(self, *, api_key, base_url, http_client=None):
+        def __init__(self, *, api_key, base_url):
             captured["api_key"] = api_key
             captured["base_url"] = base_url
-            captured["http_client"] = http_client
 
     monkeypatch.setattr(base_openai_compatible_language_model, "OpenAI", FakeOpenAI)
     monkeypatch.setattr(ResponsesApiModelHandler, "warmup", lambda self: None)
@@ -964,9 +962,10 @@ def test_setup_preserves_environment_api_key_for_custom_base_url(monkeypatch):
     handler = object.__new__(ResponsesApiModelHandler)
     handler.setup(base_url="http://127.0.0.1:8080/v1", api_key=None, compact_history=False)
 
-    assert captured["api_key"] is None
-    assert captured["base_url"] == "http://127.0.0.1:8080/v1"
-    assert captured["http_client"]._trust_env is False
+    assert captured == {
+        "api_key": None,
+        "base_url": "http://127.0.0.1:8080/v1",
+    }
 
 
 def test_setup_does_not_inject_dummy_key_for_remote_custom_url(monkeypatch):
@@ -974,10 +973,9 @@ def test_setup_does_not_inject_dummy_key_for_remote_custom_url(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     class FakeOpenAI:
-        def __init__(self, *, api_key, base_url, http_client=None):
+        def __init__(self, *, api_key, base_url):
             captured["api_key"] = api_key
             captured["base_url"] = base_url
-            captured["http_client"] = http_client
 
     monkeypatch.setattr(base_openai_compatible_language_model, "OpenAI", FakeOpenAI)
     monkeypatch.setattr(ResponsesApiModelHandler, "warmup", lambda self: None)
@@ -985,10 +983,10 @@ def test_setup_does_not_inject_dummy_key_for_remote_custom_url(monkeypatch):
     handler = object.__new__(ResponsesApiModelHandler)
     handler.setup(base_url="https://provider.example/v1", api_key=None, compact_history=False)
 
-    assert captured["api_key"] is None
-    assert captured["base_url"] == "https://provider.example/v1"
-    # Remote providers keep using the environment proxy configuration.
-    assert captured["http_client"] is None
+    assert captured == {
+        "api_key": None,
+        "base_url": "https://provider.example/v1",
+    }
 
 
 def test_process_read_timeout_speaks_fallback_and_preserves_failure():

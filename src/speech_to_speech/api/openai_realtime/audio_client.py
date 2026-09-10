@@ -23,13 +23,11 @@ from threading import Event, Lock
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
-import httpx
 from jsonschema import SchemaError, ValidationError
 from jsonschema.validators import validator_for
 from openai import AsyncOpenAI
 
 from speech_to_speech.pipeline.transcript_logging import log_exception
-from speech_to_speech.utils.utils import is_local_or_private_url
 
 logger = logging.getLogger(__name__)
 
@@ -205,10 +203,6 @@ def _make_client(config: RealtimeAudioClientConfig) -> AsyncOpenAI:
     # Omitting the key for non-loopback endpoints lets the SDK read OPENAI_API_KEY.
     if api_key is not None:
         client_kwargs["api_key"] = api_key
-    if is_local_or_private_url(base_url):
-        # Keep local/LAN endpoints out of the system or environment proxy; a SOCKS
-        # proxy here also raises at client construction when socksio is missing.
-        client_kwargs["http_client"] = httpx.AsyncClient(trust_env=False)
     return AsyncOpenAI(**client_kwargs)
 
 
