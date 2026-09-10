@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import io
-import ipaddress
 import logging
 import os
 import wave
@@ -12,7 +11,6 @@ from queue import Empty, Full, Queue
 from threading import BoundedSemaphore, Lock, Thread, current_thread
 from threading import Event as ThreadingEvent
 from typing import Any, Literal, Optional
-from urllib.parse import urlparse
 
 import httpx
 import numpy as np
@@ -57,7 +55,7 @@ from speech_to_speech.pipeline.messages import (
 )
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
 from speech_to_speech.pipeline.transcript_logging import log_exception, transcript_for_log
-from speech_to_speech.utils.utils import is_out_of_band, response_wants_audio
+from speech_to_speech.utils.utils import is_local_or_private_url, is_local_url, is_out_of_band, response_wants_audio
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +202,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             and self._is_local_base_url(base_url)
         ):
             api_key = "none"
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.client = OpenAI(api_key=api_key, base_url=base_url, http_client=self._build_http_client(base_url))
         self._extra_body = self._build_extra_body(base_url, disable_thinking, reasoning_effort)
         self._prefetch_worker_slots = BoundedSemaphore(PREFETCH_PROVIDER_WORKER_LIMIT)
         self._prefetch_workers_lock = Lock()
@@ -227,15 +225,22 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
     @staticmethod
     def _is_local_base_url(base_url: str) -> bool:
         """Whether *base_url* points at localhost or a loopback IP address."""
-        host = urlparse(base_url).hostname
-        if host is None:
-            return False
-        if host.rstrip(".").lower() == "localhost":
-            return True
-        try:
-            return ipaddress.ip_address(host).is_loopback
-        except ValueError:
-            return False
+        return is_local_url(base_url)
+
+    def _build_http_client(self, base_url: Optional[str]) -> Optional[httpx.Client]:
+        """Return an HTTP client for *base_url*, bypassing proxies for local servers.
+
+        The OpenAI SDK builds its httpx client with ``trust_env=True``, so a
+        system-wide or environment proxy (macOS system proxy settings are read by
+        ``urllib.request.getproxies``) captures requests aimed at a local LLM. A
+        SOCKS proxy additionally makes client construction raise unless ``socksio``
+        is installed, which took down the whole voice process before this guard.
+        Private/LAN endpoints skip the proxy env for the same reason; remote
+        endpoints keep the caller's proxy configuration.
+        """
+        if not is_local_or_private_url(base_url):
+            return None
+        return httpx.Client(trust_env=False, timeout=self.request_timeout)
 
     @classmethod
     def _build_extra_body(

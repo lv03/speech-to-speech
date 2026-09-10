@@ -157,6 +157,24 @@ def test_audio_client_api_key_precedence_and_loopback_fallback(monkeypatch):
     assert client_kwargs[4]["api_key"] == "explicit-secret"
 
 
+def test_audio_client_bypasses_proxy_environment_for_local_endpoints(monkeypatch):
+    client_kwargs = []
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            client_kwargs.append(kwargs)
+
+    monkeypatch.setattr(audio_client_module, "AsyncOpenAI", FakeAsyncOpenAI)
+
+    audio_client_module._make_client(RealtimeAudioClientConfig())
+    audio_client_module._make_client(RealtimeAudioClientConfig(url="ws://10.0.0.5:8000/v1/realtime"))
+    audio_client_module._make_client(RealtimeAudioClientConfig(url="wss://voice.example/v1/realtime"))
+
+    assert client_kwargs[0]["http_client"]._trust_env is False
+    assert client_kwargs[1]["http_client"]._trust_env is False
+    assert "http_client" not in client_kwargs[2]
+
+
 def test_audio_client_sends_realtime_session_configuration():
     event = build_session_update(
         RealtimeAudioClientConfig(
