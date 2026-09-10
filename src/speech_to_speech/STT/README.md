@@ -11,6 +11,7 @@ This document summarizes the Speech-to-Text (STT) implementations in the `STT/` 
 - `parakeet-tdt` → `STT/parakeet_tdt_handler.py`
 - `paraformer` → `STT/paraformer_handler.py`
 - `fun-asr-nano` → `STT/fun_asr_nano_handler.py`
+- `qwen3-asr` → `STT/qwen3_asr_handler.py`
 - `openai` → `STT/openai_compatible_handler.py`
 
 ## Language Support by Handler
@@ -108,14 +109,31 @@ This document summarizes the Speech-to-Text (STT) implementations in the `STT/` 
   - GPU recommended; the PyTorch CPU path runs ~3.6x realtime
   - No reliable character-level timestamps (upstream issue #106)
 
-### 7) OpenAI-compatible endpoint (`--stt openai`)
+### 7) Qwen3-ASR (`--stt qwen3-asr`)
+
+- Handler: `Qwen3ASRSTTHandler`
+- Model flag: `--qwen3_asr_model_name` (default `Qwen/Qwen3-ASR-0.6B-hf`; `Qwen/Qwen3-ASR-1.7B-hf` is more accurate)
+- Language flag: `--qwen3_asr_language` (ISO code or name, default `auto`)
+- Context flag: `--qwen3_asr_prompt` (optional hotwords or domain context)
+- Supported languages: the 30 in the checkpoint's language table
+  - `ar`, `yue`, `zh`, `cs`, `da`, `nl`, `en`, `fil`, `fi`, `fr`, `de`, `el`, `hi`, `hu`, `id`, `it`, `ja`, `ko`, `mk`, `ms`, `fa`, `pl`, `pt`, `ro`, `ru`, `es`, `sv`, `th`, `tr`, `vi`
+- Behavior:
+  - With `auto`, the model identifies the language of each final turn and reports it with the `-auto` suffix
+  - Progressive (partial) windows are short and fool the language ID, so they reuse the language of the last final turn
+  - A forced language is passed on every request and reported as is
+- Transformers versions: `pyproject.toml` already requires a version that knows `qwen3_asr`. The prompt and true language forcing need `transformers>=5.15.1` (the Linux pin); with 5.14.1 (the macOS pin) the language is a hint and the prompt is ignored with a warning
+
+### 8) OpenAI-compatible endpoint (`--stt openai`)
 
 - Handler: `OpenAICompatibleSTTHandler`
 - Endpoint: `POST /v1/audio/transcriptions`
 - Upload: mono PCM16 WAV at 16 kHz
 - Supports JSON (`{"text": "..."}`) and plain-text responses
-- Keeps at most one best-effort progressive request in flight per pipeline while
-  final requests are submitted independently; stale-turn filtering still applies
+- Keeps one active progressive request and the latest pending window per pipeline;
+  final requests proceed independently, with cancellation and session-safe delivery
+- Bounds pending finals to eight per pipeline; overflow produces a typed failure
+  without uploading audio, and accepted finals retain their order
+- Endpoint capacity and provider quotas remain the inference service/proxy's responsibility
 - See [`docs/openai-compatible-stt.md`](../../../docs/openai-compatible-stt.md)
 
 ## Language Abbreviations (ISO-style codes seen in STT handlers)
@@ -218,4 +236,14 @@ On Apple Silicon the macOS preset defaults the device to MPS:
 
 ```bash
 speech-to-speech serve --stt fun-asr-nano --mac-optimal-settings
+```
+
+### Qwen3-ASR
+
+```bash
+speech-to-speech serve --stt qwen3-asr
+speech-to-speech serve --stt qwen3-asr --qwen3_asr_language fr
+speech-to-speech serve --stt qwen3-asr \
+  --qwen3_asr_model_name Qwen/Qwen3-ASR-1.7B-hf \
+  --qwen3_asr_prompt "Vocabulary: Quilter, apostle."
 ```
