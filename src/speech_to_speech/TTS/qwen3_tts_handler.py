@@ -129,6 +129,8 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         parity_mode: bool = False,
         non_streaming_mode: bool | None = None,
         mlx_quantization: Optional[str] = None,
+        mlx_prefer_local: bool = True,
+        mlx_local_files_only: bool = False,
         streaming_chunk_size: int | None = None,
         max_new_tokens: int = DEFAULT_QWEN3_TTS_MAX_NEW_TOKENS,
         blocksize: int = 512,
@@ -156,6 +158,8 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         self.gguf_codec_path = self._normalize_optional_path(gguf_codec_path)
         self.ref_cache_dir = self._normalize_optional_path(ref_cache_dir)
         self.mlx_quantization = self._normalize_mlx_quantization(mlx_quantization)
+        self.mlx_prefer_local = bool(mlx_prefer_local)
+        self.mlx_local_files_only = bool(mlx_local_files_only)
         self.max_new_tokens = max_new_tokens
         self.blocksize = blocksize
         self.dtype: torch.dtype | None | str = None
@@ -266,7 +270,42 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         self.model = self._shared.load()
         logger.info("Qwen3-TTS model loaded")
 
+    @staticmethod
+    def _resolve_local_snapshot(model_id: str) -> Path | None:
+        """Return a complete Hugging Face cache snapshot for *model_id*, if one exists.
+
+        ``mlx_audio.tts.utils.load_model`` resolves a repo id through
+        ``snapshot_download``, which always asks the Hub to resolve the revision even
+        when every file is already cached. On a slow or blocked Hub connection that
+        lookup makes startup wait on network timeouts, so we resolve the local
+        snapshot ourselves and hand mlx-audio a filesystem path instead.
+        """
+        repo_id = str(model_id).strip()
+        if not repo_id or "/" not in repo_id or Path(repo_id).expanduser().exists():
+            return None
+
+        from huggingface_hub import constants as hf_constants
+        from huggingface_hub import try_to_load_from_cache
+
+        candidates: list[Path] = []
+        cached_config = try_to_load_from_cache(repo_id, "config.json")
+        if isinstance(cached_config, (str, Path)):
+            candidates.append(Path(cached_config).parent)
+
+        snapshots_dir = Path(hf_constants.HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}" / "snapshots"
+        if snapshots_dir.is_dir():
+            candidates.extend(path for path in sorted(snapshots_dir.iterdir()) if path.is_dir())
+
+        for snapshot_path in candidates:
+            if not (snapshot_path / "config.json").is_file():
+                continue
+            if not list(snapshot_path.glob("*.safetensors")) and not list(snapshot_path.glob("*.npz")):
+                continue
+            return snapshot_path
+        return None
+
     def _setup_mlx(self, model_name: str) -> None:
+        setup_started_at = perf_counter()
         try:
             from mlx_audio.tts.utils import load_model
         except ImportError as e:
@@ -289,10 +328,33 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
                 "mlx-audio is required for Qwen3 TTS on Apple Silicon. Install with: pip install mlx-audio"
             ) from e
 
-        key = ("tts", "qwen3", model_name, canonical_device("mps"), "mlx", self.mlx_quantization)
-        self._shared = get_shared_model(key, lambda: load_model(model_name))
+        cached_snapshot = self._resolve_local_snapshot(model_name)
+        offline = self.mlx_local_files_only
+        if cached_snapshot is not None and (self.mlx_prefer_local or offline):
+            source = "local-cache"
+            load_source: Any = cached_snapshot
+        else:
+            if offline:
+                raise RuntimeError(
+                    f"Qwen3-TTS MLX model {model_name!r} is not present in the local Hugging Face cache "
+                    f"(offline mode enabled). Pre-download it first."
+                )
+            source = "local-cache-miss" if cached_snapshot is None else "hub"
+            load_source = model_name
+
+        key = ("tts", "qwen3", model_name, canonical_device("mps"), "mlx", self.mlx_quantization, str(load_source))
+        self._shared = get_shared_model(key, lambda: load_model(load_source))
+        load_started_at = perf_counter()
         self.model = self._shared.load()
+        load_seconds = perf_counter() - load_started_at
         logger.info("MLX Audio Qwen3-TTS model loaded")
+        logger.info(
+            "Qwen3-TTS mlx load: source=%s load=%.2fs setup=%.2fs cache=%s",
+            source,
+            load_seconds,
+            perf_counter() - setup_started_at,
+            f"hit({cached_snapshot})" if cached_snapshot is not None else "miss",
+        )
 
     def _normalize_faster_backend(self, backend: Any) -> str:
         value = str(backend or "ggml").strip().lower()

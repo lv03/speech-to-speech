@@ -3,6 +3,7 @@ import io
 import logging
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Optional
 
 import requests  # type: ignore[import-untyped]
@@ -152,9 +153,44 @@ def remove_unspeechable(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 _SAT_MODEL_NAME = "sat-3l-sm"
+_SAT_HUB_REPO = f"segment-any-text/{_SAT_MODEL_NAME}"
+# wtpsplit defaults SaT's tokenizer to this repo; its weights are cached under the
+# same Hugging Face cache root, so we can pin it to the local snapshot too.
+_SAT_TOKENIZER_REPO = "FacebookAI/xlm-roberta-base"
 
 _sat: Any = None
 _sat_failed: Optional[Exception] = None
+
+
+def _cached_snapshot(repo_id: str, required_files: tuple[str, ...]) -> Optional[str]:
+    """Return a local Hugging Face cache snapshot containing *required_files*.
+
+    wtpsplit resolves both the SaT model and its tokenizer by repo id, which makes
+    ``huggingface_hub`` ask the Hub to resolve the revision on every call. When the
+    Hub is slow or unreachable that turns a cached, one-second model load into a
+    multi-minute startup stall, so callers pass local directory paths instead.
+    """
+    try:
+        from huggingface_hub import constants as hf_constants
+        from huggingface_hub import try_to_load_from_cache
+    except ImportError:
+        return None
+
+    candidates = []
+    for required_file in required_files:
+        cached_file = try_to_load_from_cache(repo_id, required_file)
+        if isinstance(cached_file, (str, Path)):
+            candidates.append(Path(cached_file).parent)
+            break
+
+    snapshots_dir = Path(hf_constants.HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}" / "snapshots"
+    if snapshots_dir.is_dir():
+        candidates.extend(path for path in sorted(snapshots_dir.iterdir(), reverse=True) if path.is_dir())
+
+    for candidate in candidates:
+        if all((candidate / required_file).is_file() for required_file in required_files):
+            return str(candidate)
+    return None
 
 
 def _get_sat() -> Any:
@@ -165,8 +201,12 @@ def _get_sat() -> Any:
     try:
         from wtpsplit import SaT
 
-        _sat = SaT(_SAT_MODEL_NAME)
-        logger.info("Loaded SaT sentence segmenter (%s)", _SAT_MODEL_NAME)
+        model_source = _cached_snapshot(_SAT_HUB_REPO, ("config.json", "model.safetensors")) or _SAT_MODEL_NAME
+        tokenizer_source = (
+            _cached_snapshot(_SAT_TOKENIZER_REPO, ("tokenizer.json",)) or _SAT_TOKENIZER_REPO
+        )
+        _sat = SaT(model_source, tokenizer_name_or_path=tokenizer_source)
+        logger.info("Loaded SaT sentence segmenter (%s) from %s", _SAT_MODEL_NAME, model_source)
     except Exception as exc:  # noqa: BLE001 - any failure degrades to nltk
         _sat_failed = exc
         logger.warning(

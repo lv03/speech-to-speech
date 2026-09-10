@@ -112,6 +112,18 @@ class Qwen3TTSHandlerArguments:
             "help": "Optional MLX quantization override on Apple Silicon. Supported values: 'bf16', '4bit', '6bit', '8bit'. Default is '6bit'."
         },
     )
+    qwen3_tts_mlx_prefer_local: bool = field(
+        default=True,
+        metadata={
+            "help": "On Apple Silicon, load the mlx-audio Qwen3-TTS model straight from an existing Hugging Face cache snapshot instead of asking the Hub to resolve the revision on every start. Startup skips Hub network timeouts; set 'false' to always re-resolve against the Hub. Default is True."
+        },
+    )
+    qwen3_tts_mlx_local_files_only: bool = field(
+        default=False,
+        metadata={
+            "help": "On Apple Silicon, forbid Hub network access for the mlx-audio Qwen3-TTS model and fail fast when the model is not cached locally. Useful for fully offline starts. Default is False."
+        },
+    )
     qwen3_tts_language: str = field(
         default="auto",
         metadata={"help": "Target language for synthesis. Default is 'auto'."},

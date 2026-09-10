@@ -238,3 +238,95 @@ def test_remove_markdown_is_streaming_safe_across_split_deltas() -> None:
 
 def test_sentence_tokenization_preserves_complete_emphasis_pairs() -> None:
     assert sent_tokenize_preserving_markdown_code("**Let me check.**", sent_tokenize) == ["**Let me check.**"]
+
+
+# --- SaT sentence segmenter: local snapshot resolution -----------------------
+
+
+def _write_sat_snapshot(cache_root, repo_id, files):
+    snapshot = cache_root / f"models--{repo_id.replace('/', '--')}" / "snapshots" / "rev1"
+    snapshot.mkdir(parents=True)
+    refs = cache_root / f"models--{repo_id.replace('/', '--')}" / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("rev1", encoding="utf-8")
+    for name in files:
+        (snapshot / name).write_bytes(b"")
+    return snapshot
+
+
+@pytest.fixture
+def _sat_cache(tmp_path, monkeypatch):
+    from huggingface_hub import constants as hf_constants
+
+    cache_root = tmp_path / "hub"
+    cache_root.mkdir()
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(cache_root))
+    return cache_root
+
+
+def test_cached_snapshot_returns_local_sat_directory(_sat_cache) -> None:
+    from speech_to_speech.LLM.utils import _cached_snapshot
+
+    snapshot = _write_sat_snapshot(_sat_cache, "segment-any-text/sat-3l-sm", ["config.json", "model.safetensors"])
+
+    assert _cached_snapshot("segment-any-text/sat-3l-sm", ("config.json", "model.safetensors")) == str(snapshot)
+
+
+def test_cached_snapshot_requires_every_listed_file(_sat_cache) -> None:
+    from speech_to_speech.LLM.utils import _cached_snapshot
+
+    _write_sat_snapshot(_sat_cache, "segment-any-text/sat-3l-sm", ["config.json"])
+
+    assert _cached_snapshot("segment-any-text/sat-3l-sm", ("config.json", "model.safetensors")) is None
+
+
+def test_cached_snapshot_returns_none_for_unknown_repo(_sat_cache) -> None:
+    from speech_to_speech.LLM.utils import _cached_snapshot
+
+    assert _cached_snapshot("nobody/never-downloaded", ("config.json",)) is None
+
+
+def test_get_sat_prefers_cached_snapshots_over_hub_names(_sat_cache, monkeypatch) -> None:
+    from speech_to_speech.LLM import utils as llm_utils
+
+    model_snapshot = _write_sat_snapshot(
+        _sat_cache, "segment-any-text/sat-3l-sm", ["config.json", "model.safetensors"]
+    )
+    tokenizer_snapshot = _write_sat_snapshot(_sat_cache, "FacebookAI/xlm-roberta-base", ["tokenizer.json"])
+
+    recorded: dict[str, object] = {}
+
+    class _FakeSaT:
+        def __init__(self, model_name_or_model, tokenizer_name_or_path=None):
+            recorded["model"] = model_name_or_model
+            recorded["tokenizer"] = tokenizer_name_or_path
+
+        def split(self, text):
+            return [text]
+
+    monkeypatch.setitem(sys.modules, "wtpsplit", types.SimpleNamespace(SaT=_FakeSaT))
+    monkeypatch.setattr(llm_utils, "_sat", None)
+    monkeypatch.setattr(llm_utils, "_sat_failed", None)
+
+    assert llm_utils._get_sat() is not None
+    assert recorded == {"model": str(model_snapshot), "tokenizer": str(tokenizer_snapshot)}
+
+
+def test_get_sat_falls_back_to_hub_names_without_cache(monkeypatch) -> None:
+    from speech_to_speech.LLM import utils as llm_utils
+
+    recorded: dict[str, object] = {}
+
+    class _FakeSaT:
+        def __init__(self, model_name_or_model, tokenizer_name_or_path=None):
+            recorded["model"] = model_name_or_model
+            recorded["tokenizer"] = tokenizer_name_or_path
+
+    monkeypatch.setattr(llm_utils, "_cached_snapshot", lambda *_args, **_kwargs: None)
+    monkeypatch.setitem(sys.modules, "wtpsplit", types.SimpleNamespace(SaT=_FakeSaT))
+    monkeypatch.setattr(llm_utils, "_sat", None)
+    monkeypatch.setattr(llm_utils, "_sat_failed", None)
+
+    llm_utils._get_sat()
+
+    assert recorded == {"model": "sat-3l-sm", "tokenizer": "FacebookAI/xlm-roberta-base"}

@@ -86,6 +86,17 @@ class SmartTurnAnalyzer:
 
     @staticmethod
     def _download_model() -> Path:
+        """Return the Smart Turn ONNX weights, preferring the local cache.
+
+        ``hf_hub_download`` asks the Hub to resolve the revision on every call, which
+        stalls startup on Hub timeouts even when the file is already cached. Resolve
+        the cached file directly first and only fall back to the Hub when it is
+        missing.
+        """
+        cached = SmartTurnAnalyzer._cached_model_path()
+        if cached is not None:
+            return cached
+
         try:
             from huggingface_hub import hf_hub_download
         except ImportError as exc:
@@ -99,6 +110,33 @@ class SmartTurnAnalyzer:
                 filename=MODEL_FILENAME,
             )
         )
+
+    @staticmethod
+    def _cached_model_path() -> Path | None:
+        """Return the cached ONNX file for the current model version, if present."""
+        try:
+            from huggingface_hub import constants as hf_constants
+            from huggingface_hub import try_to_load_from_cache
+        except ImportError:
+            hf_constants = None
+            try_to_load_from_cache = None
+
+        if try_to_load_from_cache is not None and hf_constants is not None:
+            cached_file = try_to_load_from_cache(MODEL_REPO_ID, MODEL_FILENAME)
+            if isinstance(cached_file, (str, Path)):
+                return Path(cached_file)
+        if hf_constants is None:
+            return None
+
+        repo_dir = Path(hf_constants.HF_HUB_CACHE) / f"models--{MODEL_REPO_ID.replace('/', '--')}"
+        snapshots_dir = repo_dir / "snapshots"
+        if not snapshots_dir.is_dir():
+            return None
+        for snapshot in sorted(snapshots_dir.iterdir(), reverse=True):
+            candidate = snapshot / MODEL_FILENAME
+            if candidate.is_file():
+                return candidate
+        return None
 
     @staticmethod
     def _prepare_audio(audio_array: np.ndarray, sample_rate: int) -> np.ndarray:

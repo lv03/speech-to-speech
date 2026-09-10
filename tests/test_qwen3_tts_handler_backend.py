@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 from queue import Queue
 from threading import Event, Thread
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -369,6 +369,156 @@ def test_setup_mlx_streaming_is_opt_in(monkeypatch, caplog):
     )
 
     assert handler._mlx_stream_enabled() is True
+
+
+@pytest.fixture
+def _mlx_loader_stub(monkeypatch, stub_huggingface_hub):
+    """Capture what mlx-audio is asked to load without touching real weights."""
+    fake_module = ModuleType("mlx_audio.tts.utils")
+    requested: list[object] = []
+
+    def _load_model(model: object):
+        requested.append(model)
+        return SimpleNamespace(name=model)
+
+    fake_module.load_model = _load_model  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "mlx_audio.tts.utils", fake_module)
+    return requested
+
+
+@pytest.fixture
+def _fake_hf_cache(tmp_path, monkeypatch):
+    """Point the Hugging Face cache constants at a throwaway directory."""
+    from huggingface_hub import constants as hf_constants
+
+    cache_root = tmp_path / "hub"
+    cache_root.mkdir()
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(cache_root))
+    return cache_root
+
+
+def _write_snapshot(cache_root, repo_id, revision="rev1"):
+    repo_dir = cache_root / f"models--{repo_id.replace('/', '--')}"
+    snapshot = repo_dir / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    (snapshot / "model.safetensors").write_bytes(b"")
+    refs = repo_dir / "refs"
+    refs.mkdir(exist_ok=True)
+    (refs / "main").write_text(revision, encoding="utf-8")
+    return snapshot
+
+
+@pytest.fixture(autouse=True)
+def _clear_shared_model_registry():
+    """Keep the process-wide shared-model registry from leaking between tests."""
+    from speech_to_speech.utils.model_registry import reset_shared_models
+
+    reset_shared_models()
+    yield
+    reset_shared_models()
+
+
+def _mlx_handler(**overrides):
+    handler = object.__new__(Qwen3TTSHandler)
+    handler.mlx_quantization = "6bit"
+    handler.mlx_prefer_local = True
+    handler.mlx_local_files_only = False
+    handler.model = None
+    for name, value in overrides.items():
+        setattr(handler, name, value)
+    return handler
+
+
+def test_setup_mlx_loads_cached_snapshot_without_hub_lookup(monkeypatch, caplog, _mlx_loader_stub, _fake_hf_cache):
+    repo_id = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit"
+    snapshot = _write_snapshot(_fake_hf_cache, repo_id)
+
+    handler = _mlx_handler()
+    with caplog.at_level("INFO"):
+        handler._setup_mlx(repo_id)
+
+    assert _mlx_loader_stub == [snapshot]
+    assert handler.model.name == snapshot
+    assert "source=local-cache" in caplog.text
+    assert "cache=hit(" in caplog.text
+
+
+def test_setup_mlx_falls_back_to_hub_when_cache_is_cold(monkeypatch, caplog, _mlx_loader_stub, _fake_hf_cache):
+    repo_id = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit"
+
+    handler = _mlx_handler()
+    with caplog.at_level("INFO"):
+        handler._setup_mlx(repo_id)
+
+    assert _mlx_loader_stub == [repo_id]
+    assert "source=local-cache-miss" in caplog.text
+    assert "cache=miss" in caplog.text
+
+
+def test_setup_mlx_prefer_local_disabled_keeps_hub_resolution(monkeypatch, _mlx_loader_stub, _fake_hf_cache):
+    repo_id = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit"
+    _write_snapshot(_fake_hf_cache, repo_id)
+
+    handler = _mlx_handler(mlx_prefer_local=False)
+    handler._setup_mlx(repo_id)
+
+    assert _mlx_loader_stub == [repo_id]
+
+
+def test_setup_mlx_local_files_only_uses_cache(monkeypatch, _mlx_loader_stub, _fake_hf_cache):
+    repo_id = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit"
+    snapshot = _write_snapshot(_fake_hf_cache, repo_id)
+
+    handler = _mlx_handler(mlx_prefer_local=False, mlx_local_files_only=True)
+    handler._setup_mlx(repo_id)
+
+    assert _mlx_loader_stub == [snapshot]
+
+
+def test_setup_mlx_local_files_only_fails_fast_on_cold_cache(monkeypatch, _mlx_loader_stub, _fake_hf_cache):
+    repo_id = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit"
+
+    handler = _mlx_handler(mlx_local_files_only=True)
+    with pytest.raises(RuntimeError, match="not present in the local Hugging Face cache"):
+        handler._setup_mlx(repo_id)
+
+    assert _mlx_loader_stub == []
+
+
+def test_setup_mlx_ignores_local_range_snapshot(monkeypatch, _mlx_loader_stub, _fake_hf_cache):
+    """mlx-audio resolves a folder containing config.json; a snapshot without weights is incomplete."""
+    repo_id = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit"
+    snapshot = _fake_hf_cache / f"models--{repo_id.replace('/', '--')}" / "snapshots" / "rev1"
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+
+    handler = _mlx_handler()
+    handler._setup_mlx(repo_id)
+
+    assert _mlx_loader_stub == [repo_id]
+
+
+def test_setup_accepts_mlx_local_loading_flags(monkeypatch):
+    recorded = {}
+
+    def _setup_mlx(self, model_name):
+        recorded["prefer_local"] = self.mlx_prefer_local
+        recorded["local_files_only"] = self.mlx_local_files_only
+
+    monkeypatch.setattr(qwen3_tts_module, "platform", "darwin")
+    monkeypatch.setattr(Qwen3TTSHandler, "_setup_mlx", _setup_mlx)
+    monkeypatch.setattr(Qwen3TTSHandler, "warmup", lambda self: None)
+
+    handler = object.__new__(Qwen3TTSHandler)
+    handler.setup(
+        Event(),
+        model_name="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        mlx_prefer_local=False,
+        mlx_local_files_only=True,
+    )
+
+    assert recorded == {"prefer_local": False, "local_files_only": True}
 
 
 def test_mlx_stream_kwargs_stream_by_default():

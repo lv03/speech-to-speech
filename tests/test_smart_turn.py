@@ -10,6 +10,7 @@ import torch
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
 from speech_to_speech.VAD.smart_turn import (
     MAX_AUDIO_SECONDS,
+    MODEL_FILENAME,
     MODEL_SAMPLE_RATE,
     SmartTurnAnalyzer,
     SmartTurnResult,
@@ -192,7 +193,7 @@ def test_prepare_audio_resamples_to_model_rate() -> None:
     assert np.count_nonzero(prepared[-MODEL_SAMPLE_RATE:]) > 0
 
 
-def test_default_model_download_uses_v32_cpu_variant(monkeypatch, tmp_path: Path) -> None:
+def test_default_model_download_uses_v32_cpu_variant(monkeypatch, tmp_path: Path, stub_huggingface_hub) -> None:
     downloaded = tmp_path / "model.onnx"
     calls = []
 
@@ -200,7 +201,8 @@ def test_default_model_download_uses_v32_cpu_variant(monkeypatch, tmp_path: Path
         calls.append(kwargs)
         return str(downloaded)
 
-    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(hf_hub_download=fake_download))
+    monkeypatch.setattr(SmartTurnAnalyzer, "_cached_model_path", staticmethod(lambda: None))
+    stub_huggingface_hub.hf_hub_download = fake_download
 
     assert SmartTurnAnalyzer._download_model() == downloaded
     assert calls == [
@@ -209,6 +211,37 @@ def test_default_model_download_uses_v32_cpu_variant(monkeypatch, tmp_path: Path
             "filename": "smart-turn-v3.2-cpu.onnx",
         }
     ]
+
+
+def test_default_model_load_prefers_cached_hub_file(monkeypatch, tmp_path: Path, stub_huggingface_hub) -> None:
+    from huggingface_hub import constants as hf_constants
+
+    cache_root = tmp_path / "hub"
+    snapshot = cache_root / "models--pipecat-ai--smart-turn-v3" / "snapshots" / "abc123"
+    snapshot.mkdir(parents=True)
+    cached_model = snapshot / MODEL_FILENAME
+    cached_model.write_bytes(b"onnx")
+    refs = cache_root / "models--pipecat-ai--smart-turn-v3" / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("abc123", encoding="utf-8")
+
+    def exploding_download(**kwargs):
+        raise AssertionError("cached Smart Turn weights must not hit the Hub")
+
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(cache_root))
+    stub_huggingface_hub.hf_hub_download = exploding_download
+
+    assert SmartTurnAnalyzer._download_model() == cached_model
+
+
+def test_cached_model_path_returns_none_without_cache(monkeypatch, tmp_path: Path) -> None:
+    from huggingface_hub import constants as hf_constants
+
+    cache_root = tmp_path / "empty-hub"
+    cache_root.mkdir()
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(cache_root))
+
+    assert SmartTurnAnalyzer._cached_model_path() is None
 
 
 def test_analyzer_always_uses_cpu_execution_provider(monkeypatch, tmp_path: Path) -> None:
